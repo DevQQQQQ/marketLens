@@ -10,7 +10,8 @@ import { fileURLToPath } from "node:url";
 import { isSameSymbol, normalizeSymbolKey, normalizeUSCode, inferAShareExchange, normalizeAShareCode, resolveItemAssetType, resolveItemDisplayName, getWatchlistFingerprint, reorderWatchlist, batchReorderWatchlist, pruneQuoteCache, extractTargetsFromWatchlist, extractStatusBarQuotes, computeStatusBarEnabled, resolveTrendColors, chunkArray, decodeGbk, escapeHtml, ASSET_TYPE_TO_SECTION_MAP, NORMALIZE_SYMBOL_KEY_CLIENT_SCRIPT, isItemMarketClosed, isGroupMarketClosed, buildGroupNodeId, sanitizeWatchlist } from "../src/utils/symbolHelper.ts";
 import { validateAndParseInput, isContractAddress, extractContractAddressFromUrl } from "../src/utils/inputValidator.ts";
 import { isAShareMarketOpen, isHKMarketOpen, isUSMarketOpen, isAShareHoliday, isHKHoliday, isUSHoliday, evaluateAdaptiveThrottle, getZonedTimeParts, beijingFormatter, newYorkFormatter, shouldSkipMarketPolling, MAX_COVERED_HOLIDAY_YEAR, checkHolidayCoverage, US_HOLIDAYS, HK_HOLIDAYS } from "../src/utils/marketHours.ts";
-import { validateAndNormalizeProxyUrl, parseProxy, resetProxyCache, getSystemProxyUrl } from "../src/services/network.ts";
+import { validateAndNormalizeProxyUrl, parseProxy, resetProxyCache, getSystemProxyUrl, smartNetworkGet, getCachedWorkingPort, testLocalPort, DEFAULT_PROXY_PORT, DEFAULT_PROXY_URL, COMMON_PROXY_PORTS } from "../src/services/network.ts";
+import axios from "axios";
 import { isDisplayMasked, shouldAutoExitBossKey, canEmitUserFeedback, resolveMaskToggle, shouldBlockNodeCommand, MASKED_TOOLTIP_TEXT, resolveStockTooltip } from "../src/utils/maskState.ts";
 import { AlertManager } from "../src/services/alertManager.ts";
 import { DexScreenerService } from "../src/services/dexScreenerService.ts";
@@ -2994,6 +2995,240 @@ test("batchReorderWatchlist - 脏元素（含 null/空对象）防御与同组�
   const symbols = reordered!["A股"].map((x) => x?.symbol).filter(Boolean);
   assert.deepStrictEqual(symbols, ["sz000001", "sh600519"]);
 });
+
+test("network 常量与本地端口探活接口基础契约", async () => {
+  assert.strictEqual(DEFAULT_PROXY_PORT, 10808);
+  assert.strictEqual(DEFAULT_PROXY_URL, "http://127.0.0.1:10808");
+  assert.strictEqual(COMMON_PROXY_PORTS.includes(10808), true);
+  // testLocalPort 探测未开放的端口应安全返回 false 而不崩溃
+  const deadRes = await testLocalPort(65534);
+  assert.strictEqual(deadRes, false);
+});
+
+test("smartNetworkGet - 核心网络调度、直连模式、代理回退与熔断守卫", async () => {
+  resetProxyCache();
+  const originalGet = axios.get;
+
+  try {
+    // 1. 直连模式：显式声明 proxy: false
+    let interceptedConfig: any = null;
+    axios.get = (async (url: string, config: any) => {
+      interceptedConfig = config;
+      return { data: { status: "ok" }, status: 200, statusText: "OK", headers: {}, config };
+    }) as any;
+
+    const resDirect = await smartNetworkGet("http://example.com/api", { mode: "direct" });
+    assert.strictEqual(resDirect.data.status, "ok");
+    assert.strictEqual(interceptedConfig.proxy, false, "直连模式必须显式设置 proxy: false");
+
+    // 2. 代理模式：目标代理请求成功并更新 cachedWorkingPort
+    axios.get = (async (url: string, config: any) => {
+      interceptedConfig = config;
+      return { data: { price: "50000" }, status: 200, statusText: "OK", headers: {}, config };
+    }) as any;
+
+    const resProxy = await smartNetworkGet("http://example.com/quote", {
+      mode: "proxy",
+      proxyUrl: "http://127.0.0.1:7890",
+    });
+    assert.strictEqual(resProxy.data.price, "50000");
+    assert.strictEqual(interceptedConfig.proxy.port, 7890);
+    assert.strictEqual(getCachedWorkingPort(), 7890, "请求成功后必须缓存工作端口");
+
+    // 3. 远端服务器返回原生 HTTP 响应（如 400 Bad Request）时必须保留异常且不进入探测
+    axios.get = (async () => {
+      const err: any = new Error("Request failed with status code 400");
+      err.response = { status: 400, data: { msg: "Invalid symbol" } };
+      throw err;
+    }) as any;
+
+    await assert.rejects(
+      async () => {
+        await smartNetworkGet("http://example.com/bad", { mode: "proxy", proxyUrl: "http://127.0.0.1:7890" });
+      },
+      (err: any) => {
+        return err.response?.status === 400;
+      },
+      "业务 HTTP 响应异常必须直接抛出保留 response"
+    );
+
+    // 4. 目标端口不可达，但系统环境变量代理可达时的自适应降级
+    resetProxyCache();
+    const originalEnv = { ...process.env };
+    process.env.HTTP_PROXY = "http://127.0.0.1:7897";
+
+    axios.get = (async (url: string, config: any) => {
+      if (config.proxy?.port === 10808) {
+        throw new Error("connect ECONNREFUSED 127.0.0.1:10808");
+      }
+      if (config.proxy?.port === 7897) {
+        return { data: { fallback: "sys-proxy" }, status: 200, statusText: "OK", headers: {}, config };
+      }
+      throw new Error("unexpected port");
+    }) as any;
+
+    const resSys = await smartNetworkGet("http://example.com/test", {
+      mode: "proxy",
+      proxyUrl: "http://127.0.0.1:10808",
+    });
+    assert.strictEqual(resSys.data.fallback, "sys-proxy");
+    assert.strictEqual(getCachedWorkingPort(), 7897, "自适应切换后必须更新工作端口为系统代理端口");
+
+    // 清理环境变量
+    process.env = originalEnv;
+
+    // 5. 所有端口不可达时触发熔断冷却并阻止重试
+    resetProxyCache();
+    axios.get = (async () => {
+      throw new Error("connect ECONNREFUSED");
+    }) as any;
+
+    await assert.rejects(
+      async () => {
+        await smartNetworkGet("http://example.com/dead", {
+          mode: "proxy",
+          proxyUrl: "http://127.0.0.1:9999",
+        });
+      },
+      /\[MarketLens\] 代理连接失败。已阻止直连。/,
+      "所有端口失败必须阻止直连"
+    );
+
+    // 冷却期内再次请求必须立即拦截
+    await assert.rejects(
+      async () => {
+        await smartNetworkGet("http://example.com/dead2", {
+          mode: "proxy",
+          proxyUrl: "http://127.0.0.1:9999",
+        });
+      },
+      /端口探测处于冷却中/,
+      "熔断冷却期内必须拒绝重试"
+    );
+
+    // 重置后解除冷却
+    resetProxyCache();
+    assert.strictEqual(getCachedWorkingPort(), undefined);
+  } finally {
+    axios.get = originalGet;
+    resetProxyCache();
+  }
+});
+
+test("BinanceService - fetchQuotes 批量拉取与代理/直连模式及异常隔离", async () => {
+  const service = new BinanceService();
+  const originalGet = axios.get;
+
+  try {
+    // 1. 空输入测试
+    const emptyRes = await service.fetchQuotes([]);
+    assert.deepStrictEqual(emptyRes, []);
+
+    // 2. 模拟 Binance 正常行情返回
+    axios.get = (async () => {
+      return {
+        status: 200,
+        data: [
+          {
+            symbol: "BTCUSDT",
+            priceChange: "500",
+            priceChangePercent: "1.2",
+            lastPrice: "68000.00",
+            openPrice: "67500.00",
+            highPrice: "69000.00",
+            lowPrice: "67000.00",
+            prevClosePrice: "67500.00",
+            volume: "1000",
+            quoteVolume: "68000000",
+          },
+          {
+            symbol: "ETHUSDT",
+            priceChange: "-30",
+            priceChangePercent: "-0.8",
+            lastPrice: "3500.00",
+            openPrice: "3530.00",
+            highPrice: "3600.00",
+            lowPrice: "3480.00",
+            prevClosePrice: "3530.00",
+            volume: "5000",
+            quoteVolume: "17500000",
+          },
+        ],
+      };
+    }) as any;
+
+    const quotes = await service.fetchQuotes(["BTCUSDT", "ETHUSDT"], { mode: "direct" });
+    assert.strictEqual(quotes.length, 2);
+    assert.strictEqual(quotes[0].symbol, "BTCUSDT");
+    assert.strictEqual(quotes[0].price, 68000);
+    assert.strictEqual(quotes[1].symbol, "ETHUSDT");
+    assert.strictEqual(quotes[1].price, 3500);
+
+    // 3. 网络异常单批次失败容错，返回空数组并不崩溃
+    axios.get = (async () => {
+      throw new Error("Network timeout");
+    }) as any;
+
+    const failedQuotes = await service.fetchQuotes(["BTCUSDT"], { mode: "direct" });
+    assert.deepStrictEqual(failedQuotes, []);
+  } finally {
+    axios.get = originalGet;
+  }
+});
+
+test("DexScreenerService - fetchQuotes 报文映射、多流动性池与无效地址 TTL 清理", async () => {
+  const service = new DexScreenerService();
+  const originalGet = axios.get;
+
+  try {
+    // 1. 空输入与非法格式校验
+    const emptyRes = await service.fetchQuotes([]);
+    assert.deepStrictEqual(emptyRes, []);
+
+    const invalidFormatRes = await service.fetchQuotes(["not-an-address"]);
+    assert.deepStrictEqual(invalidFormatRes, []);
+
+    // 2. 模拟 DexScreener 正常返回 pairs
+    const mockAddr = "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c";
+    axios.get = (async () => {
+      return {
+        status: 200,
+        data: {
+          schemaVersion: "1.0.0",
+          pairs: [
+            {
+              chainId: "bsc",
+              dexId: "pancakeswap",
+              pairAddress: "0x1234567890abcdef1234567890abcdef12345678",
+              baseToken: { address: mockAddr, name: "Wrapped BNB", symbol: "WBNB" },
+              priceUsd: "580.5",
+              priceChange: { h24: 3.5 },
+              volume: { h24: 1000000 },
+              liquidity: { usd: 50000000 },
+            },
+          ],
+        },
+      };
+    }) as any;
+
+    const quotes = await service.fetchQuotes([mockAddr], { mode: "direct" });
+    assert.strictEqual(quotes.length, 1);
+    assert.strictEqual(quotes[0].id, mockAddr);
+    assert.strictEqual(quotes[0].symbol, "WBNB");
+    assert.strictEqual(quotes[0].name, "Wrapped BNB");
+    assert.strictEqual(quotes[0].price, 580.5);
+    assert.strictEqual(quotes[0].changePercent, 3.5);
+    assert.strictEqual(quotes[0].currency, "USD");
+    assert.strictEqual(quotes[0].type, "ALPHA_TOKEN");
+
+    // 3. 测试清理无效地址缓存
+    service.clearInvalidCache();
+    assert.strictEqual(service.isAddressSuppressed(mockAddr), false);
+  } finally {
+    axios.get = originalGet;
+  }
+});
+
 
 
 

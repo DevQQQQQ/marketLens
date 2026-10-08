@@ -193,7 +193,7 @@ export function parseProxy(proxyUrlStr: string) {
 /**
  * 快速检测某个本地端口是否开启了 HTTP 代理监听（超时 600ms）
  */
-function testLocalPort(port: number): Promise<boolean> {
+export function testLocalPort(port: number): Promise<boolean> {
   return new Promise((resolve) => {
     const req = http.request(
       {
@@ -324,13 +324,17 @@ export async function smartNetworkGet<T = any>(
       }
     }
 
-    // 第三优先级：自动自适应探测其他主流端口
+    // 第三优先级：自动自适应探测其他主流端口（前置 600ms 快速探活，缩短超时，杜绝冷 miss 卡死）
     for (const port of COMMON_PROXY_PORTS) {
       if (port === targetProxy.port) continue;
+      // 前置轻量探活：若本地端口未监听或无代理响应，瞬间跳过，杜绝 8 次完整业务请求长耗时
+      const isAlive = await testLocalPort(port);
+      if (!isAlive) continue;
+
       try {
         const res = await axios.get<T>(url, {
           ...mergedConfig,
-          timeout: 2500, // 快速探测
+          timeout: 1500, // 快速探测
           proxy: { host: "127.0.0.1", port, protocol: "http" },
         });
         // 成功！记录并缓存此端口，后续无需重试

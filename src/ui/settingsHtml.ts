@@ -1,6 +1,7 @@
 // src/ui/settingsHtml.ts
 import { MARKET_SECTIONS } from "../utils/config.ts";
 import { NORMALIZE_SYMBOL_KEY_CLIENT_SCRIPT } from "../utils/symbolHelper.ts";
+import { DEFAULT_PROXY_PORT } from "../services/network.ts";
 
 export interface SettingsFormData {
 	autoRefresh?: boolean;
@@ -46,7 +47,7 @@ export function getSettingsWebviewHtml(
 	cspSource: string = '',
 	initialData: SettingsFormData = {}
 ): string {
-	const defaultPort = initialData.proxyPort || 10808;
+	const defaultPort = initialData.proxyPort || DEFAULT_PROXY_PORT;
 	const defaultProxyUrl = initialData.proxyUrl || `http://127.0.0.1:${defaultPort}`;
 	const d: Required<SettingsFormData> = {
 		autoRefresh: initialData.autoRefresh !== undefined ? initialData.autoRefresh : true,
@@ -570,11 +571,11 @@ export function getSettingsWebviewHtml(
         <div class="card">
           <div class="card-info">
             <div class="card-title">本地代理端口 (仅支持 HTTP / 混合代理)</div>
-            <div class="card-desc">全插件统一网络代理端口。只需输入端口号（1 ~ 65535，默认 10808，v2rayN 为 10808/10809，Clash/Verge 为 7890/7897）。未自定义时自动自适应读取系统代理环境变量 (HTTP_PROXY / HTTPS_PROXY / ALL_PROXY) 或探测可用端口。</div>
+            <div class="card-desc">全插件统一网络代理端口。只需输入端口号（1 ~ 65535，默认 ${DEFAULT_PROXY_PORT}，v2rayN 为 10808/10809，Clash/Verge 为 7890/7897）。未自定义时自动自适应读取系统代理环境变量 (HTTP_PROXY / HTTPS_PROXY / ALL_PROXY) 或探测可用端口。</div>
           </div>
           <div class="proxy-input-box">
             <span style="font-family: monospace; color: var(--desc-fg); font-size: 13px;"></span>
-            <input type="text" id="globalProxyPort" value="${d.proxyPort}" placeholder="10808" maxlength="5" style="width: 80px; text-align: center; font-family: monospace; font-size: 13px; font-weight: 500;">
+            <input type="text" id="globalProxyPort" value="${d.proxyPort}" placeholder="${DEFAULT_PROXY_PORT}" maxlength="5" style="width: 80px; text-align: center; font-family: monospace; font-size: 13px; font-weight: 500;">
             <button class="btn-detect" id="btnDetectGlobal">⚡ 探测代理</button>
           </div>
         </div>
@@ -1256,7 +1257,7 @@ export function getSettingsWebviewHtml(
         var port = parseInt(raw, 10);
         if (isNaN(port) || port < 1 || port > 65535) {
           showToast('⚠️ 端口号必须是 1 到 65535 之间的有效整数');
-          input.value = input.getAttribute('data-last-valid') || '10808';
+          input.value = input.getAttribute('data-last-valid') || '${DEFAULT_PROXY_PORT}';
           return;
         }
         var lastValid = input.getAttribute('data-last-valid');
@@ -1507,7 +1508,7 @@ export function getSettingsWebviewHtml(
           setValue('colorScheme',        d.colorScheme || 'greenUpRedDown');
           setChecked('statusBarEnabled', d.statusBarEnabled);
           setChecked('autoCollapseClosedGroups', d.autoCollapseClosedGroups);
-          var portVal = d.proxyPort || 10808;
+          var portVal = d.proxyPort || ${DEFAULT_PROXY_PORT};
           setValue('globalProxyPort', portVal);
           var portInput = document.getElementById('globalProxyPort');
           if (portInput) {

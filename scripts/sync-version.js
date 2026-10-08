@@ -55,6 +55,21 @@ function syncVersion(rootDir = path.resolve(__dirname, '..'), cleanAll = false, 
 		}
 	}
 
+	// 2.5 同步 site/marketlens.html 的版本标签（若文件存在）
+	const siteHtmlPath = path.join(rootDir, 'site', 'marketlens.html');
+	if (fs.existsSync(siteHtmlPath)) {
+		const original = fs.readFileSync(siteHtmlPath, 'utf8');
+		const tagPattern = /<span class="tag">v[0-9A-Za-z_.-]+<\/span>/g;
+		const targetTag = `<span class="tag">v${version}</span>`;
+		const updated = original.replace(tagPattern, targetTag);
+		if (updated !== original) {
+			if (!dryRun) {
+				fs.writeFileSync(siteHtmlPath, updated, 'utf8');
+			}
+			modifiedFiles.push(path.join('site', 'marketlens.html'));
+		}
+	}
+
 	// 3. 检查并同步 CHANGELOG.md（方式 A：将 [Unreleased] 转化为当前版本并留空新 Unreleased）
 	const changelogPath = path.join(rootDir, 'CHANGELOG.md');
 	if (fs.existsSync(changelogPath)) {

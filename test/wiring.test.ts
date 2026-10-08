@@ -344,7 +344,12 @@ test("extension 与 commands - 扩展完整生命周期与命令分发集成", a
   assert.ok(subscriptions.length > 0, "扩展激活必须注册命令与事件侦听器");
 
   // 2. 测试已注册核心命令派发与防窥守卫
-  await vscode.commands.executeCommand("marketlens.toggleMaskMode");
+  await vscode.commands.executeCommand("marketlens.toggleMask");
+  assert.strictEqual(
+    vscode.workspace.getConfiguration("marketlens").get("maskMode"),
+    true,
+    "toggleMask 执行后 maskMode 必须切换为 true"
+  );
   await vscode.commands.executeCommand("marketlens.toggleColorNeutral");
   await vscode.commands.executeCommand("marketlens.openSettings");
   await vscode.commands.executeCommand("marketlens.refresh");

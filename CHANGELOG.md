@@ -5,9 +5,27 @@ All notable changes to the "MarketLens" extension will be documented in this fil
 
 ## [Unreleased]
 
+## [1.2.4] - 2026-10-08
+
+<details>
+<summary><b>⚡ 网络探活性能飞跃、类型定义基线加固与测试质量守卫 (Performance & Quality Hardening)</b></summary>
+
+- **⚡ 代理回退前置探活与冷 miss 毫秒级熔断**：
+    - 代理模式回退链前置 600ms 轻量 HEAD 探活（`testLocalPort`），未启动代理时瞬间跳过无效端口，将冷 miss 探测耗时由 22 秒骤降至毫秒级，彻底消除首次刷新与无代理环境下的界面冻结；
+    - 缩短端口请求超时至 1500ms，完善 30s 冷却熔断与并发重试拦截。
+- **🔒 VS Code API 类型契约精确锁定**：
+    - 精确锁定 `@types/vscode` 为 `~1.85.0`，消除编译期类型远新于宿主下限（1.85.0）导致的低版本兼容性隐患。
+- **🧪 单元测试网健全与假绿修复**：
+    - 修复测试中派发错误命令 ID（`toggleMaskMode` → `toggleMask`）导致的虚假测试防护，补全对摸鱼打码模式状态翻转的断言；
+    - 针对 `smartNetworkGet` 代理回退链、`BinanceService` 异常降级及 `DexScreenerService` 数据映射与黑名单清理扩充测试用例，全仓用例增至 83 项，网络核心模块行覆盖率大幅提升。
+- **🧹 魔法数字与静态展示合规治理**：
+    - 统一收敛代理端口魔法数字，全面复用 `DEFAULT_PROXY_PORT` 与 `DEFAULT_PROXY_URL` 常量；
+    - 纠偏展示页功能描述，接入发版版本号全自动同频机制。
+</details>
+
 ## [1.2.3] - 2026-09-30
 
-<details open>
+<details>
 <summary><b>📊 深度行情指标扩展、一键复制与轻量交互体验升级 (Depth Metrics & UX Polish)</b></summary>
 
 - **📊 A 股深度量价与估值指标扩展**：

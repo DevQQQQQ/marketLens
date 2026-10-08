@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import type { MarketItem, WatchlistConfig, WatchConfigItem, PriceAlertItem, AlertsConfig, GroupSortMode } from "../types/index.ts";
 import { normalizeSymbolKey, resolveItemAssetType, resolveItemDisplayName, resolveTrendColors, type ColorScheme, ASSET_TYPE_TO_SECTION_MAP, isGroupMarketClosed, buildGroupNodeId } from "../utils/symbolHelper.ts";
 import { isDisplayMasked, resolveStockTooltip } from "../utils/maskState.ts";
+import { DEFAULT_PROXY_PORT } from "../services/network.ts";
 
 /**
  * 智能格式化价格
@@ -336,7 +337,7 @@ export class StockItem extends vscode.TreeItem {
       }
 
       if (!hasQuote) {
-        mdText += `\n\n> 💡 **提示**：若长期处于“获取行情中”，可能是当前网络或公司内网拦截了该接口。建议在插件设置中开启本地代理端口（如 10808），或在设置中暂时关闭该分组。`;
+        mdText += `\n\n> 💡 **提示**：若长期处于“获取行情中”，可能是当前网络或公司内网拦截了该接口。建议在插件设置中开启本地代理端口（如 ${DEFAULT_PROXY_PORT}），或在设置中暂时关闭该分组。`;
       }
 
       if (hasAlert && currentAlert) {

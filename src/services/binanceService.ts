@@ -1,6 +1,6 @@
 // src/services/binanceService.ts
 import type { MarketItem } from "../types";
-import { cryptoGet, type CryptoNetworkOptions } from "./network.ts";
+import { cryptoGet, DEFAULT_PROXY_URL, type CryptoNetworkOptions } from "./network.ts";
 import { logger } from "../utils/logger.ts";
 import { chunkArray } from "../utils/symbolHelper.ts";
 
@@ -96,7 +96,7 @@ export class BinanceService {
    */
   async fetchQuotes(
     symbols: string[],
-    options: CryptoNetworkOptions = { mode: "proxy", proxyUrl: "http://127.0.0.1:10808" }
+    options: CryptoNetworkOptions = { mode: "proxy", proxyUrl: DEFAULT_PROXY_URL }
   ): Promise<MarketItem[]> {
     if (!symbols.length) { return []; }
 

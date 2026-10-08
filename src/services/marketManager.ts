@@ -5,7 +5,7 @@ import { HKStockService } from "./hkStockService.ts";
 import { USStockService } from "./usStockService.ts";
 import { BinanceService } from "./binanceService.ts";
 import { DexScreenerService } from "./dexScreenerService.ts";
-import type { CryptoNetworkOptions } from "./network.ts";
+import { DEFAULT_PROXY_URL, type CryptoNetworkOptions } from "./network.ts";
 import { logger } from "../utils/logger.ts";
 
 export interface PollTargets {
@@ -49,8 +49,8 @@ export class MarketManager {
     aShareOptions: CryptoNetworkOptions = { mode: "direct" },
     hkStockOptions: CryptoNetworkOptions = { mode: "direct" },
     usStockOptions: CryptoNetworkOptions = { mode: "direct" },
-    binanceOptions: CryptoNetworkOptions = { mode: "proxy", proxyUrl: "http://127.0.0.1:10808" },
-    alphaOptions: CryptoNetworkOptions = { mode: "proxy", proxyUrl: "http://127.0.0.1:10808" },
+    binanceOptions: CryptoNetworkOptions = { mode: "proxy", proxyUrl: DEFAULT_PROXY_URL },
+    alphaOptions: CryptoNetworkOptions = { mode: "proxy", proxyUrl: DEFAULT_PROXY_URL },
     fundOptions: CryptoNetworkOptions = { mode: "direct" }
   ): Promise<MarketItem[]> {
     const { funds = [], aShares = [], hkStocks = [], usStocks = [], cryptos = [], bscTokens = [] } = targets;
