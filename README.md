@@ -8,7 +8,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/VS_Code-^1.85.0-007ACC?logo=visualstudiocode" alt="VS Code Version">
   <img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License">
-  <img src="https://img.shields.io/badge/Release-v1.2.4-blue.svg" alt="Version">
+  <img src="https://img.shields.io/badge/Release-v1.2.5-blue.svg" alt="Version">
   <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-orange" alt="Platform">
 </p>
 

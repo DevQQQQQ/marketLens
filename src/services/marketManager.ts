@@ -37,10 +37,6 @@ export class MarketManager {
     this.dexScreenerService.clearInvalidCache();
   }
 
-  public clearBinanceInvalidCache(): void {
-    this.clearInvalidCache();
-  }
-
   /**
    * 统一调度方法：并行抓取 基金、A股、港股、美股、主流加密货币、Alpha 链上代币六类资产并聚合输出
    */

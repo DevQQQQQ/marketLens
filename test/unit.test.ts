@@ -3008,8 +3008,18 @@ test("network 常量与本地端口探活接口基础契约", async () => {
 test("smartNetworkGet - 核心网络调度、直连模式、代理回退与熔断守卫", async () => {
   resetProxyCache();
   const originalGet = axios.get;
+  const originalEnv = { ...process.env };
+  const cleanProxyEnv = () => {
+    delete process.env.HTTPS_PROXY;
+    delete process.env.https_proxy;
+    delete process.env.HTTP_PROXY;
+    delete process.env.http_proxy;
+    delete process.env.ALL_PROXY;
+    delete process.env.all_proxy;
+  };
 
   try {
+    cleanProxyEnv();
     // 1. 直连模式：显式声明 proxy: false
     let interceptedConfig: any = null;
     axios.get = (async (url: string, config: any) => {
@@ -3054,7 +3064,7 @@ test("smartNetworkGet - 核心网络调度、直连模式、代理回退与熔�
 
     // 4. 目标端口不可达，但系统环境变量代理可达时的自适应降级
     resetProxyCache();
-    const originalEnv = { ...process.env };
+    cleanProxyEnv();
     process.env.HTTP_PROXY = "http://127.0.0.1:7897";
 
     axios.get = (async (url: string, config: any) => {
@@ -3075,7 +3085,7 @@ test("smartNetworkGet - 核心网络调度、直连模式、代理回退与熔�
     assert.strictEqual(getCachedWorkingPort(), 7897, "自适应切换后必须更新工作端口为系统代理端口");
 
     // 清理环境变量
-    process.env = originalEnv;
+    cleanProxyEnv();
 
     // 5. 所有端口不可达时触发熔断冷却并阻止重试
     resetProxyCache();
@@ -3112,6 +3122,12 @@ test("smartNetworkGet - 核心网络调度、直连模式、代理回退与熔�
   } finally {
     axios.get = originalGet;
     resetProxyCache();
+    for (const key of Object.keys(process.env)) {
+      if (!(key in originalEnv)) {
+        delete process.env[key];
+      }
+    }
+    Object.assign(process.env, originalEnv);
   }
 });
 
@@ -3226,6 +3242,67 @@ test("DexScreenerService - fetchQuotes 报文映射、多流动性池与无效�
     assert.strictEqual(service.isAddressSuppressed(mockAddr), false);
   } finally {
     axios.get = originalGet;
+  }
+});
+
+test("scheduler - 网络持续故障退避计数与自动复位守卫", async () => {
+  const { RefreshScheduler } = await import("../src/scheduler.ts");
+  const mockMarketManager: any = {
+    clearInvalidCache: () => {},
+    pollAll: async () => [],
+  };
+  const mockTreeProvider: any = {
+    setAlerts: () => {},
+    buildTree: () => {},
+    applyQuotes: () => {},
+    isEmpty: () => false,
+  };
+  const mockStatusBar: any = {
+    setQuotes: () => {},
+    show: () => {},
+    hide: () => {},
+  };
+  const mockTreeView: any = { visible: true };
+
+  const scheduler = new RefreshScheduler({
+    marketManager: mockMarketManager,
+    treeProvider: mockTreeProvider,
+    statusBar: mockStatusBar,
+    treeView: mockTreeView,
+  });
+
+  const vscode = await import("vscode");
+  const originalWatchlist = vscode.workspace.getConfiguration("marketlens").get("watchlist");
+  await vscode.workspace.getConfiguration("marketlens").update("watchlist", {
+    "A股": [{ symbol: "sh600519", name: "贵州茅台", type: "A_SHARE" }]
+  }, vscode.ConfigurationTarget.Global);
+
+  try {
+    assert.strictEqual(scheduler.getConsecutiveNetworkFailures(), 0);
+
+    // 1. 模拟全失败：quotes 为空但有 targets 时递增
+    await scheduler.refresh(true);
+    assert.strictEqual(scheduler.getConsecutiveNetworkFailures(), 1);
+
+    await scheduler.refresh(true);
+    assert.strictEqual(scheduler.getConsecutiveNetworkFailures(), 2);
+
+    // 2. 模拟拉取成功：quotes > 0 时立即自动复位为 0
+    mockMarketManager.pollAll = async () => [
+      { id: "sh600519", symbol: "sh600519", name: "茅台", type: "A_SHARE", price: 1800, changePercent: 1.5 }
+    ];
+    await scheduler.refresh(true);
+    assert.strictEqual(scheduler.getConsecutiveNetworkFailures(), 0, "成功抓取后失败计数必须立即复位为 0");
+
+    // 3. stop 也会清零
+    mockMarketManager.pollAll = async () => [];
+    await scheduler.refresh(true);
+    assert.strictEqual(scheduler.getConsecutiveNetworkFailures(), 1);
+    scheduler.stop();
+    assert.strictEqual(scheduler.getConsecutiveNetworkFailures(), 0, "stop 必须重置连续网络失败计数");
+  } finally {
+    scheduler.dispose();
+    await vscode.workspace.getConfiguration("marketlens").update("watchlist", originalWatchlist, vscode.ConfigurationTarget.Global);
   }
 });
 

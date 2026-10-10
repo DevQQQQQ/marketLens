@@ -40,6 +40,10 @@ export class RefreshScheduler implements vscode.Disposable {
   public readonly THROTTLED_INTERVAL_MS = 60000;
   public readonly UNCHANGED_THRESHOLD = 3;
 
+  // 网络持续故障自适应退避计数
+  private consecutiveNetworkFailures = 0;
+  public readonly MAX_BACKOFF_INTERVAL_MS = 60000;
+
   public readonly quoteCache = new Map<string, MarketItem>();
   public readonly alertManager: AlertManager;
 
@@ -215,7 +219,8 @@ export class RefreshScheduler implements vscode.Disposable {
     this.isRefreshing = true;
     try {
       // 首次加载或明确要求强制刷新时，确保必定拉取并复位失效抑制黑名单
-      const forceAll = forceRefreshAll || !this.hasLoadedInitialQuotes;
+      // 当网络连续全失败 >= 3 次时，非显式强制刷新下不再强制 forceAll，允许休市市场跳过
+      const forceAll = forceRefreshAll || (!this.hasLoadedInitialQuotes && this.consecutiveNetworkFailures < 3);
       if (forceRefreshAll) {
         this.marketManager.clearInvalidCache();
       }
@@ -232,6 +237,20 @@ export class RefreshScheduler implements vscode.Disposable {
 
       if (this.disposed) {
         return;
+      }
+
+      const hasAnyTargets =
+        targets.funds.length > 0 ||
+        targets.aShares.length > 0 ||
+        targets.hkStocks.length > 0 ||
+        targets.usStocks.length > 0 ||
+        targets.cryptos.length > 0 ||
+        targets.bscTokens.length > 0;
+
+      if (quotes.length > 0) {
+        this.consecutiveNetworkFailures = 0;
+      } else if (hasAnyTargets) {
+        this.consecutiveNetworkFailures++;
       }
 
       const isWatchlistCompletelyEmpty =
@@ -296,6 +315,7 @@ export class RefreshScheduler implements vscode.Disposable {
 
       this.updateStatusBar(config);
     } catch (err) {
+      this.consecutiveNetworkFailures++;
       // 静默降级：仅写日志到 OutputChannel，绝不弹窗打断用户编码
       logger.error("全量刷新失败", err);
     } finally {
@@ -368,11 +388,22 @@ export class RefreshScheduler implements vscode.Disposable {
     }
 
     const standardInterval = Math.max(1000, config.refreshInterval || 5000);
-    const delay = forcedDelayMs ?? (this.isThrottled ? Math.max(this.THROTTLED_INTERVAL_MS, standardInterval) : standardInterval);
+    let delay = forcedDelayMs ?? (this.isThrottled ? Math.max(this.THROTTLED_INTERVAL_MS, standardInterval) : standardInterval);
+
+    // 网络持续故障退避策略：若连续失败 >= 2 次，引入指数退避（上限 60s），避免雪崩与上游限流
+    if (forcedDelayMs === undefined && this.consecutiveNetworkFailures >= 2) {
+      const backoffMultiplier = Math.pow(1.5, Math.min(this.consecutiveNetworkFailures - 1, 6));
+      delay = Math.min(this.MAX_BACKOFF_INTERVAL_MS, Math.max(delay, Math.round(standardInterval * backoffMultiplier)));
+    }
+
     this.timer = setTimeout(() => {
       this.timer = undefined;
       void this.refresh();
     }, delay);
+  }
+
+  public getConsecutiveNetworkFailures(): number {
+    return this.consecutiveNetworkFailures;
   }
 
   public start(): void {
@@ -381,6 +412,7 @@ export class RefreshScheduler implements vscode.Disposable {
     this.stop();
     this.consecutiveUnchangedCount = 0;
     this.isThrottled = false;
+    this.consecutiveNetworkFailures = 0;
     // 首次启动时无条件强制刷新一次，确保即使处于闭市/休市/周末也能看到最新收盘数据
     void this.refresh(true);
   }
@@ -397,6 +429,7 @@ export class RefreshScheduler implements vscode.Disposable {
     this.retryCount = 0;
     this.isThrottled = false;
     this.consecutiveUnchangedCount = 0;
+    this.consecutiveNetworkFailures = 0;
   }
 
   public dispose(): void {

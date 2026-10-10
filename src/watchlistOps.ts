@@ -135,9 +135,13 @@ export class WatchlistOps {
 
     // ── Step 4: 写入 settings.json ───────────────────────────────
     let finalType = detected.type;
+    let symToSave = sym;
     if (detected.alternativeType) {
       if (detected.alternativeGroup && targetGroup.toLowerCase().includes(detected.alternativeGroup.toLowerCase())) {
         finalType = detected.alternativeType;
+        if (finalType === "CRYPTO" && !/(USDT|USDC|FDUSD|BUSD|BTC|ETH)$/i.test(symToSave)) {
+          symToSave = `${symToSave.toUpperCase()}USDT`;
+        }
       } else if (targetGroup.includes("港股") || /\bhk\b/i.test(targetGroup)) {
         finalType = "HK_STOCK";
       } else if (targetGroup.includes("美股") || /\bus\b/i.test(targetGroup)) {
@@ -149,7 +153,7 @@ export class WatchlistOps {
       ...watchlist,
       [targetGroup]: [
         ...groupItems,
-        { symbol: sym, name: finalName, type: finalType },
+        { symbol: symToSave, name: finalName, type: finalType },
       ],
     };
 

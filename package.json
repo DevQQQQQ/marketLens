@@ -2,16 +2,16 @@
 	"name": "marketlens",
 	"displayName": "%displayName%",
 	"description": "%description%",
-	"version": "1.2.4",
+	"version": "1.2.5",
 	"publisher": "devqqqqq",
 	"repository": {
 		"type": "git",
-		"url": "https://github.com/DevQQQQQ/marketLens"
+		"url": "https://github.com/DevQQQQQ/MarketLens"
 	},
 	"bugs": {
-		"url": "https://github.com/DevQQQQQ/marketLens/issues"
+		"url": "https://github.com/DevQQQQQ/MarketLens/issues"
 	},
-	"homepage": "https://github.com/DevQQQQQ/marketLens",
+	"homepage": "https://github.com/DevQQQQQ/MarketLens",
 	"license": "MIT",
 	"engines": {
 		"vscode": "^1.85.0"

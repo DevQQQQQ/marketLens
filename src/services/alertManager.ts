@@ -10,23 +10,17 @@ try {
   vscodeModule = require("vscode");
 } catch (_) {}
 
+import { readConfig } from "../utils/config.ts";
+
 function readConfigFallback(): Partial<MarketLensConfig> {
   try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { readConfig } = require("../utils/config.ts");
     return readConfig();
   } catch (_) {
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const { readConfig } = require("../utils/config");
-      return readConfig();
-    } catch (_) {
-      return {
-        alerts: {},
-        alertNotificationMode: "both",
-        alertCooldownMinutes: 15,
-      };
-    }
+    return {
+      alerts: {},
+      alertNotificationMode: "both",
+      alertCooldownMinutes: 15,
+    };
   }
 }
 
@@ -93,7 +87,7 @@ export class AlertManager {
 
       const normSym = normalizeSymbolKey(q.symbol);
       const normId  = q.id ? normalizeSymbolKey(q.id) : undefined;
-      const rawTicker = q.symbol.toLowerCase().replace(/^(us|hk|sh|sz|bj)[\._\-]?/i, "");
+      const rawTicker = q.symbol.toLowerCase().replace(/^(us|hk|sh|sz|bj)[\._\-\/]?/i, "");
 
       // 多键尝试匹配预警规则
       const matchedKey =
@@ -208,8 +202,8 @@ export class AlertManager {
       this.statusBar.flashAlert(statusText, 15000);
     }
 
-    // 右下角轻量非模态浮窗通道
-    if (mode === "notification" || mode === "both") {
+    // 右下角轻量非模态浮窗通道：脱敏态下完全静音，严防摸鱼露馅
+    if (!masked && (mode === "notification" || mode === "both")) {
       const muteAction = `静音 ${config.alertCooldownMinutes || 15} 分钟`;
       const settingsAction = "管理预警";
       const notifyFn = evt.type === "below"

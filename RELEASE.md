@@ -29,7 +29,7 @@ npm run package
 
 ### 方式二：指定输出版本文件名
 ```powershell
-npx @vscode/vsce package -o marketlens-1.2.4.vsix --allow-missing-repository --no-dependencies
+npx @vscode/vsce package -o marketlens-1.2.5.vsix --allow-missing-repository --no-dependencies
 ```
 
 > **参数解析**：
@@ -44,7 +44,7 @@ npx @vscode/vsce package -o marketlens-1.2.4.vsix --allow-missing-repository --n
 
 ### 终端一键强制安装
 ```powershell
-code --install-extension marketlens-1.2.4.vsix --force
+code --install-extension marketlens-1.2.5.vsix --force
 ```
 
 ### VS Code 图形界面安装
@@ -71,7 +71,7 @@ code --install-extension marketlens-1.2.4.vsix --force
   npx ovsx publish -p <YOUR_OVSX_PAT> --no-dependencies
   ```
 
-> 💡 **GitHub Actions 自动化**：推送版本 tag（如 `git tag v1.2.4 && git push origin v1.2.4`）后，`.github/workflows/release.yml` 将自动并发打包并同时发布到双平台。
+> 💡 **GitHub Actions 自动化**：推送版本 tag（如 `git tag v1.2.5 && git push origin v1.2.5`）后，`.github/workflows/release.yml` 将自动并发打包并同时发布到双平台。
 
 ---
 

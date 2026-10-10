@@ -261,14 +261,27 @@ test("StatusBar - 正常渲染、轮播、伪装与老板键模式", async () =>
 
   bar.setQuotes(quotes);
   bar.show();
+  assert.strictEqual(bar.isBossKeyActive(), false, "初始化后老板键必须为未激活");
+
   bar.setMaskMode(true);
   bar.setColorNeutral(true);
   bar.setColorScheme("redUpGreenDown");
+
+  // 老板键激活测试：状态栏隐藏且老板键状态变为 true
   bar.toggleBossKey(true);
+  assert.strictEqual(bar.isBossKeyActive(), true, "激活老板键后状态必须为 true");
+
+  // 老板键解除测试：状态栏恢复
   bar.toggleBossKey(false);
+  assert.strictEqual(bar.isBossKeyActive(), false, "解除老板键后状态必须为 false");
+
+  // 清空行情测试：状态栏清空隐藏
   bar.setQuotes([]);
+  assert.strictEqual(bar.isCarouselRunning(), false, "行情为空时轮播定时器必须停止");
+
   bar.hide();
   bar.dispose();
+  assert.strictEqual(bar.isCarouselRunning(), false, "dispose 后轮播定时器必须停止");
 });
 
 test("SettingsWebviewPanel - 白名单校验与面板生命周期", async () => {

@@ -1586,7 +1586,7 @@ export function getSettingsWebviewHtml(
           if (d.watchlist !== undefined) currentWatchlist = d.watchlist || {};
           renderAlertTable(currentWatchlist, currentAlerts);
 
-        } else if (msg.command === 'proxyDetected' || msg.command === 'portDetected') {
+        } else if (msg.command === 'proxyDetected') {
           var port = msg.port;
           if (!port && msg.url) {
             var m = msg.url.match(/:(\d{1,5})/);
@@ -1598,7 +1598,6 @@ export function getSettingsWebviewHtml(
               input.value = String(port);
               input.setAttribute('data-last-valid', String(port));
             }
-            sendUpdate('proxyPort', port);
             showToast('✅ 成功检测并匹配可用代理端口: ' + port);
           } else {
             showToast('❌ 未探测到活跃代理端口');

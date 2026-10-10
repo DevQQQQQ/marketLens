@@ -111,16 +111,6 @@ export class SettingsWebviewPanel {
         switch (message.command) {
           case "getSettings":
             this.sendCurrentSettings();
-            // 自动静默异步探测本机真实活跃代理端口：若探测到了真实活跃端口，立即精准通知并更新界面！
-            detectAvailablePort().then((detectedPort) => {
-              if (detectedPort) {
-                this._panel.webview.postMessage({
-                  command: "portDetected",
-                  port: detectedPort,
-                  url: `http://127.0.0.1:${detectedPort}`,
-                });
-              }
-            }).catch(() => {});
             break;
           case "updateSetting":
             if (message.key && ALLOWED_CONFIG_KEYS.has(message.key)) {
