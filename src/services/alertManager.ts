@@ -1,16 +1,13 @@
 // src/services/alertManager.ts
-import type * as vscodeTypes from "vscode";
+import * as vscode from "vscode";
 import type { MarketItem, MarketLensConfig, PriceAlertItem } from "../types/index.ts";
-import { normalizeSymbolKey } from "../utils/symbolHelper.ts";
+import { normalizeSymbolKey, stripMarketPrefix } from "../utils/symbolHelper.ts";
 import { isDisplayMasked } from "../utils/maskState.ts";
 import type { StatusBar } from "../ui/statusBar.ts";
-
-let vscodeModule: typeof vscodeTypes | undefined;
-try {
-  vscodeModule = require("vscode");
-} catch (_) {}
-
 import { readConfig } from "../utils/config.ts";
+
+/** 默认预警冷却时间（分钟） */
+export const DEFAULT_ALERT_COOLDOWN_MINUTES = 15;
 
 function readConfigFallback(): Partial<MarketLensConfig> {
   try {
@@ -18,8 +15,8 @@ function readConfigFallback(): Partial<MarketLensConfig> {
   } catch (_) {
     return {
       alerts: {},
-      alertNotificationMode: "both",
-      alertCooldownMinutes: 15,
+      alertNotificationMode: "notification",
+      alertCooldownMinutes: DEFAULT_ALERT_COOLDOWN_MINUTES,
     };
   }
 }
@@ -44,7 +41,7 @@ export class AlertManager {
   /**
    * 手动对指定标的加设静音冷却时间（毫秒）
    */
-  public mute(symbolKey: string, minutes: number = 15): void {
+  public mute(symbolKey: string, minutes: number = DEFAULT_ALERT_COOLDOWN_MINUTES): void {
     const normKey = normalizeSymbolKey(symbolKey) || symbolKey.toLowerCase();
     const expiry = Date.now() + minutes * 60 * 1000;
     this.cooldownMap.set(`${normKey}:above`, expiry);
@@ -78,7 +75,7 @@ export class AlertManager {
       return [];
     }
 
-    const cooldownMs = Math.max(1, config.alertCooldownMinutes || 15) * 60 * 1000;
+    const cooldownMs = Math.max(1, config.alertCooldownMinutes || DEFAULT_ALERT_COOLDOWN_MINUTES) * 60 * 1000;
     const now = Date.now();
     const triggeredEvents: AlertTriggerEvent[] = [];
 
@@ -87,7 +84,7 @@ export class AlertManager {
 
       const normSym = normalizeSymbolKey(q.symbol);
       const normId  = q.id ? normalizeSymbolKey(q.id) : undefined;
-      const rawTicker = q.symbol.toLowerCase().replace(/^(us|hk|sh|sz|bj)[\._\-\/]?/i, "");
+      const rawTicker = stripMarketPrefix(q.symbol);
 
       // 多键尝试匹配预警规则
       const matchedKey =
@@ -207,18 +204,18 @@ export class AlertManager {
       const muteAction = `静音 ${config.alertCooldownMinutes || 15} 分钟`;
       const settingsAction = "管理预警";
       const notifyFn = evt.type === "below"
-        ? vscodeModule?.window?.showWarningMessage
-        : vscodeModule?.window?.showInformationMessage;
+        ? vscode.window?.showWarningMessage
+        : vscode.window?.showInformationMessage;
 
       if (typeof notifyFn === "function") {
         void notifyFn(alertMessage, muteAction, settingsAction).then((action?: string) => {
           if (action === muteAction) {
             this.mute(evt.symbolKey, config.alertCooldownMinutes || 15);
             if (!masked) {
-              vscodeModule?.window?.setStatusBarMessage(`$(bell-slash) 已静音 ${displayName} 预警 ${config.alertCooldownMinutes || 15} 分钟`, 3000);
+              vscode.window?.setStatusBarMessage(`$(bell-slash) 已静音 ${displayName} 预警 ${config.alertCooldownMinutes || 15} 分钟`, 3000);
             }
           } else if (action === settingsAction) {
-            void vscodeModule?.commands?.executeCommand("marketlens.openSettings");
+            void vscode.commands?.executeCommand("marketlens.openSettings");
           }
         });
       }

@@ -257,10 +257,11 @@ export class DexScreenerService {
         });
       }
       return { items, networkError: false };
-    } catch (err: any) {
+    } catch (err: unknown) {
       // 有 err.response 说明是 HTTP 业务错误（如 404 合约不存在），不算网络故障
-      const isNetworkError = !err?.response;
-      logger.error(`[DexScreenerService] 批量拉取代币行情失败: ${err?.message || err}`, err);
+      const axiosErr = err as { response?: unknown; message?: string } | null | undefined;
+      const isNetworkError = !axiosErr?.response;
+      logger.error(`[DexScreenerService] 批量拉取代币行情失败: ${axiosErr?.message || String(err)}`, err);
       return { items: [], networkError: isNetworkError };
     }
   }

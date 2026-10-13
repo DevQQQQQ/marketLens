@@ -3,8 +3,8 @@ import * as vscode from "vscode";
 import { detectAvailablePort, getCachedWorkingPort, resetProxyCache, DEFAULT_PROXY_PORT, DEFAULT_PROXY_URL } from "../services/network.ts";
 import { getSettingsWebviewHtml } from "./settingsHtml.ts";
 import { logger } from "../utils/logger.ts";
-import type { MarketItem } from "../types/index.ts";
-import { normalizeSymbolKey, resolveItemDisplayName } from "../utils/symbolHelper.ts";
+import type { MarketItem, WatchlistConfig, GroupSortMode } from "../types/index.ts";
+import { normalizeSymbolKey, stripMarketPrefix, resolveItemDisplayName } from "../utils/symbolHelper.ts";
 import {
   readConfig,
   persistProxyToAllSections,
@@ -60,7 +60,7 @@ function isAllowedUrl(urlString: string): boolean {
 
 export class SettingsWebviewPanel {
   public static currentPanel: SettingsWebviewPanel | undefined;
-  public static onDidUpdateSetting?: (key: string, value: any) => void;
+  public static onDidUpdateSetting?: (key: string, value: unknown) => void;
   public static getQuoteCache?: () => Map<string, MarketItem>;
   public static globalState?: vscode.Memento;
   private readonly _panel: vscode.WebviewPanel;
@@ -134,7 +134,9 @@ export class SettingsWebviewPanel {
                       const parsed = new URL(currentUrl);
                       parsed.port = String(port);
                       pUrl = parsed.toString().replace(/\/$/, "");
-                    } catch (_) {}
+                    } catch (err) {
+                      logger.debug("[SettingsWebview] parse currentUrl failed", err);
+                    }
                     await persistProxyToAllSections(cfg, pUrl, port);
                     this.sendCurrentSettings();
                   }
@@ -145,7 +147,9 @@ export class SettingsWebviewPanel {
                   try {
                     const u = new URL(pUrl);
                     if (u.port) port = parseInt(u.port, 10);
-                  } catch (_) {}
+                  } catch (err) {
+                    logger.debug("[SettingsWebview] parse proxyUrl port failed", err);
+                  }
                   await persistProxyToAllSections(cfg, pUrl, port);
                   this.sendCurrentSettings();
                 } else if (message.key === "statusBar.enabled") {
@@ -187,7 +191,9 @@ export class SettingsWebviewPanel {
               try {
                 SettingsWebviewPanel.onDidUpdateSetting?.("proxyPort", port);
                 SettingsWebviewPanel.onDidUpdateSetting?.("proxyUrl", url);
-              } catch (_) {}
+              } catch (err) {
+                logger.warn("[SettingsWebview] notify proxy update failed", err);
+              }
             }
             this._panel.webview.postMessage({
               command: "proxyDetected",
@@ -232,7 +238,9 @@ export class SettingsWebviewPanel {
             if (confirm === "确认清空") {
               try {
                 SettingsWebviewPanel.onDidUpdateSetting?.("alerts", {});
-              } catch (_) {}
+              } catch (err) {
+                logger.warn("[SettingsWebview] notify clearAllAlerts failed", err);
+              }
               const cfg = vscode.workspace.getConfiguration("marketlens");
               await cfg.update("alerts", {}, vscode.ConfigurationTarget.Global);
               this.sendCurrentSettings();
@@ -291,7 +299,9 @@ export class SettingsWebviewPanel {
     // 1. 立即同步重置内存状态（0延迟清空树节点 🔔 图标与状态栏预警）
     try {
       SettingsWebviewPanel.onDidUpdateSetting?.("restoreDefaults", true);
-    } catch (_) {}
+    } catch (err) {
+      logger.warn("[SettingsWebview] notify restoreDefaults failed", err);
+    }
 
     const cfg = vscode.workspace.getConfiguration("marketlens");
     // 先清空核心 watchlist 与价格预警 alerts
@@ -327,8 +337,8 @@ export class SettingsWebviewPanel {
     }
 
     const cfg = vscode.workspace.getConfiguration("marketlens");
-    const currentWatchlist = cfg.get<Record<string, any>>("watchlist", {});
-    const emptyWatchlist: Record<string, any[]> = {};
+    const currentWatchlist = cfg.get<WatchlistConfig>("watchlist", {});
+    const emptyWatchlist: WatchlistConfig = {};
     for (const group of Object.keys(currentWatchlist)) {
       emptyWatchlist[group] = [];
     }
@@ -342,7 +352,9 @@ export class SettingsWebviewPanel {
     // 立即同步清空内存列表，状态栏立刻清空并隐藏
     try {
       SettingsWebviewPanel.onDidUpdateSetting?.("watchlist", emptyWatchlist);
-    } catch (_) {}
+    } catch (err) {
+      logger.warn("[SettingsWebview] notify clearWatchlist failed", err);
+    }
 
     await cfg.update("watchlist", emptyWatchlist, vscode.ConfigurationTarget.Global);
 
@@ -356,7 +368,7 @@ export class SettingsWebviewPanel {
   public static async exportSettings(globalState?: vscode.Memento): Promise<boolean> {
     const config = readConfig();
     const targetState = globalState || SettingsWebviewPanel.globalState;
-    const savedSortModes = targetState?.get<Record<string, any>>("marketlens.groupSortModes", {}) || {};
+    const savedSortModes = targetState?.get<Record<string, GroupSortMode>>("marketlens.groupSortModes", {}) || {};
     const version = vscode.extensions.getExtension("devqqqqq.marketlens")?.packageJSON?.version;
     return await exportSettingsToFile(config, savedSortModes, version);
   }
@@ -421,7 +433,7 @@ export class SettingsWebviewPanel {
       watchlist:                (() => {
         const rawWatchlist = config.watchlist || {};
         const quoteCache = SettingsWebviewPanel.getQuoteCache?.();
-        const resolvedWatchlist: Record<string, any[]> = {};
+        const resolvedWatchlist: WatchlistConfig = {};
 
         for (const [grp, items] of Object.entries(rawWatchlist)) {
           resolvedWatchlist[grp] = (items || []).map((it) => {
@@ -431,7 +443,7 @@ export class SettingsWebviewPanel {
             let cached: MarketItem | undefined;
             if (quoteCache && sym) {
               const normKey = normalizeSymbolKey(sym);
-              const rawTicker = sym.toLowerCase().replace(/^(us|hk|sh|sz|bj)[\._\-]?/i, "");
+              const rawTicker = stripMarketPrefix(sym);
               cached =
                 quoteCache.get(normKey) ||
                 quoteCache.get(sym) ||
@@ -441,7 +453,7 @@ export class SettingsWebviewPanel {
             const finalName = resolveItemDisplayName(confName, sym, cached);
             return typeof it === "object"
               ? { ...it, name: finalName }
-              : { symbol: sym, name: finalName };
+              : { symbol: sym, name: finalName, type: cached?.type || "A_SHARE" };
           });
         }
         return resolvedWatchlist;

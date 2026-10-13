@@ -180,7 +180,9 @@ export function registerCommands(
         // 1. 关闭左侧侧边栏（如果处于开启状态）
         try {
           await vscode.commands.executeCommand("workbench.action.closeSidebar");
-        } catch (_) {}
+        } catch (err) {
+          logger.debug("[toggleBossKey] closeSidebar failed", err);
+        }
 
         // 2. 将自选树视图打码脱敏（激活老板键状态）
         treeProvider.setBossKey(true);
@@ -202,7 +204,9 @@ export function registerCommands(
         // 2. 重新唤醒并展开左侧自选侧边栏
         try {
           await vscode.commands.executeCommand("workbench.view.extension.marketlens-container");
-        } catch (_) {}
+        } catch (err) {
+          logger.debug("[toggleBossKey] open container failed", err);
+        }
 
         // 3. 底部状态提示（此时已退出专注模式，回显安全）
         emitStatusMessage(statusBar, "$(eye) MarketLens 行情已恢复", 3000);
@@ -374,12 +378,16 @@ export function registerCommands(
         // 1. 立即触发树视图轻量变更，使 VS Code 主动销毁/收起当前的 Hover 浮层，彻底根除停留的蓝色 focus 边框
         try {
           treeProvider.notifyChange();
-        } catch (_) {}
+        } catch (err) {
+          logger.debug("[copyCode] notifyChange failed", err);
+        }
 
         // 2. 转移焦点至自选侧边栏，确保焦点回归正常上下文
         try {
           await vscode.commands.executeCommand("marketlens.watchlist.focus");
-        } catch (_) {}
+        } catch (err) {
+          logger.debug("[copyCode] focus watchlist failed", err);
+        }
       }
     )
   );

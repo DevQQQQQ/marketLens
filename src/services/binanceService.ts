@@ -138,8 +138,9 @@ export class BinanceService {
         this.symbolFailureCounts.clear();
 
         return rawList.map((item) => this.parseTickerItem(item));
-      } catch (err: any) {
-        if (err?.response?.status === 400 || err?.status === 400 || String(err?.message || "").includes("400")) {
+      } catch (err: unknown) {
+        const axiosErr = err as { response?: { status?: number }; status?: number; message?: string } | null | undefined;
+        if (axiosErr?.response?.status === 400 || axiosErr?.status === 400 || String(axiosErr?.message || "").includes("400")) {
           is400Error = true;
         }
       }
@@ -164,8 +165,9 @@ export class BinanceService {
           this.symbolFailureCounts.delete(sym);
           this.symbolFailureCounts.delete(s);
           successfulItems.push(this.parseTickerItem(item));
-        } catch (err: any) {
-          const is400 = err?.response?.status === 400 || err?.status === 400 || String(err?.message || "").includes("400");
+        } catch (err: unknown) {
+          const axiosErr = err as { response?: { status?: number }; status?: number; message?: string } | null | undefined;
+          const is400 = axiosErr?.response?.status === 400 || axiosErr?.status === 400 || String(axiosErr?.message || "").includes("400");
           const failCount = (this.symbolFailureCounts.get(s) || 0) + 1;
           this.symbolFailureCounts.set(s, failCount);
 

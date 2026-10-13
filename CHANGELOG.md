@@ -5,6 +5,31 @@ All notable changes to the "MarketLens" extension will be documented in this fil
 
 ## [Unreleased]
 
+## [1.2.6] - 2026-10-13
+
+<details>
+<summary><b>🛡️ 调度排队重试、类型安全清零与弱网退避感知加固 (Stability & Quality Hardening)</b></summary>
+
+- **🛡️ 刷新并发排队与调度重试机制**：
+    - 修复手动或自动触发 `refreshGroup()` 时，由于前序网络请求未完成导致的静默丢弃问题；
+    - 引入单组重试排队机制（最多重试 2 次）并在状态栏及日志中明示跳过与排队状态，保障用户手动点击刷新的可靠反馈。
+- **🔒 动态引入收口与类型安全 100% 收窄**：
+    - 将 `AlertManager` 中的动态 `require("vscode")` 统一为静态 `import * as vscode`，彻底消除 esbuild 单文件打包后的潜在隐患；
+    - 全面重构 `TreeView<any>` 为严格联合类型 `TreeView<GroupItem | StockItem>`，收窄 `watchlistOps` 中残留的 5 处 `err: any`，实现全仓生产源码 TypeScript `any` 100% 清零。
+- **⏱️ 网络故障退避状态透明感知**：
+    - 状态栏与调度器深度接线，在持续断网或接口受限触发指数退避（5s~60s）时，底部状态栏 Tooltip 实时呈现「⚠️ 行情连接异常，已进入退避重试（连续失败 N 次，Xs 后重试）」，提升离线诊断透明度。
+- **🌿 自选侧边栏空态引导（Views Welcome）**：
+    - 在 `package.json` 注册 `viewsWelcome` 贡献点并补齐中英双语国际化文案，在自选为空或市场全部关闭时友好呈现「➕ 添加标的」、「⚙️ 打开设置」与「🔄 恢复默认」快捷引导。
+- **🔍 标的前缀剥离统一与指纹幂等**：
+    - 封装并导出统一工具函数 `stripMarketPrefix()`，全面收拢各模块散落的正则逻辑；
+    - 修复 `getWatchlistFingerprint()` 归一化语义，确保不同前缀书写形式同一标的的指纹完全幂等，杜绝不必要的全量重拉。
+- **⚠️ 全链路异常捕获与超时常量化治理**：
+    - 针对设置面板、命令派发与网络探测模块的静默 `catch` 路径全面补齐 `logger.warn` 与 `logger.debug` 跟踪日志；
+    - 提取端口探活超时常量 `PORT_PROBE_TIMEOUT_MS = 600`，全项目超时与端口魔法数字 100% 常量化。
+- **🧪 单元测试网深度扩充**：
+    - 补充前缀剥离规则、退避状态清理、超时常量契约及指纹幂等性断言，原生单测用例由 84 项扩充至 88 项且持续保持 100% 全绿。
+</details>
+
 ## [1.2.5] - 2026-10-10
 
 <details>

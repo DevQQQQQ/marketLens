@@ -128,6 +128,14 @@ export function normalizeSymbolKey(sym?: string): string {
 }
 
 /**
+ * 集中统一剥离标的的市场/交易所前缀（如 sh/sz/bj/hk/us），用于弱规则模糊匹配
+ */
+export function stripMarketPrefix(sym: string): string {
+  if (!sym) return "";
+  return sym.toLowerCase().replace(/^(us|hk|sh|sz|bj)[\._\-\/]?/i, "");
+}
+
+/**
  * 嵌入 Webview 设置面板前端 JS 的标的归一化函数体源码
  * （单一真相源导出，Webview 沙箱直接注入消费，杜绝前后端正则分支漂移）
  */
@@ -435,17 +443,22 @@ export function sanitizeWatchlist(raw: unknown): Record<string, WatchConfigItem[
  * 仅当有标的新增或删除（即全局监控标的集合改变）时指纹才会改变
  * 同组拖拽重排、跨组移动等仅改变本地展示层级，不会改变此指纹，避免重复触发全量网络请求
  */
-export function getWatchlistFingerprint(watchlist: Record<string, any[]>): string {
+export type RawWatchlistItem = unknown;
+export type RawWatchlistMap = Record<string, RawWatchlistItem[]>;
+
+export function getWatchlistFingerprint(watchlist: RawWatchlistMap): string {
   const allSymbols = new Set<string>();
   for (const items of Object.values(watchlist || {})) {
     for (const it of items || []) {
-      const rawSym = typeof it === "string" ? it : it?.symbol;
-      if (typeof rawSym !== "string") {
-        continue;
-      }
-      const s = rawSym.toLowerCase().trim();
-      if (s) {
-        allSymbols.add(s);
+      const rawSym =
+        typeof it === "string"
+          ? it
+          : it && typeof it === "object" && "symbol" in it
+            ? (it as Record<string, unknown>).symbol
+            : undefined;
+      const norm = typeof rawSym === "string" ? normalizeSymbolKey(rawSym) : undefined;
+      if (norm) {
+        allSymbols.add(norm);
       }
     }
   }
@@ -479,7 +492,7 @@ export interface ExtractedTargets {
  * 纯算法函数：从 watchlist 中按板块开关和闭市状态分桶提取抓取代码
  */
 export function extractTargetsFromWatchlist(
-  watchlist: Record<string, any[]>,
+  watchlist: Record<string, Array<{ symbol?: string; name?: string; type?: string }>>,
   options: TargetExtractionOptions = {}
 ): ExtractedTargets {
   const {
@@ -700,7 +713,7 @@ export function resolveItemDisplayName(
 export function extractStatusBarQuotes<
   T extends { symbol: string; name?: string; type?: string; price?: number; changePercent?: number }
 >(
-  watchlist: Record<string, any[]>,
+  watchlist: Record<string, Array<{ symbol?: string; name?: string; type?: string }>>,
   quoteCache: Map<string, T>,
   options: StatusBarQuotesOptions = {}
 ): T[] {
@@ -765,7 +778,7 @@ export function extractStatusBarQuotes<
       seenSymbols.add(symKey);
 
       const normKey = normalizeSymbolKey(item.symbol);
-      const rawTicker = item.symbol.toLowerCase().replace(/^(us|hk|sh|sz|bj)[\._\-]?/i, "");
+      const rawTicker = stripMarketPrefix(item.symbol);
       const cached =
         quoteCache.get(normKey) ||
         quoteCache.get(item.symbol) ||
@@ -805,12 +818,12 @@ export interface ReorderItemDescriptor {
  * 无论单项或多项拖拽，均在内存中一次性完成字典变换，避免向磁盘发起多次重复写入
  * 若未发生有效变动返回 null
  */
-export function batchReorderWatchlist(
-  currentWatchlist: Record<string, any[]>,
+export function batchReorderWatchlist<T extends { symbol?: string } = WatchConfigItem>(
+  currentWatchlist: Record<string, T[]>,
   itemsToMove: ReorderItemDescriptor[],
   targetGroup: string,
   targetSymbol?: string
-): Record<string, any[]> | null {
+): Record<string, T[]> | null {
   if (!itemsToMove || !itemsToMove.length || !currentWatchlist[targetGroup]) {
     return null;
   }
@@ -834,7 +847,7 @@ export function batchReorderWatchlist(
   }
 
   // 3. 克隆 watchlist 字典
-  const updated: Record<string, any[]> = {};
+  const updated: Record<string, T[]> = {};
   for (const [grp, itms] of Object.entries(currentWatchlist)) {
     updated[grp] = [...(itms || [])];
   }
@@ -846,12 +859,12 @@ export function batchReorderWatchlist(
   if (targetSymbol) {
     const origTargetIndex = targetGroupItemsBefore.findIndex(
       (it) =>
-        isSameSymbol(it?.symbol, targetSymbol) ||
+        isSameSymbol(it?.symbol || "", targetSymbol) ||
         it?.symbol?.toLowerCase() === targetSymbol.toLowerCase()
     );
     const firstSourceIndex = targetGroupItemsBefore.findIndex(
       (it) =>
-        isSameSymbol(it?.symbol, itemsToMove[0].sourceSymbol) ||
+        isSameSymbol(it?.symbol || "", itemsToMove[0].sourceSymbol) ||
         it?.symbol?.toLowerCase() === itemsToMove[0].sourceSymbol.toLowerCase()
     );
     if (origTargetIndex !== -1 && firstSourceIndex !== -1 && firstSourceIndex < origTargetIndex) {
@@ -860,7 +873,7 @@ export function batchReorderWatchlist(
   }
 
   // 4. 依次摘除需要移动的 items
-  const extractedItems: any[] = [];
+  const extractedItems: T[] = [];
   for (const descriptor of itemsToMove) {
     const { sourceGroup, sourceSymbol } = descriptor;
     const groupList = updated[sourceGroup];
@@ -868,7 +881,7 @@ export function batchReorderWatchlist(
 
     const idx = groupList.findIndex(
       (it) =>
-        isSameSymbol(it?.symbol, sourceSymbol) ||
+        isSameSymbol(it?.symbol || "", sourceSymbol) ||
         it?.symbol?.toLowerCase() === sourceSymbol.toLowerCase()
     );
     if (idx !== -1) {
@@ -890,7 +903,7 @@ export function batchReorderWatchlist(
   if (targetSymbol) {
     const newTargetIndex = targetList.findIndex(
       (it) =>
-        isSameSymbol(it?.symbol, targetSymbol) ||
+        isSameSymbol(it?.symbol || "", targetSymbol) ||
         it?.symbol?.toLowerCase() === targetSymbol.toLowerCase()
     );
 
@@ -915,13 +928,13 @@ export function batchReorderWatchlist(
  * 纯算法函数：计算同组/跨组拖拽重排后的新 watchlist 结构
  * 若未发生有效变动返回 null
  */
-export function reorderWatchlist(
-  currentWatchlist: Record<string, any[]>,
+export function reorderWatchlist<T extends { symbol?: string } = WatchConfigItem>(
+  currentWatchlist: Record<string, T[]>,
   sourceGroup: string,
   sourceSymbol: string,
   targetGroup: string,
   targetSymbol?: string
-): Record<string, any[]> | null {
+): Record<string, T[]> | null {
   return batchReorderWatchlist(
     currentWatchlist,
     [{ sourceGroup, sourceSymbol }],
@@ -941,7 +954,7 @@ export function reorderWatchlist(
  * @returns 实际被清理的失效缓存 Key 数量
  */
 export function pruneQuoteCache<T extends { symbol?: string; id?: string }>(
-  watchlist: Record<string, any[]>,
+  watchlist: Record<string, Array<{ symbol?: string; id?: string }>>,
   quoteCache: Map<string, T>
 ): number {
   if (!quoteCache || quoteCache.size === 0) {
@@ -966,7 +979,7 @@ export function pruneQuoteCache<T extends { symbol?: string; id?: string }>(
         activeIdentifiers.add(normKey.toLowerCase());
       }
 
-      const rawTicker = rawSym.toLowerCase().replace(/^(us|hk|sh|sz|bj)[\._\-]?/i, "");
+      const rawTicker = stripMarketPrefix(rawSym);
       if (rawTicker) {
         activeIdentifiers.add(rawTicker);
       }
@@ -1122,7 +1135,7 @@ export function decodeGbk(buffer: ArrayBuffer | Uint8Array): string {
 /**
  * 健壮的 HTML 实体转义函数，防御 XSS 与属性引号逃逸 (CWE-79)
  */
-export function escapeHtml(str: any): string {
+export function escapeHtml(str: unknown): string {
   if (str === null || str === undefined) {
     return "";
   }

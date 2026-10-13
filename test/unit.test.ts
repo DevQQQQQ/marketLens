@@ -7,13 +7,13 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { isSameSymbol, normalizeSymbolKey, normalizeUSCode, inferAShareExchange, normalizeAShareCode, resolveItemAssetType, resolveItemDisplayName, getWatchlistFingerprint, reorderWatchlist, batchReorderWatchlist, pruneQuoteCache, extractTargetsFromWatchlist, extractStatusBarQuotes, computeStatusBarEnabled, resolveTrendColors, chunkArray, decodeGbk, escapeHtml, ASSET_TYPE_TO_SECTION_MAP, NORMALIZE_SYMBOL_KEY_CLIENT_SCRIPT, isItemMarketClosed, isGroupMarketClosed, buildGroupNodeId, sanitizeWatchlist } from "../src/utils/symbolHelper.ts";
+import { isSameSymbol, normalizeSymbolKey, stripMarketPrefix, normalizeUSCode, inferAShareExchange, normalizeAShareCode, resolveItemAssetType, resolveItemDisplayName, getWatchlistFingerprint, reorderWatchlist, batchReorderWatchlist, pruneQuoteCache, extractTargetsFromWatchlist, extractStatusBarQuotes, computeStatusBarEnabled, resolveTrendColors, chunkArray, decodeGbk, escapeHtml, ASSET_TYPE_TO_SECTION_MAP, NORMALIZE_SYMBOL_KEY_CLIENT_SCRIPT, isItemMarketClosed, isGroupMarketClosed, buildGroupNodeId, sanitizeWatchlist } from "../src/utils/symbolHelper.ts";
 import { validateAndParseInput, isContractAddress, extractContractAddressFromUrl } from "../src/utils/inputValidator.ts";
 import { isAShareMarketOpen, isHKMarketOpen, isUSMarketOpen, isAShareHoliday, isHKHoliday, isUSHoliday, evaluateAdaptiveThrottle, getZonedTimeParts, beijingFormatter, newYorkFormatter, shouldSkipMarketPolling, MAX_COVERED_HOLIDAY_YEAR, checkHolidayCoverage, US_HOLIDAYS, HK_HOLIDAYS } from "../src/utils/marketHours.ts";
-import { validateAndNormalizeProxyUrl, parseProxy, resetProxyCache, getSystemProxyUrl, smartNetworkGet, getCachedWorkingPort, testLocalPort, DEFAULT_PROXY_PORT, DEFAULT_PROXY_URL, COMMON_PROXY_PORTS } from "../src/services/network.ts";
+import { validateAndNormalizeProxyUrl, parseProxy, resetProxyCache, getSystemProxyUrl, smartNetworkGet, getCachedWorkingPort, testLocalPort, DEFAULT_PROXY_PORT, DEFAULT_PROXY_URL, COMMON_PROXY_PORTS, DEFAULT_REQUEST_TIMEOUT_MS, SYSTEM_PROXY_FALLBACK_TIMEOUT_MS, QUICK_PROXY_PROBE_TIMEOUT_MS, PORT_PROBE_TIMEOUT_MS } from "../src/services/network.ts";
 import axios from "axios";
 import { isDisplayMasked, shouldAutoExitBossKey, canEmitUserFeedback, resolveMaskToggle, shouldBlockNodeCommand, MASKED_TOOLTIP_TEXT, resolveStockTooltip } from "../src/utils/maskState.ts";
-import { AlertManager } from "../src/services/alertManager.ts";
+import { AlertManager, DEFAULT_ALERT_COOLDOWN_MINUTES } from "../src/services/alertManager.ts";
 import { DexScreenerService } from "../src/services/dexScreenerService.ts";
 import { BinanceService } from "../src/services/binanceService.ts";
 import { AShareService } from "../src/services/aShareService.ts";
@@ -3027,7 +3027,7 @@ test("smartNetworkGet - 核心网络调度、直连模式、代理回退与熔�
       return { data: { status: "ok" }, status: 200, statusText: "OK", headers: {}, config };
     }) as any;
 
-    const resDirect = await smartNetworkGet("http://example.com/api", { mode: "direct" });
+    const resDirect = await smartNetworkGet<Record<string, string>>("http://example.com/api", { mode: "direct" });
     assert.strictEqual(resDirect.data.status, "ok");
     assert.strictEqual(interceptedConfig.proxy, false, "直连模式必须显式设置 proxy: false");
 
@@ -3037,7 +3037,7 @@ test("smartNetworkGet - 核心网络调度、直连模式、代理回退与熔�
       return { data: { price: "50000" }, status: 200, statusText: "OK", headers: {}, config };
     }) as any;
 
-    const resProxy = await smartNetworkGet("http://example.com/quote", {
+    const resProxy = await smartNetworkGet<Record<string, string>>("http://example.com/quote", {
       mode: "proxy",
       proxyUrl: "http://127.0.0.1:7890",
     });
@@ -3077,7 +3077,7 @@ test("smartNetworkGet - 核心网络调度、直连模式、代理回退与熔�
       throw new Error("unexpected port");
     }) as any;
 
-    const resSys = await smartNetworkGet("http://example.com/test", {
+    const resSys = await smartNetworkGet<Record<string, string>>("http://example.com/test", {
       mode: "proxy",
       proxyUrl: "http://127.0.0.1:10808",
     });
@@ -3304,6 +3304,222 @@ test("scheduler - 网络持续故障退避计数与自动复位守卫", async ()
     scheduler.dispose();
     await vscode.workspace.getConfiguration("marketlens").update("watchlist", originalWatchlist, vscode.ConfigurationTarget.Global);
   }
+});
+
+test("scheduler - refreshInterval 为 0 或负数时安全兜底 >= 1000ms 且 refreshGroup 并发冲突排队重试", async () => {
+  const { RefreshScheduler } = await import("../src/scheduler.ts");
+  const { GroupItem } = await import("../src/ui/watchlistProvider.ts");
+  const vscode = await import("vscode");
+
+  let groupPolled = 0;
+  let releaseSlowRefresh: (() => void) | undefined;
+
+  const mockMarketManager: any = {
+    clearInvalidCache: () => {},
+    pollAll: async (targets: any) => {
+      if (releaseSlowRefresh) {
+        const waitPromise = new Promise<void>((res) => {
+          const prev = releaseSlowRefresh!;
+          releaseSlowRefresh = () => {
+            prev();
+            res();
+          };
+        });
+        await waitPromise;
+      }
+      if (targets.aShares?.includes("sh600519") && targets.usStocks?.length === 0) {
+        groupPolled++;
+      }
+      return [];
+    },
+  };
+  const mockTreeProvider: any = {
+    setAlerts: () => {},
+    buildTree: () => {},
+    applyQuotes: () => {},
+    isEmpty: () => false,
+  };
+  let backoffArgs: { failures: number; seconds: number } | undefined;
+  const mockStatusBar: any = {
+    setQuotes: () => {},
+    show: () => {},
+    hide: () => {},
+    setNetworkBackoff: (failures: number, seconds: number) => {
+      backoffArgs = { failures, seconds };
+    },
+  };
+  const mockTreeView: any = { visible: true };
+
+  const scheduler = new RefreshScheduler({
+    marketManager: mockMarketManager,
+    treeProvider: mockTreeProvider,
+    statusBar: mockStatusBar,
+    treeView: mockTreeView,
+  });
+
+  const cfg = vscode.workspace.getConfiguration("marketlens");
+  const origInterval = cfg.get("refreshInterval");
+  const origWatchlist = cfg.get("watchlist");
+
+  try {
+    // 1. 验证 refreshInterval 设为 0 或负数时，scheduleNextTick 兜底 >= 1000ms，且退避状态同步到 StatusBar
+    await cfg.update("refreshInterval", -500, vscode.ConfigurationTarget.Global);
+    await cfg.update("watchlist", {
+      "A股": [{ symbol: "sh600519", name: "贵州茅台", type: "A_SHARE" }],
+      "美股": [{ symbol: "usAAPL", name: "Apple", type: "US_STOCK" }],
+    }, vscode.ConfigurationTarget.Global);
+
+    await scheduler.refresh(true);
+    await scheduler.refresh(true);
+    assert.strictEqual(scheduler.getConsecutiveNetworkFailures(), 2);
+    assert.ok(backoffArgs, "scheduleNextTick 必须调用 statusBar.setNetworkBackoff");
+    assert.strictEqual(backoffArgs!.failures, 2);
+    // standardInterval 兜底 >= 1000ms（当 refreshInterval = -500 时回退 5000ms 或 >= 1000ms），绝不为 0 或负数
+    assert.ok(backoffArgs!.seconds >= 1, `退避秒数必须 >= 1s (实际: ${backoffArgs!.seconds}s)`);
+
+    // 2. 验证 refreshGroup 在全量刷新进行中（isRefreshing = true）时不会静默丢弃，而是挂入 retryTimer 排队执行
+    scheduler.stop();
+    (scheduler as any).isRefreshing = true;
+    const dummyGroup = new GroupItem("A股", []);
+    await scheduler.refreshGroup(dummyGroup);
+
+    // 此时因 isRefreshing 为 true，尚未真正执行，但已挂出 retryTimer 且 retryCount === 1
+    assert.strictEqual(groupPolled, 0);
+    assert.strictEqual((scheduler as any).retryCount, 1, "refreshGroup 并发冲突时应递增 retryCount 并排队");
+    assert.ok((scheduler as any).retryTimer !== undefined, "refreshGroup 并发冲突时应挂出 retryTimer");
+
+    // 释放锁并等待 retryTimer (300ms) 自动触发完成分组刷新
+    (scheduler as any).isRefreshing = false;
+    await new Promise((r) => setTimeout(r, 360));
+    assert.strictEqual(groupPolled, 1, "retryTimer 到期后应自动补执行被阻塞的 refreshGroup");
+    assert.strictEqual((scheduler as any).retryCount, 0, "成功执行后 retryCount 应复位为 0");
+  } finally {
+    scheduler.dispose();
+    await cfg.update("refreshInterval", origInterval, vscode.ConfigurationTarget.Global);
+    await cfg.update("watchlist", origWatchlist, vscode.ConfigurationTarget.Global);
+  }
+});
+
+test("BinanceService & DexScreenerService - 失效黑名单 10 分钟 TTL 到期后自动解封恢复", () => {
+  const binance = new BinanceService();
+  const dex = new DexScreenerService();
+
+  const originalNow = Date.now;
+  let fakeNow = 1_700_000_000_000;
+  Date.now = () => fakeNow;
+
+  try {
+    const deadCoin = "DEADCOINUSDT";
+    const deadAddr = "0x000000000000000000000000000000000000dead";
+
+    // 1. 标记失效后立即处于抑制期
+    binance.markSymbolInvalidForTest(deadCoin);
+    (dex as any).markAddressInvalid(deadAddr);
+    assert.strictEqual(binance.isSymbolSuppressed(deadCoin), true);
+    assert.strictEqual(dex.isAddressSuppressed(deadAddr), true);
+
+    // 2. 推进 5 分钟（尚未满 10 分钟 TTL）：依然处于抑制期
+    fakeNow += 5 * 60 * 1000;
+    assert.strictEqual(binance.isSymbolSuppressed(deadCoin), true, "5分钟未满 TTL 仍应保持抑制");
+    assert.strictEqual(dex.isAddressSuppressed(deadAddr), true, "5分钟未满 TTL 仍应保持抑制");
+
+    // 3. 推进超过 10 分钟 TTL（+6 分钟，累计 11 分钟）：自动解封恢复并清理过期键
+    fakeNow += 6 * 60 * 1000;
+    assert.strictEqual(binance.isSymbolSuppressed(deadCoin), false, "超过 10 分钟 TTL 后币安失效缓存应自动解封");
+    assert.strictEqual(dex.isAddressSuppressed(deadAddr), false, "超过 10 分钟 TTL 后链上合约失效缓存应自动解封");
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("StatusBar & Extension - 网络退避 Tooltip 呈现与老板键期间 Webview 修改 maskMode 联动退出专注模式", async () => {
+  const { StatusBar } = await import("../src/ui/statusBar.ts");
+  const { activate, deactivate } = await import("../src/extension.ts");
+  const { SettingsWebviewPanel } = await import("../src/ui/settingsWebview.ts");
+  const vscode = await import("vscode");
+
+  // 1. 验证 StatusBar.setNetworkBackoff 在正常模式下追加退避告警 Tooltip，在伪装模式下不泄露
+  const bar = new StatusBar({ maskMode: false, colorNeutral: false });
+  try {
+    bar.setQuotes([
+      { id: "sh600519", symbol: "sh600519", name: "贵州茅台", type: "A_SHARE", price: 1800, changePercent: 1.2 },
+    ]);
+    bar.setNetworkBackoff(3, 12);
+    const normalTooltip = String((bar as any).barItem.tooltip || "");
+    assert.ok(
+      normalTooltip.includes("行情连接异常") && normalTooltip.includes("连续失败 3 次") && normalTooltip.includes("12s 后重试"),
+      `正常模式下状态栏 Tooltip 应包含网络退避重试提示，实际: ${normalTooltip}`
+    );
+
+    // 恢复正常后退避提示消失
+    bar.setNetworkBackoff(0, 0);
+    const recoveredTooltip = String((bar as any).barItem.tooltip || "");
+    assert.strictEqual(recoveredTooltip.includes("行情连接异常"), false, "网络恢复后应清除退避提示");
+  } finally {
+    bar.dispose();
+  }
+
+  // 2. 验证老板键（专注模式）激活期间，Webview 触发 onDidUpdateSetting("maskMode", true) 会自动解除老板键
+  const subscriptions: { dispose(): void }[] = [];
+  const mockContext: any = {
+    subscriptions,
+    extensionUri: vscode.Uri.file("/mock"),
+    extension: { packageJSON: { version: "1.2.6" } },
+    globalState: {
+      get: (_k: string, def: unknown) => def,
+      update: async () => {},
+    },
+  };
+
+  await activate(mockContext);
+  try {
+    // 先触发老板键进入隐身状态
+    await vscode.commands.executeCommand("marketlens.toggleBossKey");
+    // 此时通过 SettingsWebviewPanel.onDidUpdateSetting 修改 maskMode
+    assert.ok(typeof SettingsWebviewPanel.onDidUpdateSetting === "function");
+    SettingsWebviewPanel.onDidUpdateSetting!("maskMode", true);
+
+    // 再次调用 toggleBossKey 应当是从 false -> true（说明方才 maskMode 修改已自动将 bossKey 复位为 false）
+    await vscode.commands.executeCommand("marketlens.toggleBossKey");
+    // 再次恢复
+    await vscode.commands.executeCommand("marketlens.toggleBossKey");
+  } finally {
+    deactivate();
+    for (const sub of subscriptions) {
+      try { sub.dispose(); } catch (_) {}
+    }
+  }
+});
+
+test("audit - 魔法数字常量化与休市日历年度过期护栏验证 (M3 & M4)", () => {
+  // 1. 验证网络超时三元组常量、探活超时与预警冷却常量
+  assert.strictEqual(DEFAULT_REQUEST_TIMEOUT_MS, 5000);
+  assert.strictEqual(SYSTEM_PROXY_FALLBACK_TIMEOUT_MS, 2500);
+  assert.strictEqual(QUICK_PROXY_PROBE_TIMEOUT_MS, 1500);
+  assert.strictEqual(PORT_PROBE_TIMEOUT_MS, 600);
+  assert.strictEqual(DEFAULT_ALERT_COOLDOWN_MINUTES, 15);
+
+  // 2. 验证休市日历年度过期护栏：有效年份返回 true，超出上限年份返回 false 并按年度独立护栏拦截
+  assert.strictEqual(checkHolidayCoverage(new Date("2026-10-13")), true);
+  assert.strictEqual(checkHolidayCoverage(new Date("2027-12-31")), true);
+  assert.strictEqual(checkHolidayCoverage(new Date("2028-01-01")), false);
+  assert.strictEqual(checkHolidayCoverage(new Date("2029-01-01")), false);
+
+  // 3. 验证 stripMarketPrefix 跨格式统一剥离前缀 (P-3)
+  assert.strictEqual(stripMarketPrefix("hk00700"), "00700");
+  assert.strictEqual(stripMarketPrefix("hk/00700"), "00700");
+  assert.strictEqual(stripMarketPrefix("us.BRK/B"), "brk/b");
+  assert.strictEqual(stripMarketPrefix("us/AAPL"), "aapl");
+  assert.strictEqual(stripMarketPrefix("sh600519"), "600519");
+  assert.strictEqual(stripMarketPrefix("sz000001"), "000001");
+  assert.strictEqual(stripMarketPrefix("bj830799"), "830799");
+  assert.strictEqual(stripMarketPrefix("AAPL"), "aapl");
+  assert.strictEqual(stripMarketPrefix(""), "");
+
+  // 4. 验证 getWatchlistFingerprint 规范化一致性 (P-4)
+  const fp1 = getWatchlistFingerprint({ "美股": ["us.AAPL"] });
+  const fp2 = getWatchlistFingerprint({ "美股": ["AAPL"] });
+  assert.strictEqual(fp1, fp2, "不同前缀形式的同一标的指纹应完全相同，避免无意义全量重启");
 });
 
 

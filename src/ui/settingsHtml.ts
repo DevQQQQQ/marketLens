@@ -3,6 +3,8 @@ import { MARKET_SECTIONS } from "../utils/config.ts";
 import { NORMALIZE_SYMBOL_KEY_CLIENT_SCRIPT } from "../utils/symbolHelper.ts";
 import { DEFAULT_PROXY_PORT } from "../services/network.ts";
 
+import type { AlertsConfig, WatchlistConfig } from "../types/index.ts";
+
 export interface SettingsFormData {
 	autoRefresh?: boolean;
 	refreshInterval?: number;
@@ -35,10 +37,10 @@ export interface SettingsFormData {
 	alphaEnabled?: boolean;
 	alphaStatusBar?: boolean;
 	alphaNetworkMode?: string;
-	alerts?: Record<string, any>;
+	alerts?: AlertsConfig;
 	alertNotificationMode?: string;
 	alertCooldownMinutes?: number;
-	watchlist?: Record<string, any[]>;
+	watchlist?: WatchlistConfig;
 }
 
 export function getSettingsWebviewHtml(

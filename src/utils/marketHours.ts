@@ -159,17 +159,17 @@ export const US_HOLIDAYS = new Set<string>([
 
 export const MAX_COVERED_HOLIDAY_YEAR = 2027;
 
-let hasWarnedHolidayExpiry = false;
+const warnedHolidayYears = new Set<number>();
 
 /**
  * 节假日日历覆盖有效性护栏：
- * 若当前年份超出已知日历上限（2027），输出告警提示开发者更新休市日历，防止静默失效
+ * 若当前年份超出已知日历上限（2027），按年度去重输出告警提示开发者更新休市日历，防止静默失效
  */
 export function checkHolidayCoverage(date: Date = new Date()): boolean {
   const year = date.getFullYear();
   if (year > MAX_COVERED_HOLIDAY_YEAR) {
-    if (!hasWarnedHolidayExpiry) {
-      hasWarnedHolidayExpiry = true;
+    if (!warnedHolidayYears.has(year)) {
+      warnedHolidayYears.add(year);
       logger.warn(
         `[marketHours] 当前年份 (${year}) 超出已知节假日日历上限 (${MAX_COVERED_HOLIDAY_YEAR})，法定节假日休市判定可能失真，请及时更新休市日历。`
       );

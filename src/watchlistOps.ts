@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import { StockItem, WatchlistProvider } from "./ui/watchlistProvider.ts";
-import type { MarketItem, PriceAlertItem } from "./types/index.ts";
+import type { MarketItem, PriceAlertItem, WatchlistConfig, WatchConfigItem } from "./types/index.ts";
 import { isSameSymbol, normalizeSymbolKey, resolveItemDisplayName, batchReorderWatchlist, type ReorderItemDescriptor } from "./utils/symbolHelper.ts";
 import { validateAndParseInput } from "./utils/inputValidator.ts";
 import { readConfig } from "./utils/config.ts";
@@ -8,13 +8,13 @@ import { SettingsWebviewPanel } from "./ui/settingsWebview.ts";
 
 export interface WatchlistOpsContext {
   quoteCache: Map<string, MarketItem>;
-  rebuildTree: (customWatchlist?: Record<string, any[]>) => void;
+  rebuildTree: (customWatchlist?: WatchlistConfig) => void;
   treeProvider?: WatchlistProvider;
 }
 
 export class WatchlistOps {
   private readonly quoteCache: Map<string, MarketItem>;
-  private readonly rebuildTree: (customWatchlist?: Record<string, any[]>) => void;
+  private readonly rebuildTree: (customWatchlist?: WatchlistConfig) => void;
   private readonly treeProvider?: WatchlistProvider;
 
   constructor(context: WatchlistOpsContext) {
@@ -54,8 +54,8 @@ export class WatchlistOps {
 
       this.rebuildTree(newWatchlist);
       SettingsWebviewPanel.syncSettings();
-    } catch (err: any) {
-      vscode.window.showErrorMessage(`调整标的顺序失败: ${err?.message || err}`);
+    } catch (err: unknown) {
+      vscode.window.showErrorMessage(`调整标的顺序失败: ${(err as Error)?.message || String(err)}`);
     }
   }
 
@@ -83,8 +83,8 @@ export class WatchlistOps {
     const sym = detected.symbol;
 
     // ── Step 2: 读取当前 watchlist，让用户选择目标分组 ───────────
-    const watchlist: Record<string, any[]> =
-      vscode.workspace.getConfiguration("marketlens").get("watchlist", {});
+    const watchlist: WatchlistConfig =
+      vscode.workspace.getConfiguration("marketlens").get<WatchlistConfig>("watchlist", {});
 
     const existingGroups = Object.keys(watchlist);
     const sortedGroups = [
@@ -111,7 +111,7 @@ export class WatchlistOps {
     }
 
     // ── Step 3: 检查是否已存在（去重）───────────────────────────
-    const groupItems: any[] = watchlist[targetGroup] ?? [];
+    const groupItems: WatchConfigItem[] = watchlist[targetGroup] ?? [];
     const alreadyExists = groupItems.some(
       (item) => isSameSymbol(item?.symbol, sym) || item?.symbol?.toLowerCase() === sym.toLowerCase()
     );
@@ -171,9 +171,9 @@ export class WatchlistOps {
         `$(check) 已添加 "${displayDesc}" 到 ${targetGroup}`,
         3000
       );
-    } catch (err: any) {
+    } catch (err: unknown) {
       vscode.window.showErrorMessage(
-        `无法写入用户设置：${err?.message || err}。请检查 VS Code 的 settings.json 文件是否包含语法错误。`
+        `无法写入用户设置：${(err as Error)?.message || String(err)}。请检查 VS Code 的 settings.json 文件是否包含语法错误。`
       );
     }
   }
@@ -265,9 +265,9 @@ export class WatchlistOps {
       SettingsWebviewPanel.syncSettings();
 
       vscode.window.setStatusBarMessage(`$(pin) 已将 "${targetName || targetSymbol}" 置顶`, 3000);
-    } catch (err: any) {
+    } catch (err: unknown) {
       vscode.window.showErrorMessage(
-        `无法更新设置：${err?.message || err}。请检查 VS Code 的 settings.json 文件是否包含语法错误。`
+        `无法更新设置：${(err as Error)?.message || String(err)}。请检查 VS Code 的 settings.json 文件是否包含语法错误。`
       );
     }
   }
@@ -437,9 +437,9 @@ export class WatchlistOps {
       SettingsWebviewPanel.syncSettings();
 
       vscode.window.setStatusBarMessage(`$(trash) 已删除 "${targetName || targetSymbol}"`, 3000);
-    } catch (err: any) {
+    } catch (err: unknown) {
       vscode.window.showErrorMessage(
-        `无法更新设置：${err?.message || err}。请检查 VS Code 的 settings.json 文件是否包含语法错误。`
+        `无法更新设置：${(err as Error)?.message || String(err)}。请检查 VS Code 的 settings.json 文件是否包含语法错误。`
       );
     }
   }
@@ -599,8 +599,8 @@ export class WatchlistOps {
         `$(bell) 已设置【${targetName || targetSymbol}】预警规则`,
         3000
       );
-    } catch (err: any) {
-      vscode.window.showErrorMessage(`保存预警失败: ${err?.message || err}`);
+    } catch (err: unknown) {
+      vscode.window.showErrorMessage(`保存预警失败: ${(err as Error)?.message || String(err)}`);
     }
   }
 }

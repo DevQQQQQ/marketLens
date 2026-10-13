@@ -21,12 +21,12 @@ export interface MarketLensBackupData {
     proxyPort?: number;
     proxyUrl?: string;
 
-    fund?: any;
-    aShare?: any;
-    hkStock?: any;
-    usStock?: any;
-    binance?: any;
-    alpha?: any;
+    fund?: unknown;
+    aShare?: unknown;
+    hkStock?: unknown;
+    usStock?: unknown;
+    binance?: unknown;
+    alpha?: unknown;
 
     watchlist?: Record<string, WatchConfigItem[]>;
     alerts?: Record<string, PriceAlertItem>;
@@ -91,21 +91,23 @@ export function generateBackupData(
 /**
  * 校验并清洗备份数据（支持标准结构与直接 settings 平铺结构兼容）
  */
-export function validateBackupData(raw: any): ValidationResult {
+export function validateBackupData(raw: unknown): ValidationResult {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     return { valid: false, error: "备份文件内容必须是非空的 JSON 对象" };
   }
 
-  // 提取 settings 与 groupSortModes：兼容标准包装对象或平铺对象
-  let settingsCandidate: any;
-  let groupSortCandidate: any;
+  const rawObj = raw as Record<string, unknown>;
 
-  if (raw.settings && typeof raw.settings === "object" && !Array.isArray(raw.settings)) {
-    settingsCandidate = raw.settings;
-    groupSortCandidate = raw.groupSortModes;
+  // 提取 settings 与 groupSortModes：兼容标准包装对象或平铺对象
+  let settingsCandidate: Record<string, unknown>;
+  let groupSortCandidate: unknown;
+
+  if (rawObj.settings && typeof rawObj.settings === "object" && !Array.isArray(rawObj.settings)) {
+    settingsCandidate = rawObj.settings as Record<string, unknown>;
+    groupSortCandidate = rawObj.groupSortModes;
   } else {
-    settingsCandidate = raw;
-    groupSortCandidate = raw.groupSortModes;
+    settingsCandidate = rawObj;
+    groupSortCandidate = rawObj.groupSortModes;
   }
 
   // 校验 watchlist 结构（若提供，必须是 key -> array 的对象）
@@ -148,18 +150,21 @@ export function validateBackupData(raw: any): ValidationResult {
     }
 
     normalizedAlerts = {};
-    const rawAlerts = settingsCandidate.alerts as Record<string, any>;
+    const rawAlerts = settingsCandidate.alerts as Record<string, unknown>;
     for (const [key, rule] of Object.entries(rawAlerts)) {
-      if (rule && typeof rule === "object" && typeof rule.symbol === "string" && rule.symbol.trim() !== "") {
-        alertCount += 1;
-        normalizedAlerts[key] = {
-          symbol: rule.symbol.trim(),
-          name: typeof rule.name === "string" ? rule.name.trim() : undefined,
-          above: typeof rule.above === "number" ? rule.above : undefined,
-          below: typeof rule.below === "number" ? rule.below : undefined,
-          changePercent: typeof rule.changePercent === "number" ? rule.changePercent : undefined,
-          enabled: typeof rule.enabled === "boolean" ? rule.enabled : true,
-        };
+      if (rule && typeof rule === "object") {
+        const r = rule as Record<string, unknown>;
+        if (typeof r.symbol === "string" && r.symbol.trim() !== "") {
+          alertCount += 1;
+          normalizedAlerts[key] = {
+            symbol: r.symbol.trim(),
+            name: typeof r.name === "string" ? r.name.trim() : undefined,
+            above: typeof r.above === "number" ? r.above : undefined,
+            below: typeof r.below === "number" ? r.below : undefined,
+            changePercent: typeof r.changePercent === "number" ? r.changePercent : undefined,
+            enabled: typeof r.enabled === "boolean" ? r.enabled : true,
+          };
+        }
       }
       // 缺少有效 symbol 的预警规则直接丢弃
     }
@@ -176,8 +181,8 @@ export function validateBackupData(raw: any): ValidationResult {
   }
 
   const normalizedData: MarketLensBackupData = {
-    version: typeof raw.version === "string" ? raw.version : "1.0.0",
-    exportedAt: typeof raw.exportedAt === "string" ? raw.exportedAt : new Date().toISOString(),
+    version: typeof rawObj.version === "string" ? rawObj.version : "1.0.0",
+    exportedAt: typeof rawObj.exportedAt === "string" ? rawObj.exportedAt : new Date().toISOString(),
     schemaVersion: 1,
     settings: {
       autoRefresh: typeof settingsCandidate.autoRefresh === "boolean" ? settingsCandidate.autoRefresh : undefined,
@@ -199,8 +204,15 @@ export function validateBackupData(raw: any): ValidationResult {
 
       watchlist: normalizedWatchlist,
       alerts: normalizedAlerts,
-      alertNotificationMode: settingsCandidate.alertNotificationMode,
-      alertCooldownMinutes: settingsCandidate.alertCooldownMinutes,
+      alertNotificationMode:
+        typeof settingsCandidate.alertNotificationMode === "string" &&
+        ["notification", "statusBarOnly", "both"].includes(settingsCandidate.alertNotificationMode)
+          ? (settingsCandidate.alertNotificationMode as "notification" | "statusBarOnly" | "both")
+          : undefined,
+      alertCooldownMinutes:
+        typeof settingsCandidate.alertCooldownMinutes === "number"
+          ? settingsCandidate.alertCooldownMinutes
+          : undefined,
     },
     groupSortModes: normalizedGroupSortModes,
   };
@@ -256,9 +268,9 @@ export async function exportSettingsToFile(
       `✅ MarketLens 配置已成功导出至：${targetUri.fsPath}（包含 ${totalSymbols} 只标的，${alertCount} 条预警规则）`
     );
     return true;
-  } catch (err: any) {
+  } catch (err: unknown) {
     logger.error("导出配置文件异常", err);
-    vscode.window.showErrorMessage(`导出配置失败: ${err?.message || err}`);
+    vscode.window.showErrorMessage(`导出配置失败: ${(err as Error)?.message || String(err)}`);
     return false;
   }
 }
@@ -288,12 +300,12 @@ export async function importSettingsFromFile(options: {
     try {
       const fileBytes = await vscode.workspace.fs.readFile(uri);
       rawText = Buffer.from(fileBytes).toString("utf-8");
-    } catch (readErr: any) {
-      vscode.window.showErrorMessage(`读取备份文件失败: ${readErr?.message || readErr}`);
+    } catch (readErr: unknown) {
+      vscode.window.showErrorMessage(`读取备份文件失败: ${(readErr as Error)?.message || String(readErr)}`);
       return false;
     }
 
-    let parsed: any;
+    let parsed: unknown;
     try {
       parsed = JSON.parse(rawText);
     } catch (_) {
@@ -371,8 +383,9 @@ export async function importSettingsFromFile(options: {
 
     // 3. 各市场板块独立配置
     for (const sec of MARKET_SECTIONS) {
-      const secConfig = (data.settings as any)[sec];
-      if (secConfig && typeof secConfig === "object") {
+      const rawSecConfig = (data.settings as Record<string, unknown>)[sec];
+      if (rawSecConfig && typeof rawSecConfig === "object") {
+        const secConfig = rawSecConfig as Record<string, unknown>;
         if (secConfig.enabled !== undefined) {
           await cfg.update(`${sec}.enabled`, secConfig.enabled, target);
         }
@@ -401,10 +414,10 @@ export async function importSettingsFromFile(options: {
     if (options.onSuccess) {
       try {
         await options.onSuccess(data);
-      } catch (refreshErr: any) {
+      } catch (refreshErr: unknown) {
         logger.error("配置已导入，但界面刷新阶段异常", refreshErr);
         vscode.window.showWarningMessage(
-          `配置已导入成功，但界面刷新失败：${refreshErr?.message || refreshErr}。请尝试执行 MarketLens: Refresh 命令手动刷新。`
+          `配置已导入成功，但界面刷新失败：${(refreshErr as Error)?.message || String(refreshErr)}。请尝试执行 MarketLens: Refresh 命令手动刷新。`
         );
         return true;
       }
@@ -414,9 +427,9 @@ export async function importSettingsFromFile(options: {
       `🎉 MarketLens 配置导入成功！已成功恢复 ${symCount} 只自选标的与 ${alertCount} 条预警规则。`
     );
     return true;
-  } catch (err: any) {
+  } catch (err: unknown) {
     logger.error("导入配置文件异常", err);
-    vscode.window.showErrorMessage(`导入配置失败: ${err?.message || err}`);
+    vscode.window.showErrorMessage(`导入配置失败: ${(err as Error)?.message || String(err)}`);
     return false;
   }
 }

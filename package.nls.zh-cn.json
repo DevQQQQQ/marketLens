@@ -22,6 +22,7 @@
   "command.copyCode": "复制标的代码 / 合约地址",
   "viewsContainers.title": "MarketLens",
   "views.watchlist.name": "MarketLens",
+  "viewsWelcome.watchlist.contents": "当前暂无展示的自选标的或所有市场板块已关闭。\n[➕ 添加自选标的](command:marketlens.addItem)\n[⚙️ 打开设置面板](command:marketlens.openSettings)\n[🔄 恢复默认自选](command:marketlens.restoreDefaults)",
   "configuration.autoRefresh.description": "【全局】是否开启定时自动刷新（取消勾选则不自动刷新，仅在手动点击刷新按钮时更新）",
   "configuration.refreshInterval.description": "【全局】定时刷新间隔（毫秒），如 5000 表示 5 秒",
   "configuration.maskMode.description": "【全局】简洁展示模式：将底部状态栏与左侧自选列表的行情数据打码为简洁构建信息格式",

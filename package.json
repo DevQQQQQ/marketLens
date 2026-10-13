@@ -2,7 +2,7 @@
 	"name": "marketlens",
 	"displayName": "%displayName%",
 	"description": "%description%",
-	"version": "1.2.5",
+	"version": "1.2.6",
 	"publisher": "devqqqqq",
 	"repository": {
 		"type": "git",
@@ -78,6 +78,12 @@
 				}
 			]
 		},
+		"viewsWelcome": [
+			{
+				"view": "marketlens.watchlist",
+				"contents": "%viewsWelcome.watchlist.contents%"
+			}
+		],
 		"commands": [
 			{
 				"command": "marketlens.refresh",

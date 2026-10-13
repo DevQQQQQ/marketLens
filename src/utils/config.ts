@@ -3,6 +3,7 @@ import * as vscode from "vscode";
 import type { MarketLensConfig } from "../types/index.ts";
 import { computeStatusBarEnabled, sanitizeWatchlist } from "./symbolHelper.ts";
 import { getSystemProxyUrl, DEFAULT_PROXY_PORT } from "../services/network.ts";
+import { logger } from "./logger.ts";
 
 function getConfiguration(section?: string): vscode.WorkspaceConfiguration {
   return vscode.workspace.getConfiguration(section);
@@ -12,12 +13,20 @@ function getGlobalTarget(): vscode.ConfigurationTarget {
   return vscode.ConfigurationTarget.Global;
 }
 
+interface RawSectionConfig {
+  enabled?: boolean;
+  statusBar?: boolean;
+  networkMode?: "proxy" | "direct";
+  proxyUrl?: string;
+  stopOnMarketClosed?: boolean;
+}
+
 function getSectionConfig(
   cfg: vscode.WorkspaceConfiguration,
   section: string,
   defaults: { networkMode: "proxy" | "direct"; proxyUrl: string; stopOnMarketClosed?: boolean }
 ) {
-  const sectionObj = cfg.get<any>(section) || {};
+  const sectionObj = cfg.get<RawSectionConfig>(section) || {};
   return {
     enabled: cfg.get<boolean>(`${section}.enabled`) ?? sectionObj.enabled ?? true,
     statusBar: cfg.get<boolean>(`${section}.statusBar`) ?? sectionObj.statusBar ?? true,
@@ -50,7 +59,9 @@ export function readConfig(): MarketLensConfig {
         if (u.port) {
           proxyPort = parseInt(u.port, 10);
         }
-      } catch (_) {}
+      } catch (err) {
+        logger.debug("[config] parse sysProxy URL failed", err);
+      }
     }
   }
 

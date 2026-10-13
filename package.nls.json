@@ -22,6 +22,7 @@
 	"command.copyCode": "MarketLens: Copy Symbol / Contract Address",
 	"viewsContainers.title": "MarketLens",
 	"views.watchlist.name": "Watchlist",
+	"viewsWelcome.watchlist.contents": "No watchlist symbols to display, or all market sections are disabled.\n[➕ Add Watchlist Symbol](command:marketlens.addItem)\n[⚙️ Open Settings Panel](command:marketlens.openSettings)\n[🔄 Restore Default Watchlist](command:marketlens.restoreDefaults)",
 	"configuration.autoRefresh.description": "Whether to refresh quotes on a timer. When unchecked, quotes update only when you refresh manually.",
 	"configuration.refreshInterval.description": "Auto-refresh interval in milliseconds (e.g. 5000 means 5 seconds).",
 	"configuration.maskMode.description": "Compact display mode: masks quote data in both the status bar and the sidebar watchlist as terse build-info text.",

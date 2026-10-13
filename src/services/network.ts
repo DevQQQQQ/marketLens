@@ -47,6 +47,14 @@ let cachedWorkingPort: number | undefined = undefined;
 let lastFallbackFailedTime = 0;
 /** 探测冷却时间：30 秒（避免 10+ 并发请求在代理未开时同时遍历 9 端口打满网络） */
 const FALLBACK_COOLDOWN_MS = 30_000;
+/** 默认网络请求超时（毫秒） */
+export const DEFAULT_REQUEST_TIMEOUT_MS = 5000;
+/** 系统环境变量代理降级探测超时（毫秒） */
+export const SYSTEM_PROXY_FALLBACK_TIMEOUT_MS = 2500;
+/** 本地主流代理端口快速探测超时（毫秒） */
+export const QUICK_PROXY_PROBE_TIMEOUT_MS = 1500;
+/** 本地代理端口轻量前置探活超时（毫秒） */
+export const PORT_PROBE_TIMEOUT_MS = 600;
 
 /** 获取当前已探测并生效的本地代理端口 */
 export function getCachedWorkingPort(): number | undefined {
@@ -201,7 +209,7 @@ export function testLocalPort(port: number): Promise<boolean> {
         port,
         method: "HEAD",
         path: "http://data-api.binance.vision/api/v3/ping",
-        timeout: 600,
+        timeout: PORT_PROBE_TIMEOUT_MS,
       },
       (res) => {
         resolve(
@@ -251,7 +259,7 @@ export async function detectAvailablePort(): Promise<number | null> {
 /**
  * 通用网络请求核心方法（支持 direct 直连 与 proxy 强制代理）
  */
-export async function smartNetworkGet<T = any>(
+export async function smartNetworkGet<T = unknown>(
   url: string,
   options: CryptoNetworkOptions,
   config: AxiosRequestConfig = {}
@@ -260,7 +268,7 @@ export async function smartNetworkGet<T = any>(
 
   const mergedConfig: AxiosRequestConfig = {
     ...config,
-    timeout: config.timeout || 5000,
+    timeout: config.timeout || DEFAULT_REQUEST_TIMEOUT_MS,
     headers: { ...BASE_HEADERS, ...config.headers },
   };
 
@@ -288,10 +296,11 @@ export async function smartNetworkGet<T = any>(
     });
     cachedWorkingPort = targetProxy.port;
     return res;
-  } catch (err: any) {
+  } catch (err: unknown) {
     // 若远端服务器已正常返回 HTTP 响应（如 400 Bad Request, 404, 429），说明代理通道完全通畅且连接成功，
     // 绝非代理端口不可用，直接抛出原生异常保留 status 与业务错误体，杜绝误触发代理探测熔断
-    if (err?.response) {
+    const axiosError = err as { response?: unknown } | null | undefined;
+    if (axiosError?.response) {
       throw err;
     }
     const now = Date.now();
@@ -310,7 +319,7 @@ export async function smartNetworkGet<T = any>(
         try {
           const res = await axios.get<T>(url, {
             ...mergedConfig,
-            timeout: 2500,
+            timeout: SYSTEM_PROXY_FALLBACK_TIMEOUT_MS,
             proxy: sysProxy,
           });
           if (cachedWorkingPort !== sysProxy.port) {
@@ -334,7 +343,7 @@ export async function smartNetworkGet<T = any>(
       try {
         const res = await axios.get<T>(url, {
           ...mergedConfig,
-          timeout: 1500, // 快速探测
+          timeout: QUICK_PROXY_PROBE_TIMEOUT_MS, // 快速探测
           proxy: { host: "127.0.0.1", port, protocol: "http" },
         });
         // 成功！记录并缓存此端口，后续无需重试

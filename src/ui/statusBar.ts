@@ -71,6 +71,10 @@ export class StatusBar implements vscode.Disposable {
   private colorScheme: "greenUpRedDown" | "redUpGreenDown";
   private bossKeyActive = false;
 
+  // 网络退避状态（用于状态栏 Tooltip 提示）
+  private networkBackoffFailures = 0;
+  private networkBackoffSeconds = 0;
+
   // 轮播
   private carouselIndex = 0;
   private carouselTimer: ReturnType<typeof setInterval> | undefined;
@@ -94,6 +98,20 @@ export class StatusBar implements vscode.Disposable {
   }
 
   // ── 公共 API ────────────────────────────────────────────────────
+
+  /** 同步后台网络退避状态到状态栏悬停提示 */
+  setNetworkBackoff(consecutiveFailures: number, nextRetrySeconds: number = 0): void {
+    const nextFailures = Math.max(0, consecutiveFailures);
+    const nextSec = Math.max(0, nextRetrySeconds);
+    if (this.networkBackoffFailures === nextFailures && this.networkBackoffSeconds === nextSec) {
+      return;
+    }
+    this.networkBackoffFailures = nextFailures;
+    this.networkBackoffSeconds = nextSec;
+    if (!this.bossKeyActive && this.quotes.length > 0 && !this.flashAlertTimer) {
+      this.render();
+    }
+  }
 
   /** 更新全量行情数据，触发显示刷新 */
   setQuotes(quotes: MarketItem[]): void {
@@ -254,6 +272,10 @@ export class StatusBar implements vscode.Disposable {
       tip += `\n⚠️ 代理不可达 (冷却中 ${proxyStatus.cooldownRemainingSeconds}s)`;
     } else if (proxyStatus.activePort) {
       tip += `\n🌐 本地代理: 已连接 (127.0.0.1)`;
+    }
+    if (this.networkBackoffFailures >= 2) {
+      const retryHint = this.networkBackoffSeconds > 0 ? `，${this.networkBackoffSeconds}s 后重试` : "";
+      tip += `\n⚠️ 行情连接异常，已进入退避重试 (连续失败 ${this.networkBackoffFailures} 次${retryHint})`;
     }
     this.barItem.tooltip = tip;
     this.applyColor(visible[0]);

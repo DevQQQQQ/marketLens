@@ -1,20 +1,24 @@
 // src/utils/logger.ts
-import type * as vscodeTypes from "vscode";
-
-let vscodeModule: typeof vscodeTypes | undefined;
-try {
-  vscodeModule = require("vscode");
-} catch (_) {}
+import * as vscode from "vscode";
 
 class LoggerService {
-  private channel: vscodeTypes.OutputChannel | undefined;
+  private channel: vscode.OutputChannel | undefined;
 
-  public init(context: vscodeTypes.ExtensionContext): vscodeTypes.OutputChannel | undefined {
-    if (!this.channel && vscodeModule?.window) {
-      this.channel = vscodeModule.window.createOutputChannel("MarketLens");
+  public init(context: vscode.ExtensionContext): vscode.OutputChannel | undefined {
+    if (!this.channel && vscode.window) {
+      this.channel = vscode.window.createOutputChannel("MarketLens");
       context.subscriptions.push(this.channel);
     }
     return this.channel;
+  }
+
+  public debug(message: string, detail?: unknown): void {
+    const timestamp = new Date().toLocaleTimeString();
+    const errObj = detail as { stack?: string; message?: string } | undefined;
+    const detailStr = detail ? ` => ${errObj?.stack || errObj?.message || String(detail)}` : "";
+    const line = `[${timestamp}] [DEBUG] ${message}${detailStr}`;
+    this.channel?.appendLine(line);
+    console.debug(`[MarketLens] ${message}`, detail ?? "");
   }
 
   public info(message: string): void {
@@ -24,16 +28,19 @@ class LoggerService {
     console.log(`[MarketLens] ${message}`);
   }
 
-  public warn(message: string): void {
+  public warn(message: string, error?: unknown): void {
     const timestamp = new Date().toLocaleTimeString();
-    const line = `[${timestamp}] [WARN] ${message}`;
+    const errObj = error as { stack?: string; message?: string } | undefined;
+    const errDetail = error ? ` => ${errObj?.stack || errObj?.message || String(error)}` : "";
+    const line = `[${timestamp}] [WARN] ${message}${errDetail}`;
     this.channel?.appendLine(line);
-    console.warn(`[MarketLens] ${message}`);
+    console.warn(`[MarketLens] ${message}`, error ?? "");
   }
 
-  public error(message: string, error?: any): void {
+  public error(message: string, error?: unknown): void {
     const timestamp = new Date().toLocaleTimeString();
-    const errDetail = error ? ` => ${error?.stack || error?.message || error}` : "";
+    const errObj = error as { stack?: string; message?: string } | undefined;
+    const errDetail = error ? ` => ${errObj?.stack || errObj?.message || String(error)}` : "";
     const line = `[${timestamp}] [ERROR] ${message}${errDetail}`;
     this.channel?.appendLine(line);
     console.error(`[MarketLens] ${message}`, error ?? "");

@@ -121,7 +121,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   });
 
   // 监听 Webview 设置面板即时操作（0延迟同步更新内存，无需等待异步磁盘 I/O）
-  SettingsWebviewPanel.onDidUpdateSetting = (key: string, value: any) => {
+  SettingsWebviewPanel.onDidUpdateSetting = (key: string, value: unknown) => {
     if (key === "restoreDefaults") {
       config = readConfig();
       config.alerts = {};
@@ -138,8 +138,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     if (key === "importSettings") {
       config = readConfig();
       treeProvider.setAlerts(config.alerts || {});
-      if (value?.groupSortModes) {
-        treeProvider.setAllGroupSortModes(value.groupSortModes);
+      if (value && typeof value === "object" && "groupSortModes" in value) {
+        const modes = (value as { groupSortModes?: Record<string, import("./types").GroupSortMode> }).groupSortModes;
+        if (modes) {
+          treeProvider.setAllGroupSortModes(modes);
+        }
       }
       scheduler.updateStatusBar(config);
       scheduler.rebuildTree(config.watchlist, config);
@@ -148,7 +151,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
 
     if (key === "alerts") {
-      config.alerts = value || {};
+      config.alerts = (value && typeof value === "object" && !Array.isArray(value) ? value as import("./types").AlertsConfig : {});
       treeProvider.setAlerts(config.alerts);
       scheduler.rebuildTree(undefined, config);
       SettingsWebviewPanel.syncSettings();
@@ -156,9 +159,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
 
     if (key === "watchlist") {
-      config.watchlist = value;
+      const sanitized = (value && typeof value === "object" && !Array.isArray(value))
+        ? (value as import("./types").WatchlistConfig)
+        : {};
+      config.watchlist = sanitized;
       scheduler.updateStatusBar(config);
-      scheduler.rebuildTree(value, config);
+      scheduler.rebuildTree(sanitized, config);
       return;
     }
 
@@ -184,7 +190,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       statusBar.setColorNeutral(config.colorNeutral);
       treeProvider.setColorNeutral(config.colorNeutral);
     } else if (key === "colorScheme") {
-      config.colorScheme = value || "greenUpRedDown";
+      config.colorScheme = value === "redUpGreenDown" ? "redUpGreenDown" : "greenUpRedDown";
       config.colorNeutral = false;
       statusBar.setColorNeutral(false);
       treeProvider.setColorNeutral(false);
@@ -205,7 +211,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         const parsed = new URL(currentUrl);
         parsed.port = String(port);
         pUrl = parsed.toString().replace(/\/$/, "");
-      } catch (_) {}
+      } catch (err) {
+        logger.info(`解析当前代理 URL 失败，已回退默认格式: ${String(err)}`);
+      }
       applyProxyToAllSections(config, pUrl, port);
       resetProxyCache();
     } else if (key === "proxyUrl") {
@@ -213,7 +221,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       applyProxyToAllSections(config, pUrl);
       resetProxyCache();
     } else if (key === "alertNotificationMode") {
-      config.alertNotificationMode = value || "notification";
+      config.alertNotificationMode =
+        value === "statusBarOnly" || value === "both" ? value : "notification";
     } else if (key === "alertCooldownMinutes") {
       config.alertCooldownMinutes = Number(value) || 15;
     }

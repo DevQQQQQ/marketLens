@@ -1,9 +1,9 @@
 // src/scheduler.ts
 import * as vscode from "vscode";
 import { MarketManager } from "./services/marketManager.ts";
-import { WatchlistProvider, GroupItem } from "./ui/watchlistProvider.ts";
+import { WatchlistProvider, GroupItem, StockItem } from "./ui/watchlistProvider.ts";
 import { StatusBar } from "./ui/statusBar.ts";
-import type { MarketLensConfig, MarketItem } from "./types/index.ts";
+import type { MarketLensConfig, MarketItem, WatchlistConfig } from "./types/index.ts";
 import { normalizeSymbolKey } from "./utils/symbolHelper.ts";
 import { logger } from "./utils/logger.ts";
 import { isAShareMarketOpen, isHKMarketOpen, isUSMarketOpen, evaluateAdaptiveThrottle, shouldSkipMarketPolling } from "./utils/marketHours.ts";
@@ -16,7 +16,7 @@ export interface SchedulerContext {
   marketManager: MarketManager;
   treeProvider: WatchlistProvider;
   statusBar: StatusBar;
-  treeView: vscode.TreeView<any>;
+  treeView: vscode.TreeView<GroupItem | StockItem>;
 }
 
 export class RefreshScheduler implements vscode.Disposable {
@@ -24,6 +24,7 @@ export class RefreshScheduler implements vscode.Disposable {
   private retryTimer: ReturnType<typeof setTimeout> | undefined;
   private retryCount = 0;
   private readonly MAX_RETRY_COUNT = 2;
+  private readonly RETRY_DELAY_MS = 300;
   private hasLoadedInitialQuotes = false;
   private isRefreshing = false;
   /**
@@ -50,7 +51,7 @@ export class RefreshScheduler implements vscode.Disposable {
   private readonly marketManager: MarketManager;
   private readonly treeProvider: WatchlistProvider;
   private readonly statusBar: StatusBar;
-  private readonly treeView: vscode.TreeView<any>;
+  private readonly treeView: vscode.TreeView<GroupItem | StockItem>;
 
   constructor(context: SchedulerContext) {
     this.marketManager = context.marketManager;
@@ -131,7 +132,7 @@ export class RefreshScheduler implements vscode.Disposable {
    *                        由调用方透传内存配置即可彻底消除该时序抖动。
    */
   public rebuildTree(
-    customWatchlist?: Record<string, any[]>,
+    customWatchlist?: WatchlistConfig,
     configOverride?: MarketLensConfig
   ): void {
     const currentCfg = configOverride || readConfig();
@@ -209,7 +210,7 @@ export class RefreshScheduler implements vscode.Disposable {
         this.retryTimer = setTimeout(() => {
           this.retryTimer = undefined;
           void this.refresh(true);
-        }, 300);
+        }, this.RETRY_DELAY_MS);
       }
       return;
     }
@@ -333,9 +334,20 @@ export class RefreshScheduler implements vscode.Disposable {
       return;
     }
     if (this.isRefreshing) {
-      // 若当前已有全量或分组刷新在执行，避免并发重叠打网
+      // 若当前已有刷新在执行，复用 retryTimer 延迟 300ms 排队重试，避免静默丢弃用户操作
+      if (!this.retryTimer && this.retryCount < this.MAX_RETRY_COUNT) {
+        this.retryCount++;
+        logger.info(`分组 '${group.groupName}' 刷新遇到并发冲突，已加入重试队列 (第 ${this.retryCount} 次)`);
+        this.retryTimer = setTimeout(() => {
+          this.retryTimer = undefined;
+          void this.refreshGroup(group);
+        }, this.RETRY_DELAY_MS);
+      } else {
+        logger.info(`分组 '${group.groupName}' 刷新跳过：当前已有刷新与重试队列在执行中`);
+      }
       return;
     }
+    this.retryCount = 0;
     this.isRefreshing = true;
     try {
       const config = readConfig();
@@ -382,11 +394,6 @@ export class RefreshScheduler implements vscode.Disposable {
       return;
     }
     const config = readConfig();
-    // 如果关闭了自动刷新，则不调度下一次轮询
-    if (!config.autoRefresh) {
-      return;
-    }
-
     const standardInterval = Math.max(1000, config.refreshInterval || 5000);
     let delay = forcedDelayMs ?? (this.isThrottled ? Math.max(this.THROTTLED_INTERVAL_MS, standardInterval) : standardInterval);
 
@@ -394,6 +401,17 @@ export class RefreshScheduler implements vscode.Disposable {
     if (forcedDelayMs === undefined && this.consecutiveNetworkFailures >= 2) {
       const backoffMultiplier = Math.pow(1.5, Math.min(this.consecutiveNetworkFailures - 1, 6));
       delay = Math.min(this.MAX_BACKOFF_INTERVAL_MS, Math.max(delay, Math.round(standardInterval * backoffMultiplier)));
+    }
+
+    // 同步退避状态到状态栏悬停提示
+    this.statusBar.setNetworkBackoff?.(
+      this.consecutiveNetworkFailures,
+      this.consecutiveNetworkFailures >= 2 && config.autoRefresh ? Math.round(delay / 1000) : 0
+    );
+
+    // 如果关闭了自动刷新，则不调度下一次轮询
+    if (!config.autoRefresh) {
+      return;
     }
 
     this.timer = setTimeout(() => {
@@ -430,6 +448,7 @@ export class RefreshScheduler implements vscode.Disposable {
     this.isThrottled = false;
     this.consecutiveUnchangedCount = 0;
     this.consecutiveNetworkFailures = 0;
+    this.statusBar.setNetworkBackoff?.(0, 0);
   }
 
   public dispose(): void {

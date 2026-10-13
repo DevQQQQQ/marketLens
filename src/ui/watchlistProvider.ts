@@ -1,8 +1,9 @@
 import * as vscode from "vscode";
 import type { MarketItem, WatchlistConfig, WatchConfigItem, PriceAlertItem, AlertsConfig, GroupSortMode } from "../types/index.ts";
-import { normalizeSymbolKey, resolveItemAssetType, resolveItemDisplayName, resolveTrendColors, type ColorScheme, ASSET_TYPE_TO_SECTION_MAP, isGroupMarketClosed, buildGroupNodeId } from "../utils/symbolHelper.ts";
+import { normalizeSymbolKey, stripMarketPrefix, resolveItemAssetType, resolveItemDisplayName, resolveTrendColors, type ColorScheme, ASSET_TYPE_TO_SECTION_MAP, isGroupMarketClosed, buildGroupNodeId } from "../utils/symbolHelper.ts";
 import { isDisplayMasked, resolveStockTooltip } from "../utils/maskState.ts";
-import { DEFAULT_PROXY_PORT } from "../services/network.ts";
+import { DEFAULT_PROXY_PORT, getProxyStatus } from "../services/network.ts";
+import { logger } from "../utils/logger.ts";
 
 /**
  * 智能格式化价格
@@ -337,7 +338,13 @@ export class StockItem extends vscode.TreeItem {
       }
 
       if (!hasQuote) {
-        mdText += `\n\n> 💡 **提示**：若长期处于“获取行情中”，可能是当前网络或公司内网拦截了该接口。建议在插件设置中开启本地代理端口（如 ${DEFAULT_PROXY_PORT}），或在设置中暂时关闭该分组。`;
+        const proxyStatus = getProxyStatus();
+        const proxyHint = proxyStatus.inCooldown
+          ? `当前本地代理探测处于熔断冷却中（${proxyStatus.cooldownRemainingSeconds}s 后自动重试），请确认代理客户端已启动。`
+          : proxyStatus.activePort
+            ? `当前已连接本地代理端口（127.0.0.1:${proxyStatus.activePort}），若仍无法拉取请检查代理节点连通性。`
+            : `建议在插件设置中开启代理模式（自动探测 ${DEFAULT_PROXY_PORT}/7890 等主流本地端口），或暂时关闭该分组。`;
+        mdText += `\n\n> 💡 **提示**：若长期处于“获取行情中”，可能是当前网络或内网拦截了该接口。${proxyHint}`;
       }
 
       if (hasAlert && currentAlert) {
@@ -617,7 +624,7 @@ export class WatchlistProvider
     const normKey = normalizeSymbolKey(confSymbol);
     const idKey = item?.id ? normalizeSymbolKey(item.id) : undefined;
     const symKey = item?.symbol ? normalizeSymbolKey(item.symbol) : undefined;
-    const rawTicker = confSymbol.toLowerCase().replace(/^(us|hk|sh|sz|bj)[\._\-\/]?/i, "");
+    const rawTicker = stripMarketPrefix(confSymbol);
 
     return (
       (normKey && alerts[normKey] ? alerts[normKey] : undefined) ||
@@ -666,18 +673,31 @@ export class WatchlistProvider
       return;
     }
 
-    let rawList: any[] = [];
+    interface WatchlistDragPayload {
+      groupName?: string;
+      confSymbol?: string;
+      symbol?: string;
+      id?: string;
+      name?: string;
+      item?: { symbol?: string; id?: string };
+    }
+
+    let rawList: WatchlistDragPayload[] = [];
     if (Array.isArray(transferItem.value)) {
-      rawList = transferItem.value;
+      rawList = transferItem.value as WatchlistDragPayload[];
     } else if (typeof transferItem.value === "string") {
       try {
-        rawList = JSON.parse(transferItem.value);
-      } catch {}
+        rawList = JSON.parse(transferItem.value) as WatchlistDragPayload[];
+      } catch (err) {
+        logger.warn(`拖拽数据 JSON 解析失败 (value): ${String(err)}`);
+      }
     } else {
       try {
         const str = await transferItem.asString();
-        rawList = JSON.parse(str);
-      } catch {}
+        rawList = JSON.parse(str) as WatchlistDragPayload[];
+      } catch (err) {
+        logger.warn(`拖拽数据 JSON 解析失败 (asString): ${String(err)}`);
+      }
     }
 
     if (!rawList || rawList.length === 0) {
@@ -844,7 +864,7 @@ export class WatchlistProvider
       );
       const children = activeItems.map((conf) => {
         const normKey = normalizeSymbolKey(conf.symbol);
-        const rawTicker = conf.symbol.toLowerCase().replace(/^(us|hk|sh|sz|bj)[\._\-]?/i, "");
+        const rawTicker = stripMarketPrefix(conf.symbol);
         const found =
           quoteMap.get(normKey) ||
           quoteMap.get(conf.symbol) ||
