@@ -1,5 +1,5 @@
 // src/utils/symbolHelper.ts
-import type { AssetType, MarketSection, WatchConfigItem } from "../types";
+import type { AssetType, MarketSection, WatchConfigItem, MarketItem } from "../types";
 import { isAShareMarketOpen, isHKMarketOpen, isUSMarketOpen } from "./marketHours.ts";
 export type { AssetType, MarketSection, WatchConfigItem };
 
@@ -111,6 +111,8 @@ export function normalizeSymbolKey(sym?: string): string {
   if (/^\d{5}$/.test(clean)) {
     return "hk" + clean.replace(/^0+/, "");
   }
+  if (clean === "hsi" || clean === "hkhsi") return "hkhsi";
+  if (clean === "hstech" || clean === "hkhstech") return "hkhstech";
 
   // 2. 如果是美股：去除显式分隔符前缀（如 us.aapl, us_aapl, us-aapl -> aapl, us.usb -> usb, us.brk.b -> brkb）
   if (/^us[\._\-]/i.test(s)) {
@@ -146,6 +148,8 @@ function getSymbolKey(sym) {
   var clean = s.toLowerCase().replace(/[\\._\\-\\/]/g, '');
   if (/^hk\\d+$/.test(clean)) return 'hk' + clean.slice(2).replace(/^0+/, '');
   if (/^\\d{5}$/.test(clean)) return 'hk' + clean.replace(/^0+/, '');
+  if (clean === 'hsi' || clean === 'hkhsi') return 'hkhsi';
+  if (clean === 'hstech' || clean === 'hkhstech') return 'hkhstech';
   if (/^us[\\._\\-]/i.test(s)) return s.replace(/^us[\\._\\-]/i, '').toLowerCase().replace(/[\\._\\-\\/]/g, '');
   if (/^us[A-Z]/.test(s)) return s.slice(2).toLowerCase().replace(/[\\._\\-\\/]/g, '');
   return clean;
@@ -424,6 +428,14 @@ export function sanitizeWatchlist(raw: unknown): Record<string, WatchConfigItem[
 
             if (typeof candidate.name === "string" && candidate.name.trim() !== "") {
               item.name = candidate.name.trim();
+            }
+
+            if (typeof candidate.cost === "number" && Number.isFinite(candidate.cost) && candidate.cost >= 0) {
+              item.cost = candidate.cost;
+            }
+
+            if (typeof candidate.shares === "number" && Number.isFinite(candidate.shares) && candidate.shares > 0) {
+              item.shares = candidate.shares;
             }
 
             cleanItems.push(item);
@@ -1145,4 +1157,129 @@ export function escapeHtml(str: unknown): string {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+/** 状态栏持仓盈亏条目数据模型 */
+export interface HoldingItemQuote {
+  name: string;
+  symbol: string;
+  currency: "CNY" | "USD" | "HKD";
+  cost: number;
+  shares: number;
+  price: number;
+  changePercent: number;
+  change?: number;
+  open?: number;
+  prevClose?: number;
+}
+
+/** 提取持仓行情过滤选项 */
+export interface ExtractHoldingQuotesOptions {
+  statusBarEnabled?: boolean;
+  autoCollapseClosedGroups?: boolean;
+  now?: Date;
+  fund?: { enabled?: boolean; statusBar?: boolean };
+  aShare?: { enabled?: boolean; statusBar?: boolean };
+  hkStock?: { enabled?: boolean; statusBar?: boolean };
+  usStock?: { enabled?: boolean; statusBar?: boolean };
+  binance?: { enabled?: boolean; statusBar?: boolean };
+  alpha?: { enabled?: boolean; statusBar?: boolean };
+}
+
+/**
+ * 从自选列表中提取所有已设置持仓成本与数量的有效标的行情
+ * 支持与状态栏总控开关、分板块开关及休市折叠对齐过滤
+ */
+export function extractHoldingQuotes(
+  watchlist: import("../types/index.ts").WatchlistConfig,
+  quoteCache: Map<string, MarketItem>,
+  options?: ExtractHoldingQuotesOptions
+): HoldingItemQuote[] {
+  if (options && options.statusBarEnabled === false) {
+    return [];
+  }
+
+  const resolvedSections: Record<MarketSection, { enabled?: boolean; statusBar?: boolean } | undefined> = {
+    fund: options?.fund,
+    aShare: options?.aShare,
+    hkStock: options?.hkStock,
+    usStock: options?.usStock,
+    binance: options?.binance,
+    alpha: options?.alpha,
+  };
+
+  const isSectionActive = (type?: string): boolean => {
+    if (!type) return true;
+    const sec = ASSET_TYPE_TO_SECTION_MAP[type as AssetType];
+    if (!sec) return true;
+    const conf = resolvedSections[sec];
+    if (!conf) return true;
+    return conf.enabled !== false && conf.statusBar !== false;
+  };
+
+  const result: HoldingItemQuote[] = [];
+  const seenSymbols = new Set<string>();
+
+  for (const [groupName, items] of Object.entries(watchlist || {})) {
+    const isFundGroup = groupName.includes("基金") || /\betf\b/i.test(groupName);
+
+    for (const conf of items || []) {
+      if (!conf || typeof conf === "string" || !conf.symbol) continue;
+      if (
+        conf.cost === undefined ||
+        !Number.isFinite(conf.cost) ||
+        conf.cost <= 0 ||
+        conf.shares === undefined ||
+        !Number.isFinite(conf.shares) ||
+        conf.shares <= 0
+      ) {
+        continue;
+      }
+
+      if (options) {
+        const assetType = resolveItemAssetType(conf, groupName);
+        if (isFundGroup) {
+          if (options.fund?.enabled === false || options.fund?.statusBar === false) {
+            continue;
+          }
+        } else if (!isSectionActive(assetType)) {
+          continue;
+        }
+
+        if (options.autoCollapseClosedGroups) {
+          const checkNow = options.now || new Date();
+          if (isItemMarketClosed(conf, groupName, checkNow)) {
+            continue;
+          }
+        }
+      }
+
+      const normKey = normalizeSymbolKey(conf.symbol);
+      if (seenSymbols.has(normKey)) continue;
+
+      const q = quoteCache.get(normKey) || quoteCache.get(conf.symbol);
+      if (!q || q.price === undefined || q.price <= 0) continue;
+
+      seenSymbols.add(normKey);
+
+      const currency: "CNY" | "USD" | "HKD" =
+        q.currency ||
+        (q.type === "A_SHARE" ? "CNY" : q.type === "HK_STOCK" ? "HKD" : "USD");
+
+      result.push({
+        name: resolveItemDisplayName(conf.name, conf.symbol, q),
+        symbol: conf.symbol,
+        currency,
+        cost: conf.cost,
+        shares: conf.shares,
+        price: q.price,
+        changePercent: q.changePercent ?? 0,
+        change: q.change,
+        open: q.open,
+        prevClose: q.prevClose,
+      });
+    }
+  }
+
+  return result;
 }

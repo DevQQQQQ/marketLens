@@ -88,6 +88,11 @@ export function readConfig(): MarketLensConfig {
 
     statusBar: {
       enabled: isStatusBarEnabled,
+      holdingEnabled: cfg.get<boolean>("statusBar.holdingEnabled", true),
+      holdingInterval: Math.min(
+        60,
+        Math.max(1, Math.round(cfg.get<number>("statusBar.holdingInterval", 3)) || 3)
+      ),
     },
     autoCollapseClosedGroups: cfg.get<boolean>("autoCollapseClosedGroups", true),
 

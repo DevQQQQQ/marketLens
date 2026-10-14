@@ -12,6 +12,8 @@ export interface SettingsFormData {
 	colorNeutral?: boolean;
 	colorScheme?: 'greenUpRedDown' | 'redUpGreenDown';
 	statusBarEnabled?: boolean;
+	statusBarHoldingEnabled?: boolean;
+	statusBarHoldingInterval?: number;
 	autoCollapseClosedGroups?: boolean;
 	proxyPort?: number;
 	proxyUrl?: string;
@@ -59,6 +61,10 @@ export function getSettingsWebviewHtml(
 		colorScheme: initialData.colorScheme || 'greenUpRedDown',
 		statusBarEnabled:
 			initialData.statusBarEnabled !== undefined ? initialData.statusBarEnabled : true,
+		statusBarHoldingEnabled:
+			initialData.statusBarHoldingEnabled !== undefined ? initialData.statusBarHoldingEnabled : true,
+		statusBarHoldingInterval:
+			initialData.statusBarHoldingInterval !== undefined ? initialData.statusBarHoldingInterval : 3,
 		autoCollapseClosedGroups:
 			initialData.autoCollapseClosedGroups !== undefined ? !!initialData.autoCollapseClosedGroups : true,
 		proxyPort: defaultPort,
@@ -370,6 +376,25 @@ export function getSettingsWebviewHtml(
       color: var(--primary-fg);
       border-color: var(--primary);
     }
+    .btn-primary-action {
+      background: var(--primary);
+      color: var(--primary-fg, #fff);
+      border: 1px solid var(--primary);
+      padding: 6px 14px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 500;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.15s;
+      white-space: nowrap;
+    }
+    .btn-primary-action:hover {
+      opacity: 0.9;
+      transform: translateY(-1px);
+    }
     .btn-telegram {
       background: #0088cc;
       color: #ffffff;
@@ -469,6 +494,14 @@ export function getSettingsWebviewHtml(
       <div class="card-list">
         <div class="card">
           <div class="card-info">
+            <div class="card-title">🌐 一键导入全球大盘指数</div>
+            <div class="card-desc">一键将全球主流核心大盘指数（A股上证/深成/创业板、港股恒生/恒科、美股纳指/标普/道指、加密货币BTC）自动导入对应板块，智能去重不覆盖已有自选。</div>
+          </div>
+          <button class="btn-primary-action" id="btnAddCommonIndices">🌐 导入大盘指数</button>
+        </div>
+
+        <div class="card">
+          <div class="card-info">
             <div class="card-title">恢复出厂默认设置</div>
             <div class="card-desc">将所有自选标的列表（基金、A股、港股、美股、Binance、Alpha）恢复为首次安装时的初始预设，清空所有到价预警规则，并还原所有配置项。</div>
           </div>
@@ -513,6 +546,22 @@ export function getSettingsWebviewHtml(
             <div class="card-desc">当某板块处于收盘休市时（如 15:05 后的 A 股/基金、周末节假日），左侧自选分组将自动折叠收起，且底部状态栏自动剔除休市标的；当关注的全部标的均休市时，底部状态栏静默隐藏。</div>
           </div>
           <label class="switch"><input type="checkbox" id="autoCollapseClosedGroups" ${d.autoCollapseClosedGroups ? 'checked' : ''}><span class="slider"></span></label>
+        </div>
+
+        <div class="card">
+          <div class="card-info">
+            <div class="card-title">💼 持仓盈亏独立轮播条</div>
+            <div class="card-desc">在底部状态栏行情右侧展示专属持仓盈亏条目（第 0 帧展示全账户总账，后续帧按次序轮播已持仓的具体标的；在摸鱼伪装模式或老板键激活下一票否决彻底隐藏）。</div>
+          </div>
+          <label class="switch"><input type="checkbox" id="statusBarHoldingEnabled" ${d.statusBarHoldingEnabled ? 'checked' : ''}><span class="slider"></span></label>
+        </div>
+
+        <div class="card">
+          <div class="card-info">
+            <div class="card-title">💼 持仓盈亏轮播间隔 (秒)</div>
+            <div class="card-desc">持仓盈亏条目在全账户总账与各单标的之间轮播切换的时间间隔（推荐 1 ~ 60 秒，默认 3 秒）。</div>
+          </div>
+          <input type="number" id="statusBarHoldingInterval" min="1" max="60" step="1" value="${d.statusBarHoldingInterval}" style="width: 110px;">
         </div>
 
         <div class="card">
@@ -614,8 +663,8 @@ export function getSettingsWebviewHtml(
         <div class="card" style="flex-direction: column; align-items: stretch; gap: 14px;">
           <div style="display: flex; justify-content: space-between; align-items: center;">
             <div class="card-info">
-              <div class="card-title">自选标的预警监控矩阵</div>
-              <div class="card-desc">在下方表格中为每个标的配置触发条件。留空项不生效；修改后即时自动保存。</div>
+              <div class="card-title">自选标的持仓成本与预警监控矩阵</div>
+              <div class="card-desc">在下方表格中为每个标的配置买入成本/持仓量及到价预警。修改后即时自动保存，留空则不生效。</div>
             </div>
             <button class="btn-clear" id="btnClearAllAlerts" style="font-size: 12px; padding: 5px 12px;">🗑️ 清空所有预警</button>
           </div>
@@ -623,15 +672,17 @@ export function getSettingsWebviewHtml(
             <table class="alert-table">
               <thead>
                 <tr>
-                  <th style="width: 28%;">标的名称 / 代码</th>
-                  <th style="width: 22%;">高于目标价 (突破 &gt;)</th>
-                  <th style="width: 22%;">低于目标价 (跌破 &lt;)</th>
-                  <th style="width: 18%;">单日涨跌幅 |%| ≥</th>
-                  <th style="width: 10%; text-align: center;">监控开关</th>
+                  <th style="width: 20%;">标的名称 / 代码</th>
+                  <th style="width: 13%;">持仓成本</th>
+                  <th style="width: 13%;">持仓数量</th>
+                  <th style="width: 18%;">高于目标价 (突破 &gt;)</th>
+                  <th style="width: 18%;">低于目标价 (跌破 &lt;)</th>
+                  <th style="width: 11%;">单日波动 |%|</th>
+                  <th style="width: 7%; text-align: center;">预警开关</th>
                 </tr>
               </thead>
               <tbody id="alertTableBody">
-                <tr><td colspan="5" style="text-align: center; color: var(--desc-fg); padding: 24px;">加载自选标的列表中...</td></tr>
+                <tr><td colspan="7" style="text-align: center; color: var(--desc-fg); padding: 24px;">加载自选标的列表中...</td></tr>
               </tbody>
             </table>
           </div>
@@ -1091,11 +1142,13 @@ export function getSettingsWebviewHtml(
           var grpName = groupKeys[i];
           var list = watchlist[grpName];
           if (Array.isArray(list) && list.length > 0) {
-            html += '<tr class="alert-grp-row"><td colspan="5">分组: ' + escapeHtml(grpName) + ' (' + list.length + ' 个标的)' + (isMasked ? ' <span style="font-size: 11px; opacity: 0.7;">[已脱敏]</span>' : '') + '</td></tr>';
+            html += '<tr class="alert-grp-row"><td colspan="7">分组: ' + escapeHtml(grpName) + ' (' + list.length + ' 个标的)' + (isMasked ? ' <span style="font-size: 11px; opacity: 0.7;">[已脱敏]</span>' : '') + '</td></tr>';
             for (var j = 0; j < list.length; j++) {
               var item = list[j];
               var sym = (typeof item === 'string') ? item : (item.symbol || item.code || '');
               var name = (typeof item === 'object' && item.name) ? item.name : sym;
+              var costVal = (typeof item === 'object' && item.cost !== undefined && item.cost !== null) ? item.cost : '';
+              var sharesVal = (typeof item === 'object' && item.shares !== undefined && item.shares !== null) ? item.shares : '';
               var key = getSymbolKey(sym);
               var rawTicker = sym.toLowerCase().replace(/^(us|hk|sh|sz|bj)[\\._\\-\\/]?/i, '');
               var rule = alerts[key] || alerts[sym] || (sym ? alerts[sym.toLowerCase()] : undefined) || (rawTicker ? alerts[rawTicker] : undefined) || {};
@@ -1112,11 +1165,13 @@ export function getSettingsWebviewHtml(
               var displayName = isMasked ? '***' : nameEsc;
               var displaySym = isMasked ? (symEsc.length > 3 ? symEsc[0] + '***' + symEsc.slice(-1) : '***') : symEsc;
 
-              html += '<tr data-key="' + keyEsc + '" data-symbol="' + symEsc + '" data-name="' + nameEsc + '">'
+              html += '<tr data-key="' + keyEsc + '" data-symbol="' + symEsc + '" data-group="' + escapeHtml(grpName) + '" data-name="' + nameEsc + '">'
                 + '<td>'
                 + '<div style="font-weight: 500; font-size: 13px;">' + displayName + '</div>'
                 + '<div style="font-size: 11px; color: var(--desc-fg); font-family: monospace;">' + displaySym + '</div>'
                 + '</td>'
+                + '<td><input type="number" step="any" min="0" class="alert-input alert-cost" placeholder="成本" value="' + (isMasked && costVal !== '' ? '***' : escapeHtml(costVal)) + '" ' + (isMasked ? 'disabled' : '') + '></td>'
+                + '<td><input type="number" step="any" min="0" class="alert-input alert-shares" placeholder="数量" value="' + (isMasked && sharesVal !== '' ? '***' : escapeHtml(sharesVal)) + '" ' + (isMasked ? 'disabled' : '') + '></td>'
                 + '<td><input type="number" step="any" class="alert-input alert-above" placeholder="未设置" value="' + escapeHtml(aboveVal) + '"></td>'
                 + '<td><input type="number" step="any" class="alert-input alert-below" placeholder="未设置" value="' + escapeHtml(belowVal) + '"></td>'
                 + '<td><input type="number" step="any" class="alert-input alert-pct" placeholder="未设置" value="' + escapeHtml(pctVal) + '"></td>'
@@ -1128,7 +1183,7 @@ export function getSettingsWebviewHtml(
         }
 
         if (totalCount === 0) {
-          html = '<tr><td colspan="5" style="text-align: center; color: var(--desc-fg); padding: 24px;">暂无自选标的。请在左侧侧边栏添加自选后，即可在此配置到价预警。</td></tr>';
+          html = '<tr><td colspan="7" style="text-align: center; color: var(--desc-fg); padding: 24px;">暂无自选标的。请在左侧侧边栏添加自选后，即可在此配置持仓成本与到价预警。</td></tr>';
         }
 
         // 保存当前正在编辑的输入框焦点，防止实时重渲染时失去焦点
@@ -1144,6 +1199,8 @@ export function getSettingsWebviewHtml(
             if (activeEl.classList.contains('alert-above')) activeClass = 'alert-above';
             else if (activeEl.classList.contains('alert-below')) activeClass = 'alert-below';
             else if (activeEl.classList.contains('alert-pct')) activeClass = 'alert-pct';
+            else if (activeEl.classList.contains('alert-cost')) activeClass = 'alert-cost';
+            else if (activeEl.classList.contains('alert-shares')) activeClass = 'alert-shares';
             if (activeEl.selectionStart !== undefined) {
               activeSelStart = activeEl.selectionStart;
               activeSelEnd = activeEl.selectionEnd;
@@ -1208,9 +1265,9 @@ export function getSettingsWebviewHtml(
         var rows = tbody.querySelectorAll('tr[data-key]');
         for (var i = 0; i < rows.length; i++) {
           (function(tr) {
-            var inputs = tr.querySelectorAll('.alert-input');
-            for (var k = 0; k < inputs.length; k++) {
-              inputs[k].addEventListener('input', function() {
+            var alertInputs = tr.querySelectorAll('.alert-above, .alert-below, .alert-pct');
+            for (var k = 0; k < alertInputs.length; k++) {
+              alertInputs[k].addEventListener('input', function() {
                 updateAlertRuleFromRow(tr);
                 clearTimeout(alertSaveTimer);
                 alertSaveTimer = setTimeout(function() {
@@ -1226,6 +1283,38 @@ export function getSettingsWebviewHtml(
                 sendUpdate('alerts', currentAlerts);
                 showToast(chk.checked ? '✅ 已开启预警监控' : '⚪ 已暂停预警监控');
               });
+            }
+            var costInput = tr.querySelector('.alert-cost');
+            var sharesInput = tr.querySelector('.alert-shares');
+            var onHoldingChange = function() {
+              var grp = tr.getAttribute('data-group');
+              var sym = tr.getAttribute('data-symbol');
+              var cVal = costInput && costInput.value.trim() !== '' ? parseFloat(costInput.value) : undefined;
+              var sVal = sharesInput && sharesInput.value.trim() !== '' ? parseFloat(sharesInput.value) : undefined;
+              if (cVal !== undefined && (!isFinite(cVal) || cVal < 0)) {
+                showToast('⚠️ 持仓成本必须为大于等于 0 的有效数字');
+                if (costInput) costInput.value = '';
+                cVal = undefined;
+              }
+              if (sVal !== undefined && (!isFinite(sVal) || sVal <= 0)) {
+                showToast('⚠️ 持仓数量必须为大于 0 的有效数字');
+                if (sharesInput) sharesInput.value = '';
+                sVal = undefined;
+              }
+              vscode.postMessage({
+                command: 'updateHolding',
+                group: grp,
+                symbol: sym,
+                cost: cVal,
+                shares: sVal
+              });
+              showToast('💼 持仓设置已保存');
+            };
+            if (costInput) {
+              costInput.addEventListener('change', onHoldingChange);
+            }
+            if (sharesInput) {
+              sharesInput.addEventListener('change', onHoldingChange);
             }
           })(rows[i]);
         }
@@ -1279,6 +1368,10 @@ export function getSettingsWebviewHtml(
       }
 
       // 1. 通用设置事件
+      on('btnAddCommonIndices', 'click', function() {
+        postCmd('addCommonIndices');
+        showToast('🌐 正在导入全球核心大盘指数...');
+      });
       on('btnRestoreDefaults', 'click', function() {
         var tbody = document.getElementById('alertTableBody');
         if (tbody) {
@@ -1310,6 +1403,17 @@ export function getSettingsWebviewHtml(
       on('autoCollapseClosedGroups', 'change', function() {
         sendUpdate('autoCollapseClosedGroups', this.checked);
         showToast(this.checked ? '🌙 已开启休市自动折叠与停止轮播' : '⚪ 已关闭休市自动折叠与停止轮播');
+      });
+      on('statusBarHoldingEnabled', 'change', function() {
+        sendUpdate('statusBar.holdingEnabled', this.checked);
+        showToast(this.checked ? '💼 已开启持仓盈亏独立轮播条' : '⚪ 已关闭持仓盈亏独立轮播条');
+      });
+      on('statusBarHoldingInterval', 'change', function() {
+        var val = parseInt(this.value, 10);
+        if (!isNaN(val) && val >= 1 && val <= 60) {
+          sendUpdate('statusBar.holdingInterval', val);
+          showToast('⏱️ 持仓盈亏轮播间隔已更新为 ' + val + ' 秒');
+        }
       });
 
       function syncMasterSwitch() {

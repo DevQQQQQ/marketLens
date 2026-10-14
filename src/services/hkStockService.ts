@@ -27,19 +27,22 @@ export class HKStockService extends TencentBaseService {
   public readonly assetType = "HK_STOCK" as const;
 
   /**
-   * 规范化港股代码，例如 "00700" -> "hk00700", "700" -> "hk00700", "hk00700" -> "hk00700"
+   * 规范化港股代码，例如 "00700" -> "hk00700", "700" -> "hk00700", "hk00700" -> "hk00700", "hkHSI" -> "hkHSI", "hsi" -> "hkHSI"
    */
   public normalizeCode(raw: string): string {
-    const clean = raw.trim().toLowerCase().replace(/^r_/, "");
-    if (clean.startsWith("hk")) {
-      const numPart = clean.slice(2);
-      if (/^\d+$/.test(numPart)) {
-        return `hk${numPart.padStart(5, "0")}`;
+    const clean = raw.trim().replace(/^r_/i, "");
+    if (/^hk/i.test(clean)) {
+      const rest = clean.slice(2);
+      if (/^\d+$/.test(rest)) {
+        return `hk${rest.padStart(5, "0")}`;
       }
-      return clean;
+      return `hk${rest.toUpperCase()}`;
     }
     if (/^\d+$/.test(clean) && clean.length <= 5) {
       return `hk${clean.padStart(5, "0")}`;
+    }
+    if (/^[a-zA-Z]+$/.test(clean)) {
+      return `hk${clean.toUpperCase()}`;
     }
     return `hk${clean}`;
   }
@@ -51,7 +54,7 @@ export class HKStockService extends TencentBaseService {
       const match = line.match(/^v_([a-zA-Z0-9_\.]+)="(.+)"$/);
       if (!match) { continue; }
 
-      const fullCode = match[1];
+      const fullCode = match[1].replace(/^r_/i, "");
       const f = match[2].split("~");
       if (f.length < 35) {
         logger.warn(

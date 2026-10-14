@@ -2,7 +2,7 @@
 	"name": "marketlens",
 	"displayName": "%displayName%",
 	"description": "%description%",
-	"version": "1.2.6",
+	"version": "1.3.0",
 	"publisher": "devqqqqq",
 	"repository": {
 		"type": "git",
@@ -179,6 +179,16 @@
 				"command": "marketlens.copyCode",
 				"title": "%command.copyCode%",
 				"icon": "$(clippy)"
+			},
+			{
+				"command": "marketlens.setHolding",
+				"title": "%command.setHolding%",
+				"icon": "$(edit)"
+			},
+			{
+				"command": "marketlens.addCommonIndices",
+				"title": "%command.addCommonIndices%",
+				"icon": "$(graph-line)"
 			}
 		],
 		"keybindings": [
@@ -292,6 +302,11 @@
 					"command": "marketlens.copyCode",
 					"when": "view == marketlens.watchlist && viewItem == stockItem",
 					"group": "2_manage@2"
+				},
+				{
+					"command": "marketlens.setHolding",
+					"when": "view == marketlens.watchlist && viewItem == stockItem",
+					"group": "2_manage@3"
 				}
 			]
 		},
@@ -579,6 +594,20 @@
 					"default": true,
 					"order": 63,
 					"description": "%configuration.alpha.statusBar.description%"
+				},
+				"marketlens.statusBar.holdingEnabled": {
+					"type": "boolean",
+					"default": true,
+					"order": 64,
+					"description": "%configuration.statusBar.holdingEnabled.description%"
+				},
+				"marketlens.statusBar.holdingInterval": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 60,
+					"default": 3,
+					"order": 65,
+					"description": "%configuration.statusBar.holdingInterval.description%"
 				},
 				"marketlens.watchlist": {
 					"type": "object",

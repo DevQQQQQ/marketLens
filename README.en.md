@@ -8,7 +8,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/VS_Code-^1.85.0-007ACC?logo=visualstudiocode" alt="VS Code Version">
   <img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License">
-  <img src="https://img.shields.io/badge/Release-v1.2.6-blue.svg" alt="Version">
+  <img src="https://img.shields.io/badge/Release-v1.3.0-blue.svg" alt="Version">
   <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-orange" alt="Platform">
 </p>
 
@@ -111,17 +111,49 @@ Stay focused on your code without watching tickers constantly. Receive accurate,
 
 ---
 
-### 5. 📊 Smooth Status Bar Carousel
+### 5. 💼 Portfolio Cost & Real-Time Floating P&L
+
+- **Cost Price & Holding Quantity Entry**:
+    - Configure holding cost price and position quantity for any watched asset (supports share counts, token balances, and fractional decimals);
+    - Wizard-style setup via right-click context menu "Set Holding Cost & Quantity", or inline editing with bidirectional auto-persistence in the "⚡ Price Alerts" tab of the Settings Webview.
+- **Real-Time Sidebar P&L Labels**:
+    - Watchlist tree item descriptions dynamically calculate and display cumulative floating P&L and return rates (e.g., `[+¥2.00万 (+12.5%)]` / `[-$27.00 (-3.00%)]`);
+    - Intelligent comma formatting and adaptive Chinese/Western high-value unit abbreviations.
+- **Hover Reconciliation Tooltip Card**:
+    - Hovering over any held asset expands a dedicated **"💼 Portfolio P&L Summary"** card section:
+    - Clearly breaks down holding average price, position quantity, current market value, principal invested, today's P&L (intraday market-to-market), and all-time cumulative floating profit/loss.
+- **Stealth & Privacy Guardrails**:
+    - When disguise stealth mode (`Ctrl+Alt+K`) or boss key (`Ctrl+Alt+M`) is activated, sidebar floating P&L labels are instantly replaced with `[***]` privacy masks, and hover details are safely suppressed.
+
+---
+
+### 6. 📈 One-Click Global Market Benchmark Indices Import
+
+- **One-Click Benchmark Aggregation**:
+    - Aggregates core benchmarks across A-Shares (SSE Index `sh000001`, SZSE Component `sz399001`, ChiNext `sz399006`), HK Stocks (Hang Seng Index `hkHSI`, Hang Seng TECH `hkHSTECH`), US Stocks (Nasdaq `.IXIC`, S&P 500 `.INX`, Dow Jones `.DJI`), and Crypto (Bitcoin `BTCUSDT`);
+    - Idempotent deduplication prevents repeated entries, allowing safe one-click importing regardless of existing watchlist contents.
+- **Empty-State Sidebar Guidance & Settings Access**:
+    - When the watchlist is empty or recently cleared, an actionable "📈 Import Global Core Benchmark Indices" button appears directly in the sidebar tree view;
+    - Also readily accessible under "General Settings" in the Webview panel.
+
+---
+
+### 7. 📊 Smooth Status Bar Carousel
 
 - **Seamless Scrolling**: Quote fetching is decoupled from the carousel timer, preventing stuttering and resets;
 - **Global Status Bar Switch**: Toggle the status bar ticker on or off globally under General Settings;
 - **Independent Section Toggles**:
     - Choose which sections participate in the status bar ticker (`Funds`, `A-Shares`, `HK Stocks`, `US Stocks`, `Binance`, `Alpha`);
     - Example: View all assets in the sidebar, but cycle only US stocks or crypto in the status bar.
+- **💼 Dedicated Portfolio Floating P&L Carousel Ticker**:
+    - Dedicated position ticker item positioned to the right of market quotes (priority 99), supporting smart hybrid cycling (Frame 0: account-wide total equity & aggregate P&L summary + Frame 1..N: per-asset real-time floating P&L rotation);
+    - Hovering reveals the full Markdown portfolio reconciliation card, clicking brings up the Settings center;
+    - **Mode B Privacy Guard**: Fully hidden with carousel timers immediately destroyed under stealth disguise mode or boss key;
+    - **Customizable Interval**: Enable/disable portfolio rotation and configure cycling interval between 1~60 seconds (default 3s) in Settings.
 
 ---
 
-### 6. 🕶️ Stealth Productivity & Privacy Features
+### 8. 🕶️ Stealth Productivity & Privacy Features
 
 - 🕶️ **Boss Key Instant Hide / Restore (`Ctrl + Alt + M` / `Alt + M`)**:
     - Instantly hides the sidebar watchlist, empties the status bar ticker, and closes the settings panel;
@@ -139,7 +171,7 @@ Stay focused on your code without watching tickers constantly. Receive accurate,
 
 ---
 
-### 7. 🧹 Active-Set Pruning & Dynamic Memory Reclamation
+### 9. 🧹 Active-Set Pruning & Dynamic Memory Reclamation
 
 - **Zero Memory Leaks**:
     - Traditional extensions often retain dead cache entries and active timers after symbols are deleted;
@@ -148,7 +180,7 @@ Stay focused on your code without watching tickers constantly. Receive accurate,
 
 ---
 
-### 8. 🛡️ Network Architecture, Sources & Privacy
+### 10. 🛡️ Network Architecture, Sources & Privacy
 
 Designed for corporate network environments with firewall audits, DPI, and DNS logging:
 
@@ -179,7 +211,7 @@ Designed for corporate network environments with firewall audits, DPI, and DNS l
 
 ---
 
-### 9. ⚙️ Dedicated Graphical Settings Panel
+### 11. ⚙️ Dedicated Graphical Settings Panel
 
 Click the **`⚙️`** gear icon at the top of the watchlist sidebar to open the modern Webview configuration panel:
 

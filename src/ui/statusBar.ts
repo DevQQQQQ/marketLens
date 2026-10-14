@@ -4,6 +4,7 @@
 import * as vscode from "vscode";
 import type { MarketItem } from "../types/index.ts";
 import { getProxyStatus } from "../services/network.ts";
+import { escapeHtml, type HoldingItemQuote } from "../utils/symbolHelper.ts";
 
 // ────────────────────────────────────────────────────────────────
 //  常量与工具函数
@@ -34,6 +35,21 @@ function toDisplayPrice(price: number): string {
   return price.toFixed(2);
 }
 
+/** 格式化持仓盈亏数字（支持亿、万单位简写与千分位） */
+function formatHoldingProfit(val: number): string {
+  const abs = Math.abs(val);
+  if (abs >= 1e8) {
+    return `${(abs / 1e8).toFixed(2)}亿`;
+  }
+  if (abs >= 1e4) {
+    return `${(abs / 1e4).toFixed(2)}万`;
+  }
+  if (abs < 0.01 && abs > 0) {
+    return abs.toFixed(4);
+  }
+  return abs.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
 /** 确定性 hash，用于把 symbol 稳定映射到伪装标签（不随机，保证同一资产标签一致） */
 function symbolHash(str: string): number {
   let h = 0;
@@ -61,9 +77,17 @@ export interface StatusBarOptions {
 
 export class StatusBar implements vscode.Disposable {
   private readonly barItem: vscode.StatusBarItem;
+  private readonly holdingBarItem: vscode.StatusBarItem;
 
-  // 数据
+  // 行情数据
   private quotes: MarketItem[] = [];
+
+  // 持仓数据
+  private holdings: HoldingItemQuote[] = [];
+  private holdingEnabled = true;
+  private holdingInterval = 3;
+  private holdingIndex = 0;
+  private holdingTimer: ReturnType<typeof setInterval> | undefined;
 
   // 状态开关
   private maskMode: boolean;
@@ -88,6 +112,7 @@ export class StatusBar implements vscode.Disposable {
     this.colorNeutral = options.colorNeutral;
     this.colorScheme  = options.colorScheme || "greenUpRedDown";
 
+    // 1. 行情条 (priority 100)
     this.barItem = vscode.window.createStatusBarItem(
       vscode.StatusBarAlignment.Left,
       100
@@ -95,6 +120,14 @@ export class StatusBar implements vscode.Disposable {
     this.barItem.command = "marketlens.refresh";
     this.barItem.text    = "$(graph-line) MarketLens…";
     this.barItem.show();
+
+    // 2. 持仓盈亏独立轮播条 (priority 99，自然排列在行情条右侧)
+    this.holdingBarItem = vscode.window.createStatusBarItem(
+      vscode.StatusBarAlignment.Left,
+      99
+    );
+    this.holdingBarItem.command = "marketlens.openSettings";
+    this.holdingBarItem.text    = "";
   }
 
   // ── 公共 API ────────────────────────────────────────────────────
@@ -136,6 +169,37 @@ export class StatusBar implements vscode.Disposable {
     this.render();
   }
 
+  /** 更新全量持仓数据与持仓状态栏配置，触发持仓盈亏条目刷新 */
+  setHoldings(
+    holdings: HoldingItemQuote[],
+    enabled: boolean = true,
+    intervalSeconds: number = 3
+  ): void {
+    const prevCount = this.holdings.length;
+    this.holdings = holdings;
+    this.holdingEnabled = enabled;
+    this.holdingInterval = Number.isFinite(intervalSeconds)
+      ? Math.min(60, Math.max(1, Math.round(intervalSeconds)))
+      : 3;
+
+    if (this.holdings.length === 0 || !this.holdingEnabled || this.bossKeyActive || this.maskMode) {
+      this.holdingIndex = 0;
+      this.stopHoldingCarousel();
+      this.holdingBarItem.text = "";
+      this.holdingBarItem.tooltip = undefined;
+      this.holdingBarItem.hide();
+      return;
+    }
+
+    const totalFrames = this.holdings.length + 1;
+    if (prevCount !== this.holdings.length || this.holdingIndex >= totalFrames) {
+      this.holdingIndex = 0;
+    }
+
+    this.restartHoldingCarousel();
+    this.renderHolding();
+  }
+
   /** 显示状态栏 */
   show(): void {
     if (!this.bossKeyActive && this.quotes.length > 0) {
@@ -145,29 +209,53 @@ export class StatusBar implements vscode.Disposable {
       this.barItem.text = "";
       this.barItem.hide();
     }
+    if (this.holdingEnabled && !this.bossKeyActive && !this.maskMode && this.holdings.length > 0) {
+      this.restartHoldingCarousel();
+      this.renderHolding();
+    }
   }
 
   /** 隐藏状态栏 */
   hide(): void {
     this.barItem.hide();
+    this.stopHoldingCarousel();
+    this.holdingBarItem.hide();
   }
 
   /** 切换伪装模式 */
   setMaskMode(enabled: boolean): void {
     this.maskMode = enabled;
     this.render();
+    if (this.maskMode) {
+      // 模式 B：摸鱼伪装模式下一票否决彻底隐藏持仓盈亏状态栏条目
+      this.stopHoldingCarousel();
+      this.holdingBarItem.text = "";
+      this.holdingBarItem.tooltip = undefined;
+      this.holdingBarItem.hide();
+    } else {
+      if (this.holdingEnabled && !this.bossKeyActive && this.holdings.length > 0) {
+        this.restartHoldingCarousel();
+        this.renderHolding();
+      }
+    }
   }
 
   /** 切换颜色脱敏模式（纯白/无红绿） */
   setColorNeutral(enabled: boolean): void {
     this.colorNeutral = enabled;
     this.render();
+    if (!this.maskMode && !this.bossKeyActive && this.holdings.length > 0) {
+      this.renderHolding();
+    }
   }
 
   /** 切换涨跌配色方案（绿涨红跌 / 红涨绿跌） */
   setColorScheme(scheme: "greenUpRedDown" | "redUpGreenDown"): void {
     this.colorScheme = scheme || "greenUpRedDown";
     this.render();
+    if (!this.maskMode && !this.bossKeyActive && this.holdings.length > 0) {
+      this.renderHolding();
+    }
   }
 
   /**
@@ -178,15 +266,27 @@ export class StatusBar implements vscode.Disposable {
     this.bossKeyActive = forceState !== undefined ? forceState : !this.bossKeyActive;
     if (this.bossKeyActive) {
       this.stopCarousel();
+      this.stopHoldingCarousel();
       this.barItem.text = "";
       this.barItem.tooltip = "";
       this.barItem.hide();
+      this.holdingBarItem.text = "";
+      this.holdingBarItem.tooltip = undefined;
+      this.holdingBarItem.hide();
     } else {
       this.barItem.show();
       this.restartCarousel();
       this.render();
+      if (this.holdingEnabled && !this.maskMode && this.holdings.length > 0) {
+        this.restartHoldingCarousel();
+        this.renderHolding();
+      }
     }
     return this.bossKeyActive;
+  }
+
+  isHoldingCarouselRunning(): boolean {
+    return this.holdingTimer !== undefined;
   }
 
   isBossKeyActive(): boolean {
@@ -349,14 +449,225 @@ export class StatusBar implements vscode.Disposable {
     }, durationMs);
   }
 
+  // ── 持仓轮播与渲染 ──────────────────────────────────────────────
+
+  private restartHoldingCarousel(): void {
+    this.stopHoldingCarousel();
+    if (this.bossKeyActive || this.maskMode || !this.holdingEnabled || this.holdings.length === 0) {
+      return;
+    }
+    const totalFrames = this.holdings.length + 1;
+    if (totalFrames > 1) {
+      this.holdingTimer = setInterval(() => {
+        this.holdingIndex = (this.holdingIndex + 1) % totalFrames;
+        this.renderHolding();
+      }, this.holdingInterval * 1000);
+    }
+  }
+
+  private stopHoldingCarousel(): void {
+    if (this.holdingTimer !== undefined) {
+      clearInterval(this.holdingTimer);
+      this.holdingTimer = undefined;
+    }
+  }
+
+  private renderHolding(): void {
+    if (this.bossKeyActive || this.maskMode || !this.holdingEnabled || this.holdings.length === 0) {
+      this.holdingBarItem.text = "";
+      this.holdingBarItem.tooltip = undefined;
+      this.holdingBarItem.hide();
+      return;
+    }
+
+    this.holdingBarItem.show();
+
+    if (this.holdingIndex === 0) {
+      // ── 第 0 帧：全账户总持仓概览 ──
+      const currencyMap: Record<string, { todayProfit: number; totalProfit: number; count: number; marketVal: number; costVal: number }> = {};
+      for (const h of this.holdings) {
+        const cur = h.currency || "CNY";
+        if (!currencyMap[cur]) {
+          currencyMap[cur] = { todayProfit: 0, totalProfit: 0, count: 0, marketVal: 0, costVal: 0 };
+        }
+        const data = currencyMap[cur];
+        data.count++;
+        data.costVal += h.cost * h.shares;
+        data.marketVal += h.price * h.shares;
+        data.totalProfit += (h.price - h.cost) * h.shares;
+
+        let tProf = 0;
+        if (h.change !== undefined && Number.isFinite(h.change)) {
+          tProf = h.change * h.shares;
+        } else if (h.open !== undefined && h.open > 0) {
+          tProf = (h.price - h.open) * h.shares;
+        } else if (h.prevClose !== undefined && h.prevClose > 0) {
+          tProf = (h.price - h.prevClose) * h.shares;
+        } else if (h.price > 0 && h.changePercent !== undefined && Number.isFinite(h.changePercent)) {
+          const r = h.changePercent / 100;
+          const prevPrice = r > -1 ? h.price / (1 + r) : h.price;
+          tProf = (h.price - prevPrice) * h.shares;
+        }
+        data.todayProfit += tProf;
+      }
+
+      const entries = Object.entries(currencyMap).sort((a, b) => b[1].count - a[1].count);
+      const [primaryCur, primaryData] = entries[0];
+      const pSym = primaryCur === "CNY" ? "¥" : primaryCur === "HKD" ? "HK$" : "$";
+      const tSign = primaryData.todayProfit >= 0 ? "+" : "-";
+      const fSign = primaryData.totalProfit >= 0 ? "+" : "-";
+      const tFmt = formatHoldingProfit(primaryData.todayProfit);
+      const fFmt = formatHoldingProfit(primaryData.totalProfit);
+
+      let text = `$(briefcase) 今日: ${tSign}${pSym}${tFmt} ｜ 浮盈: ${fSign}${pSym}${fFmt}`;
+      if (entries.length > 1) {
+        const extras = entries.slice(1).map(([c, d]) => {
+          const s = c === "CNY" ? "¥" : c === "HKD" ? "HK$" : "$";
+          const sign = d.totalProfit >= 0 ? "+" : "-";
+          return `${sign}${s}${formatHoldingProfit(d.totalProfit)}`;
+        });
+        text += ` (${extras.join(", ")})`;
+      }
+
+      this.holdingBarItem.text = text;
+      this.applyHoldingColor(primaryData.totalProfit > 0, Math.abs(primaryData.totalProfit) < 0.01);
+    } else {
+      // ── 第 1..N 帧：按次序轮播已持仓的具体标的 ──
+      const h = this.holdings[this.holdingIndex - 1];
+      if (!h) {
+        this.holdingIndex = 0;
+        this.renderHolding();
+        return;
+      }
+      const curSym = h.currency === "CNY" ? "¥" : h.currency === "HKD" ? "HK$" : "$";
+      const profit = (h.price - h.cost) * h.shares;
+      const profitRate = ((h.price - h.cost) / h.cost) * 100;
+      const pSign = profit >= 0 ? "+" : "-";
+      const rSign = profitRate >= 0 ? "+" : "-";
+      const pFmt = formatHoldingProfit(profit);
+      const rFmt = Math.abs(profitRate).toFixed(2);
+
+      this.holdingBarItem.text = `$(briefcase) ${h.name}: ${pSign}${curSym}${pFmt} (${rSign}${rFmt}%) [${this.holdingIndex}/${this.holdings.length}]`;
+      this.applyHoldingColor(profit > 0, Math.abs(profit) < 0.01);
+    }
+
+    this.holdingBarItem.tooltip = this._buildHoldingBarTooltip();
+  }
+
+  private _buildHoldingBarTooltip(): vscode.MarkdownString {
+    const md = new vscode.MarkdownString();
+    md.isTrusted = false;
+    md.supportHtml = false;
+
+    const currencyMap: Record<string, { todayProfit: number; totalProfit: number; count: number; marketVal: number; costVal: number }> = {};
+    for (const h of this.holdings) {
+      const cur = h.currency || "CNY";
+      if (!currencyMap[cur]) {
+        currencyMap[cur] = { todayProfit: 0, totalProfit: 0, count: 0, marketVal: 0, costVal: 0 };
+      }
+      const data = currencyMap[cur];
+      data.count++;
+      data.costVal += h.cost * h.shares;
+      data.marketVal += h.price * h.shares;
+      data.totalProfit += (h.price - h.cost) * h.shares;
+
+      let tProf = 0;
+      if (h.change !== undefined && Number.isFinite(h.change)) {
+        tProf = h.change * h.shares;
+      } else if (h.open !== undefined && h.open > 0) {
+        tProf = (h.price - h.open) * h.shares;
+      } else if (h.prevClose !== undefined && h.prevClose > 0) {
+        tProf = (h.price - h.prevClose) * h.shares;
+      } else if (h.price > 0 && h.changePercent !== undefined && Number.isFinite(h.changePercent)) {
+        const r = h.changePercent / 100;
+        const prevPrice = r > -1 ? h.price / (1 + r) : h.price;
+        tProf = (h.price - prevPrice) * h.shares;
+      }
+      data.todayProfit += tProf;
+    }
+
+    md.appendMarkdown(`### 💼 持仓盈亏独立对账看板\n\n`);
+
+    const entries = Object.entries(currencyMap);
+    if (entries.length === 1) {
+      const [cur, d] = entries[0];
+      const s = cur === "CNY" ? "¥" : cur === "HKD" ? "HK$" : "$";
+      const tSign = d.todayProfit >= 0 ? "+" : "-";
+      const fSign = d.totalProfit >= 0 ? "+" : "-";
+      const tFmt = formatHoldingProfit(d.todayProfit);
+      const fFmt = formatHoldingProfit(d.totalProfit);
+      const mFmt = formatHoldingProfit(d.marketVal);
+      const cFmt = formatHoldingProfit(d.costVal);
+      const totalRate = d.costVal > 0 ? ((d.totalProfit / d.costVal) * 100) : 0;
+      const rSign = totalRate >= 0 ? "+" : "-";
+
+      md.appendMarkdown(`| 统计指标 | 数值表现 |\n| :--- | :--- |\n`);
+      md.appendMarkdown(`| **今日总盈亏** | **${tSign}${s}${tFmt}** |\n`);
+      md.appendMarkdown(`| **累计总浮盈** | **${fSign}${s}${fFmt} (${rSign}${Math.abs(totalRate).toFixed(2)}%)** |\n`);
+      md.appendMarkdown(`| **持仓总市值** | ${s}${mFmt} |\n`);
+      md.appendMarkdown(`| **持仓总本金** | ${s}${cFmt} |\n\n`);
+    } else {
+      md.appendMarkdown(`| 币种 | 今日盈亏 | 累计浮盈 | 当前市值 | 持仓本金 |\n| :--- | :--- | :--- | :--- | :--- |\n`);
+      for (const [cur, d] of entries) {
+        const s = cur === "CNY" ? "¥" : cur === "HKD" ? "HK$" : "$";
+        const tSign = d.todayProfit >= 0 ? "+" : "-";
+        const fSign = d.totalProfit >= 0 ? "+" : "-";
+        const tFmt = formatHoldingProfit(d.todayProfit);
+        const fFmt = formatHoldingProfit(d.totalProfit);
+        const mFmt = formatHoldingProfit(d.marketVal);
+        const cFmt = formatHoldingProfit(d.costVal);
+        const label = cur === "CNY" ? "人民币 (¥)" : cur === "HKD" ? "港币 (HK$)" : "美元 ($)";
+        md.appendMarkdown(`| **${label}** | ${tSign}${s}${tFmt} | ${fSign}${s}${fFmt} | ${s}${mFmt} | ${s}${cFmt} |\n`);
+      }
+      md.appendMarkdown(`\n`);
+    }
+
+    md.appendMarkdown(`---\n**持仓明细（共 ${this.holdings.length} 只标的，当前轮播: ${this.holdingIndex === 0 ? "总览" : `${this.holdingIndex}/${this.holdings.length}`}）**：\n\n`);
+    for (let i = 0; i < this.holdings.length; i++) {
+      const h = this.holdings[i];
+      const s = h.currency === "CNY" ? "¥" : h.currency === "HKD" ? "HK$" : "$";
+      const profit = (h.price - h.cost) * h.shares;
+      const profitRate = ((h.price - h.cost) / h.cost) * 100;
+      const pSign = profit >= 0 ? "+" : "-";
+      const rSign = profitRate >= 0 ? "+" : "-";
+      const pFmt = formatHoldingProfit(profit);
+      const rFmt = Math.abs(profitRate).toFixed(2);
+      const currentIndicator = this.holdingIndex === i + 1 ? " 👈" : "";
+      md.appendMarkdown(`- **${escapeHtml(h.name)}** (\`${h.symbol}\`): 成本 ${s}${toDisplayPrice(h.cost)} ｜ 现价 ${s}${toDisplayPrice(h.price)} ｜ 浮盈: **${pSign}${s}${pFmt} (${rSign}${rFmt}%)**${currentIndicator}\n`);
+    }
+
+    md.appendMarkdown(`\n_点击打开「通用与全局设置」调整持仓轮播开关与间隔 (当前 ${this.holdingInterval}s)_`);
+    return md;
+  }
+
+  private applyHoldingColor(isProfit: boolean, isZero: boolean): void {
+    if (isZero || this.colorNeutral) {
+      this.holdingBarItem.backgroundColor = undefined;
+      this.holdingBarItem.color = undefined;
+      return;
+    }
+    const isRedUp = this.colorScheme === "redUpGreenDown";
+    const isRed = isRedUp ? isProfit : !isProfit;
+    if (isRed) {
+      this.holdingBarItem.backgroundColor = new vscode.ThemeColor(
+        "statusBarItem.errorBackground"
+      );
+    } else {
+      this.holdingBarItem.backgroundColor = undefined;
+    }
+    this.holdingBarItem.color = undefined;
+  }
+
   // ── 释放 ────────────────────────────────────────────────────────
 
   dispose(): void {
     this.stopCarousel();
+    this.stopHoldingCarousel();
     if (this.flashAlertTimer !== undefined) {
       clearTimeout(this.flashAlertTimer);
       this.flashAlertTimer = undefined;
     }
     this.barItem.dispose();
+    this.holdingBarItem.dispose();
   }
 }

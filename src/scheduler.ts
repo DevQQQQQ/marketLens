@@ -9,7 +9,7 @@ import { logger } from "./utils/logger.ts";
 import { isAShareMarketOpen, isHKMarketOpen, isUSMarketOpen, evaluateAdaptiveThrottle, shouldSkipMarketPolling } from "./utils/marketHours.ts";
 import { readConfig } from "./utils/config.ts";
 
-import { extractTargetsFromWatchlist, extractStatusBarQuotes, pruneQuoteCache } from "./utils/symbolHelper.ts";
+import { extractTargetsFromWatchlist, extractStatusBarQuotes, pruneQuoteCache, extractHoldingQuotes } from "./utils/symbolHelper.ts";
 import { AlertManager } from "./services/alertManager.ts";
 
 export interface SchedulerContext {
@@ -161,8 +161,9 @@ export class RefreshScheduler implements vscode.Disposable {
    */
   public updateStatusBar(currentConfig?: MarketLensConfig): void {
     const config = currentConfig || readConfig();
-    const statusBarQuotes = extractStatusBarQuotes(config.watchlist, this.quoteCache, {
-      statusBarEnabled: config.statusBar?.enabled,
+    const isStatusBarActive = config.statusBar?.enabled !== false;
+    const filterOptions = {
+      statusBarEnabled: isStatusBarActive,
       autoCollapseClosedGroups: config.autoCollapseClosedGroups ?? true,
       fund: config.fund,
       aShare: config.aShare,
@@ -170,7 +171,9 @@ export class RefreshScheduler implements vscode.Disposable {
       usStock: config.usStock,
       binance: config.binance,
       alpha: config.alpha,
-    });
+    };
+
+    const statusBarQuotes = extractStatusBarQuotes(config.watchlist, this.quoteCache, filterOptions);
 
     this.statusBar.setQuotes(statusBarQuotes);
     if (statusBarQuotes.length > 0) {
@@ -178,6 +181,13 @@ export class RefreshScheduler implements vscode.Disposable {
     } else {
       this.statusBar.hide();
     }
+
+    const holdingQuotes = extractHoldingQuotes(config.watchlist, this.quoteCache, filterOptions);
+    this.statusBar.setHoldings?.(
+      holdingQuotes,
+      isStatusBarActive && (config.statusBar?.holdingEnabled ?? true),
+      config.statusBar?.holdingInterval ?? 3
+    );
   }
 
   public isAdaptiveThrottled(): boolean {

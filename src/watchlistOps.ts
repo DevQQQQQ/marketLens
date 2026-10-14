@@ -1,10 +1,11 @@
 import * as vscode from "vscode";
 import { StockItem, WatchlistProvider } from "./ui/watchlistProvider.ts";
-import type { MarketItem, PriceAlertItem, WatchlistConfig, WatchConfigItem } from "./types/index.ts";
+import type { MarketItem, PriceAlertItem, WatchlistConfig, WatchConfigItem, AssetType } from "./types/index.ts";
 import { isSameSymbol, normalizeSymbolKey, resolveItemDisplayName, batchReorderWatchlist, type ReorderItemDescriptor } from "./utils/symbolHelper.ts";
 import { validateAndParseInput } from "./utils/inputValidator.ts";
 import { readConfig } from "./utils/config.ts";
 import { SettingsWebviewPanel } from "./ui/settingsWebview.ts";
+import { logger } from "./utils/logger.ts";
 
 export interface WatchlistOpsContext {
   quoteCache: Map<string, MarketItem>;
@@ -601,6 +602,225 @@ export class WatchlistOps {
       );
     } catch (err: unknown) {
       vscode.window.showErrorMessage(`保存预警失败: ${(err as Error)?.message || String(err)}`);
+    }
+  }
+
+  /**
+   * 设置标的持仓成本与数量 (F1: Cost & PnL)
+   */
+  public async setHolding(node?: StockItem): Promise<void> {
+    let targetGroup: string | undefined;
+    let targetSymbol: string | undefined;
+    let targetName: string | undefined;
+    let currentPrice: number | undefined;
+
+    if (node && node.item) {
+      targetGroup = node.groupName;
+      targetSymbol = node.confSymbol || node.item.symbol;
+      targetName = resolveItemDisplayName(node.confName, node.confSymbol, node.item);
+      currentPrice = node.item.price;
+    } else {
+      const cfg = readConfig();
+      const allItems: Array<{
+        label: string;
+        description: string;
+        group: string;
+        symbol: string;
+        currentPrice?: number;
+      }> = [];
+
+      for (const [grp, items] of Object.entries(cfg.watchlist)) {
+        for (const item of items ?? []) {
+          if (!item?.symbol) continue;
+          const normKey = normalizeSymbolKey(item.symbol);
+          const cached = this.quoteCache.get(normKey) || this.quoteCache.get(item.symbol);
+          const finalName = resolveItemDisplayName(item.name, item.symbol, cached);
+          const holdingDesc =
+            item.cost !== undefined && item.shares !== undefined
+              ? ` · [持仓: ${item.shares} 股/份, 成本: ${item.cost}]`
+              : "";
+          allItems.push({
+            label: finalName,
+            description: `${grp} · ${item.symbol}${holdingDesc}`,
+            group: grp,
+            symbol: item.symbol,
+            currentPrice: cached?.price,
+          });
+        }
+      }
+
+      if (allItems.length === 0) {
+        vscode.window.showInformationMessage("自选列表为空，请先添加自选标的");
+        return;
+      }
+
+      const picked = await vscode.window.showQuickPick(allItems, {
+        title: "选择要设置持仓成本的标的",
+        placeHolder: "搜索股票、币对或代币",
+      });
+      if (!picked) return;
+      targetGroup = picked.group;
+      targetSymbol = picked.symbol;
+      targetName = picked.label;
+      currentPrice = picked.currentPrice;
+    }
+
+    if (!targetGroup || !targetSymbol) return;
+
+    const cfg = readConfig();
+    const watchlist = { ...cfg.watchlist };
+    const groupList = [...(watchlist[targetGroup] || [])];
+    const itemIndex = groupList.findIndex(
+      (it) => normalizeSymbolKey(it.symbol) === normalizeSymbolKey(targetSymbol!) || it.symbol === targetSymbol
+    );
+    if (itemIndex === -1) {
+      vscode.window.showWarningMessage(`未在分组【${targetGroup}】中找到标的 ${targetSymbol}`);
+      return;
+    }
+
+    const currentItem = { ...groupList[itemIndex] };
+    const initialCost = currentItem.cost !== undefined ? String(currentItem.cost) : "";
+    const initialShares = currentItem.shares !== undefined ? String(currentItem.shares) : "";
+
+    const pricePrompt = currentPrice && currentPrice > 0 ? ` (当前现价: ${currentPrice})` : "";
+    const costInput = await vscode.window.showInputBox({
+      title: `设置持仓成本 - ${targetName} (${targetSymbol})`,
+      prompt: `请输入买入成本单价${pricePrompt}，留空或输入 0 则清除持仓`,
+      value: initialCost,
+      validateInput: (v) => {
+        const trimmed = v.trim();
+        if (!trimmed || trimmed === "0") return null;
+        const num = parseFloat(trimmed);
+        if (!Number.isFinite(num) || num < 0) return "请输入合法的非负有效数字";
+        return null;
+      },
+    });
+
+    if (costInput === undefined) return;
+
+    const trimmedCost = costInput.trim();
+    if (!trimmedCost || trimmedCost === "0") {
+      delete currentItem.cost;
+      delete currentItem.shares;
+      groupList[itemIndex] = currentItem;
+      watchlist[targetGroup] = groupList;
+      try {
+        await vscode.workspace
+          .getConfiguration("marketlens")
+          .update("watchlist", watchlist, vscode.ConfigurationTarget.Global);
+        this.rebuildTree(watchlist);
+        SettingsWebviewPanel.syncSettings();
+        vscode.window.showInformationMessage(`已清除【${targetName}】的持仓信息`);
+      } catch (err: unknown) {
+        vscode.window.showErrorMessage(`清除持仓失败: ${(err as Error)?.message || String(err)}`);
+      }
+      return;
+    }
+
+    const costVal = parseFloat(trimmedCost);
+    if (!Number.isFinite(costVal) || costVal <= 0) return;
+
+    const sharesInput = await vscode.window.showInputBox({
+      title: `设置持仓数量 - ${targetName} (${targetSymbol})`,
+      prompt: `请输入持仓数量 / 股数 / 币数`,
+      value: initialShares || "100",
+      validateInput: (v) => {
+        const trimmed = v.trim();
+        if (!trimmed) return "持仓数量不能为空";
+        const num = parseFloat(trimmed);
+        if (!Number.isFinite(num) || num <= 0) return "持仓数量必须为大于 0 的有效数字";
+        return null;
+      },
+    });
+
+    if (sharesInput === undefined) return;
+
+    const sharesVal = parseFloat(sharesInput.trim());
+    if (!Number.isFinite(sharesVal) || sharesVal <= 0) return;
+    currentItem.cost = costVal;
+    currentItem.shares = sharesVal;
+    groupList[itemIndex] = currentItem;
+    watchlist[targetGroup] = groupList;
+
+    try {
+      await vscode.workspace
+        .getConfiguration("marketlens")
+        .update("watchlist", watchlist, vscode.ConfigurationTarget.Global);
+      this.rebuildTree(watchlist);
+      SettingsWebviewPanel.syncSettings();
+      vscode.window.showInformationMessage(
+        `✅ 已设置【${targetName}】持仓：${sharesVal} 股/份，成本价 ${costVal}`
+      );
+    } catch (err: unknown) {
+      vscode.window.showErrorMessage(`保存持仓失败: ${(err as Error)?.message || String(err)}`);
+    }
+  }
+
+  /**
+   * 一键添加核心大盘指数到自选列表 (F2: Core Indices)
+   */
+  public async addCommonIndices(): Promise<void> {
+    const COMMON_INDICES: Array<{
+      group: string;
+      symbol: string;
+      name: string;
+      type: AssetType;
+    }> = [
+      { group: "A股", symbol: "sh000001", name: "上证指数", type: "A_SHARE" },
+      { group: "A股", symbol: "sz399001", name: "深证成指", type: "A_SHARE" },
+      { group: "A股", symbol: "sz399006", name: "创业板指", type: "A_SHARE" },
+      { group: "港股", symbol: "hkHSI", name: "恒生指数", type: "HK_STOCK" },
+      { group: "港股", symbol: "hkHSTECH", name: "恒生科技", type: "HK_STOCK" },
+      { group: "美股", symbol: "us.IXIC", name: "纳斯达克", type: "US_STOCK" },
+      { group: "美股", symbol: "us.INX", name: "标普500", type: "US_STOCK" },
+      { group: "美股", symbol: "us.DJI", name: "道琼斯", type: "US_STOCK" },
+      { group: "Binance", symbol: "BTCUSDT", name: "比特币", type: "CRYPTO" },
+    ];
+
+    const cfg = readConfig();
+    const watchlist: WatchlistConfig = {};
+    for (const [k, v] of Object.entries(cfg.watchlist)) {
+      watchlist[k] = [...(v || [])];
+    }
+
+    let addedCount = 0;
+    for (const item of COMMON_INDICES) {
+      const list = watchlist[item.group] || [];
+      const exists = list.some(
+        (it) => normalizeSymbolKey(it.symbol) === normalizeSymbolKey(item.symbol)
+      );
+      if (!exists) {
+        list.push({
+          symbol: item.symbol,
+          name: item.name,
+          type: item.type,
+        });
+        watchlist[item.group] = list;
+        addedCount++;
+      }
+    }
+
+    if (addedCount === 0) {
+      vscode.window.showInformationMessage("常用大盘指数已全部在自选列表中，无需重复添加");
+      return;
+    }
+
+    try {
+      await vscode.workspace
+        .getConfiguration("marketlens")
+        .update("watchlist", watchlist, vscode.ConfigurationTarget.Global);
+      this.rebuildTree(watchlist);
+      SettingsWebviewPanel.syncSettings();
+      try {
+        await vscode.commands.executeCommand("marketlens.refresh");
+      } catch (err) {
+        logger.debug("[addCommonIndices] refresh command failed", err);
+      }
+      vscode.window.showInformationMessage(
+        `✅ 已成功添加 ${addedCount} 只常用大盘指数到自选看板！`
+      );
+    } catch (err: unknown) {
+      vscode.window.showErrorMessage(`添加大盘指数失败: ${(err as Error)?.message || String(err)}`);
     }
   }
 }

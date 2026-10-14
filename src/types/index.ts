@@ -49,6 +49,8 @@ export interface WatchConfigItem {
   symbol: string;
   name?: string;
   type: AssetType;
+  cost?: number;   // 持仓买入成本单价
+  shares?: number; // 持仓数量/股数/币数
 }
 
 export interface WatchlistConfig {
@@ -84,7 +86,7 @@ export interface MarketLensConfig {
   maskMode: boolean;
   colorNeutral: boolean;
   colorScheme: ColorScheme;
-  statusBar: { enabled: boolean };
+  statusBar: { enabled: boolean; holdingEnabled?: boolean; holdingInterval?: number };
   autoCollapseClosedGroups?: boolean;
   proxyPort?: number;
   proxyUrl?: string;

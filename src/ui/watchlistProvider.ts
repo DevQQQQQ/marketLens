@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import type { MarketItem, WatchlistConfig, WatchConfigItem, PriceAlertItem, AlertsConfig, GroupSortMode } from "../types/index.ts";
-import { normalizeSymbolKey, stripMarketPrefix, resolveItemAssetType, resolveItemDisplayName, resolveTrendColors, type ColorScheme, ASSET_TYPE_TO_SECTION_MAP, isGroupMarketClosed, buildGroupNodeId } from "../utils/symbolHelper.ts";
+import { normalizeSymbolKey, stripMarketPrefix, resolveItemAssetType, resolveItemDisplayName, resolveTrendColors, type ColorScheme, ASSET_TYPE_TO_SECTION_MAP, isGroupMarketClosed, buildGroupNodeId, isItemMarketClosed } from "../utils/symbolHelper.ts";
 import { isDisplayMasked, resolveStockTooltip } from "../utils/maskState.ts";
 import { DEFAULT_PROXY_PORT, getProxyStatus } from "../services/network.ts";
 import { logger } from "../utils/logger.ts";
@@ -153,6 +153,8 @@ export class StockItem extends vscode.TreeItem {
   public item: MarketItem;
   public groupName: string;
   public readonly confSymbol: string;
+  public cost?: number;
+  public shares?: number;
   private maskMode: boolean;
   private colorNeutral: boolean;
 
@@ -164,7 +166,9 @@ export class StockItem extends vscode.TreeItem {
     colorNeutral: boolean = false,
     alertRule?: PriceAlertItem,
     confName?: string,
-    colorScheme: ColorScheme = "greenUpRedDown"
+    colorScheme: ColorScheme = "greenUpRedDown",
+    cost?: number,
+    shares?: number
   ) {
     super(resolveItemDisplayName(confName, confSymbol, item), vscode.TreeItemCollapsibleState.None);
     this.item = item;
@@ -174,10 +178,12 @@ export class StockItem extends vscode.TreeItem {
     this.colorNeutral = colorNeutral;
     this.confName = confName;
     this.colorScheme = colorScheme;
+    this.cost = cost;
+    this.shares = shares;
     this.id = `${groupName}_${confSymbol}`;
     this.contextValue = "stockItem";
     this.alertRule = alertRule;
-    this.refresh(item, maskMode, colorNeutral, alertRule, confName, colorScheme);
+    this.refresh(item, maskMode, colorNeutral, alertRule, confName, colorScheme, cost, shares);
   }
 
   /** 更新显示内容与悬停详细信息 */
@@ -187,7 +193,9 @@ export class StockItem extends vscode.TreeItem {
     colorNeutral: boolean = false,
     alertRule?: PriceAlertItem,
     confName?: string,
-    colorScheme?: ColorScheme
+    colorScheme?: ColorScheme,
+    cost?: number,
+    shares?: number
   ): void {
     this.item = item;
     if (alertRule !== undefined) {
@@ -198,6 +206,12 @@ export class StockItem extends vscode.TreeItem {
     }
     if (colorScheme !== undefined) {
       this.colorScheme = colorScheme;
+    }
+    if (cost !== undefined) {
+      this.cost = cost;
+    }
+    if (shares !== undefined) {
+      this.shares = shares;
     }
     const currentAlert = this.alertRule;
     const hasAlert = !!(
@@ -218,12 +232,39 @@ export class StockItem extends vscode.TreeItem {
     const arrow = item.changePercent >= 0 ? "▲" : "▼";
     const { colorHint, themeColor } = resolveTrendColors(item.changePercent, colorNeutral, this.colorScheme);
 
+    const hasHolding =
+      this.cost !== undefined &&
+      Number.isFinite(this.cost) &&
+      this.cost > 0 &&
+      this.shares !== undefined &&
+      Number.isFinite(this.shares) &&
+      this.shares > 0;
+
+    let holdingBadge = "";
+    if (hasHolding) {
+      if (maskMode) {
+        holdingBadge = " [***]";
+      } else if (hasQuote) {
+        const profit = (item.price - this.cost!) * this.shares!;
+        const profitRate = ((item.price - this.cost!) / this.cost!) * 100;
+        const isLoss = profit < 0;
+        const absProfit = Math.abs(profit);
+        const absRate = Math.abs(profitRate);
+        const pSign = isLoss ? "-" : "+";
+        const profitFormatted =
+          absProfit >= 1e4
+            ? `${(absProfit / 1e4).toFixed(2)}万`
+            : absProfit.toFixed(item.price < 1 ? 4 : 2);
+        holdingBadge = ` [${pSign}${currSym}${profitFormatted} (${pSign}${absRate.toFixed(1)}%)]`;
+      }
+    }
+
     const alertSuffix = hasAlert ? " 🔔" : "";
     const displayName = resolveItemDisplayName(this.confName, this.confSymbol, item);
     this.label = displayName;
     this.description = maskMode
-      ? `****  **${alertSuffix}`
-      : (hasQuote ? `${priceStr}  ${arrow} ${pctStr}${alertSuffix}` : `获取行情中…${alertSuffix}`);
+      ? `****  **${holdingBadge}${alertSuffix}`
+      : (hasQuote ? `${priceStr}  ${arrow} ${pctStr}${holdingBadge}${alertSuffix}` : `获取行情中…${holdingBadge}${alertSuffix}`);
 
     // ── 差异化构建 Tooltip ──
     this.tooltip = resolveStockTooltip(maskMode, () => {
@@ -248,6 +289,8 @@ export class StockItem extends vscode.TreeItem {
         const copyTokenUri = `command:marketlens.copyCode?${encodeURIComponent(JSON.stringify(item.symbol))}`;
         const copyContractUri = `command:marketlens.copyCode?${encodeURIComponent(JSON.stringify(item.id))}`;
 
+        const holdingSection = this._buildHoldingTooltipSection(item, "USD", "$");
+
         mdText =
           `### ${item.name} (\`${item.symbol}\`) [📋 复制](${copyTokenUri})\n` +
           `公链网络：${chainBadge} &nbsp;|&nbsp; 交易池：${dexBadge}\n\n` +
@@ -259,8 +302,9 @@ export class StockItem extends vscode.TreeItem {
           `| **开盘参考价** | ${openStr} |\n` +
           `| **流动性池 (Liquidity)** | **${liqStr}** |\n` +
           `| **24h 成交额** | **${turnoverStr}** |\n` +
-          `| **合约地址** | \`${item.id}\` &nbsp;[📋 复制合约](${copyContractUri}) |\n\n` +
-          `_数据源: DexScreener · ${new Date().toLocaleTimeString()}_`;
+          `| **合约地址** | \`${item.id}\` &nbsp;[📋 复制合约](${copyContractUri}) |\n` +
+          holdingSection +
+          `\n_数据源: DexScreener · ${new Date().toLocaleTimeString()}_`;
       } else {
         // A 股与 Binance 传统金融卡片
         const openStr = item.open !== undefined && item.open > 0 ? formatPrice(item.open, currency) : "--";
@@ -327,14 +371,16 @@ export class StockItem extends vscode.TreeItem {
         }
 
         const copyCmdUri = `command:marketlens.copyCode?${encodeURIComponent(JSON.stringify(item.symbol))}`;
+        const holdingSection = this._buildHoldingTooltipSection(item, currency, currSym);
 
         mdText =
           `### ${item.name} (\`${item.symbol}\`) [📋 复制](${copyCmdUri})\n` +
           `计价货币：**${currencyLabel}**\n\n` +
           `| 核心指标 | 实时行情 |\n` +
           `| :--- | :--- |\n` +
-          `${tableRows.join("\n")}\n\n` +
-          `_更新时间: ${new Date().toLocaleTimeString()}_`;
+          `${tableRows.join("\n")}\n` +
+          holdingSection +
+          `\n_更新时间: ${new Date().toLocaleTimeString()}_`;
       }
 
       if (!hasQuote) {
@@ -381,6 +427,87 @@ export class StockItem extends vscode.TreeItem {
         new vscode.ThemeColor(themeColor)
       );
     }
+  }
+
+  /**
+   * 构建悬停 Tooltip 详情卡片中的持仓盈亏对账独立专区
+   */
+  private _buildHoldingTooltipSection(
+    item: MarketItem,
+    currency: "CNY" | "USD" | "HKD",
+    currSym: string
+  ): string {
+    if (
+      this.cost === undefined ||
+      !Number.isFinite(this.cost) ||
+      this.cost <= 0 ||
+      this.shares === undefined ||
+      !Number.isFinite(this.shares) ||
+      this.shares <= 0 ||
+      item.price === undefined ||
+      item.price <= 0
+    ) {
+      return "";
+    }
+
+    const costPriceStr = formatPrice(this.cost, currency);
+    const sharesStr = this.shares.toLocaleString();
+    const marketVal = item.price * this.shares;
+    const costVal = this.cost * this.shares;
+    const marketValStr = formatLargeNumber(marketVal, false, currency);
+    const costValStr = formatLargeNumber(costVal, false, currency);
+
+    // 1. 今日盈亏计算
+    let todayProfit = 0;
+    const todayRate = item.changePercent ?? 0;
+    if (item.change !== undefined && Number.isFinite(item.change)) {
+      todayProfit = item.change * this.shares;
+    } else if (item.open !== undefined && item.open > 0) {
+      todayProfit = (item.price - item.open) * this.shares;
+    } else if (item.prevClose !== undefined && item.prevClose > 0) {
+      todayProfit = (item.price - item.prevClose) * this.shares;
+    } else if (item.price > 0 && item.changePercent !== undefined && Number.isFinite(item.changePercent)) {
+      const r = item.changePercent / 100;
+      const prevPrice = r > -1 ? item.price / (1 + r) : item.price;
+      todayProfit = (item.price - prevPrice) * this.shares;
+    }
+
+    const isTodayLoss = todayProfit < 0;
+    const todaySign = isTodayLoss ? "-" : "+";
+    const absToday = Math.abs(todayProfit);
+    const todayFormatted =
+      absToday >= 1e4 && (currency === "CNY" || currency === "HKD")
+        ? `${(absToday / 1e4).toFixed(2)}万`
+        : absToday.toFixed(item.price < 1 ? 4 : 2);
+    const todayAmtStr = `${todaySign}${currSym}${todayFormatted}`;
+    const todayRateStr = `${todaySign}${Math.abs(todayRate).toFixed(2)}%`;
+    const isClosed = isItemMarketClosed(item, this.groupName);
+    const todayStatusTag = isClosed ? "收盘结算" : "盘中日内";
+    const todayColor = resolveTrendColors(todayRate, this.colorNeutral, this.colorScheme).colorHint;
+
+    // 2. 累计浮盈计算
+    const totalProfit = (item.price - this.cost) * this.shares;
+    const totalRate = ((item.price - this.cost) / this.cost) * 100;
+    const isTotalLoss = totalProfit < 0;
+    const totalSign = isTotalLoss ? "-" : "+";
+    const absTotal = Math.abs(totalProfit);
+    const absTotalRate = Math.abs(totalRate);
+    const totalFormatted =
+      absTotal >= 1e4 && (currency === "CNY" || currency === "HKD")
+        ? `${(absTotal / 1e4).toFixed(2)}万`
+        : absTotal.toFixed(item.price < 1 ? 4 : 2);
+    const totalAmtStr = `${totalSign}${currSym}${totalFormatted}`;
+    const totalRateStr = `${totalSign}${absTotalRate.toFixed(2)}%`;
+    const totalColor = resolveTrendColors(totalRate, this.colorNeutral, this.colorScheme).colorHint;
+
+    return (
+      `\n\n| 💼 持仓盈亏对账 | 详情 |\n` +
+      `| :--- | :--- |\n` +
+      `| **持仓均价 / 数量** | ${costPriceStr} &nbsp;\\|&nbsp; ${sharesStr} |\n` +
+      `| **当前市值 / 本金** | ${marketValStr} &nbsp;\\|&nbsp; ${costValStr} |\n` +
+      `| **今日盈亏** | ${todayColor} **${todayAmtStr}** (${todayRateStr}) &nbsp;\`[${todayStatusTag}]\` |\n` +
+      `| **累计浮盈** | ${totalColor} **${totalAmtStr}** (${totalRateStr}) &nbsp;\`[从买入建仓至今]\` |\n`
+    );
   }
 }
 
@@ -879,7 +1006,18 @@ export class WatchlistProvider
           };
 
         const alertRule = this.getAlertRule(conf.symbol, found);
-        const node = new StockItem(found, groupName, conf.symbol, this.isMasked(), this.colorNeutral, alertRule, conf.name, this.colorScheme);
+        const node = new StockItem(
+          found,
+          groupName,
+          conf.symbol,
+          this.isMasked(),
+          this.colorNeutral,
+          alertRule,
+          conf.name,
+          this.colorScheme,
+          conf.cost,
+          conf.shares
+        );
         // 使用规范化 key 存储，辅以原始 conf.symbol 索引，支持同一标的在不同分组中均能刷新
         const registerKey = (k?: string) => {
           if (!k) return;

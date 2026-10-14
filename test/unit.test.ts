@@ -8,6 +8,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { isSameSymbol, normalizeSymbolKey, stripMarketPrefix, normalizeUSCode, inferAShareExchange, normalizeAShareCode, resolveItemAssetType, resolveItemDisplayName, getWatchlistFingerprint, reorderWatchlist, batchReorderWatchlist, pruneQuoteCache, extractTargetsFromWatchlist, extractStatusBarQuotes, computeStatusBarEnabled, resolveTrendColors, chunkArray, decodeGbk, escapeHtml, ASSET_TYPE_TO_SECTION_MAP, NORMALIZE_SYMBOL_KEY_CLIENT_SCRIPT, isItemMarketClosed, isGroupMarketClosed, buildGroupNodeId, sanitizeWatchlist } from "../src/utils/symbolHelper.ts";
+import type { MarketItem, WatchlistConfig, WatchConfigItem } from "../src/types/index.ts";
 import { validateAndParseInput, isContractAddress, extractContractAddressFromUrl } from "../src/utils/inputValidator.ts";
 import { isAShareMarketOpen, isHKMarketOpen, isUSMarketOpen, isAShareHoliday, isHKHoliday, isUSHoliday, evaluateAdaptiveThrottle, getZonedTimeParts, beijingFormatter, newYorkFormatter, shouldSkipMarketPolling, MAX_COVERED_HOLIDAY_YEAR, checkHolidayCoverage, US_HOLIDAYS, HK_HOLIDAYS } from "../src/utils/marketHours.ts";
 import { validateAndNormalizeProxyUrl, parseProxy, resetProxyCache, getSystemProxyUrl, smartNetworkGet, getCachedWorkingPort, testLocalPort, DEFAULT_PROXY_PORT, DEFAULT_PROXY_URL, COMMON_PROXY_PORTS, DEFAULT_REQUEST_TIMEOUT_MS, SYSTEM_PROXY_FALLBACK_TIMEOUT_MS, QUICK_PROXY_PROBE_TIMEOUT_MS, PORT_PROBE_TIMEOUT_MS } from "../src/services/network.ts";
@@ -2042,6 +2043,22 @@ test("Tencent行情解析 - A股/港股/美股 Golden Sample 契约测试与三�
   assert.strictEqual(hkHealed[0].change, 5.20);
   assert.strictEqual(hkHealed[0].changePercent, 1.39);
 
+  // 港股恒生指数规范化与解析契约测试
+  assert.strictEqual(hkService.normalizeCode("hkHSI"), "hkHSI");
+  assert.strictEqual(hkService.normalizeCode("hsi"), "hkHSI");
+  assert.strictEqual(hkService.normalizeCode("hkhsi"), "hkHSI");
+  assert.strictEqual(hkService.normalizeCode("hkHSTECH"), "hkHSTECH");
+  assert.strictEqual(normalizeSymbolKey("hkHSI"), "hkhsi");
+  assert.strictEqual(normalizeSymbolKey("HSI"), "hkhsi");
+
+  const hsiRaw = 'v_hkHSI="100~恒生指数~HSI~24345.22~24271.20~24172.09~18756593~0~0~24345.22~0~0~0~0~0~0~0~0~0~24345.22~0~0~0~0~0~0~0~0~0~0.0~2026/10/13 18:31:26~74.02~0.30~24345.22~23987.77~24345.22~18756593~18756593~0~0~~0~0~1.47~0~0~Hang Seng Index~0~28056.10~22518.00~1.22~-36.45~0~0~0~0~0~0.00~0.00~0.00~0~-5.01~0.27~ZS~~~-1.21~-2.30~-3.17~0.00~0.00~0.00~0.000~~-8.35~HKD~1~";';
+  const hsiItems = hkService.parseResponse(hsiRaw);
+  assert.strictEqual(hsiItems.length, 1);
+  assert.strictEqual(hsiItems[0].name, "恒生指数");
+  assert.strictEqual(hsiItems[0].price, 24345.22);
+  assert.strictEqual(hsiItems[0].change, 74.02);
+  assert.strictEqual(hsiItems[0].changePercent, 0.30);
+
   // ── 3. 美股 Golden Sample 契约解析测试 ──────────────────────────────
   const usService = new USStockService();
   const usF = new Array(50).fill("0");
@@ -3521,6 +3538,349 @@ test("audit - 魔法数字常量化与休市日历年度过期护栏验证 (M3 &
   const fp2 = getWatchlistFingerprint({ "美股": ["AAPL"] });
   assert.strictEqual(fp1, fp2, "不同前缀形式的同一标的指纹应完全相同，避免无意义全量重启");
 });
+
+test("F1 & F2: 持仓成本浮动盈亏计算、脱敏遮罩与大盘指数导入契约", async () => {
+  const { StockItem } = await import("../src/ui/watchlistProvider.ts");
+  const { WatchlistOps } = await import("../src/watchlistOps.ts");
+  const vscode = await import("vscode");
+
+  // 1. sanitizeWatchlist 正确保留有效 cost 与 shares，过滤非法负数与 NaN
+  const sanitized = sanitizeWatchlist({
+    "A股": [
+      { symbol: "sh600519", name: "贵州茅台", type: "A_SHARE", cost: 1600, shares: 100 },
+      { symbol: "sz000001", name: "平安银行", type: "A_SHARE", cost: -10, shares: "invalid" },
+      { symbol: "sh61398", name: "工商银行", type: "A_SHARE", cost: 5.5, shares: 1000 },
+    ],
+  });
+  assert.strictEqual(sanitized["A股"][0].cost, 1600);
+  assert.strictEqual(sanitized["A股"][0].shares, 100);
+  assert.strictEqual(sanitized["A股"][1].cost, undefined, "负数成本应被过滤");
+  assert.strictEqual(sanitized["A股"][1].shares, undefined, "非数字持仓应被过滤");
+  assert.strictEqual(sanitized["A股"][2].cost, 5.5);
+  assert.strictEqual(sanitized["A股"][2].shares, 1000);
+
+  // 2. StockItem 盈利状态渲染 (现价 1800, 成本 1600, 100 股)
+  const itemProfit: MarketItem = {
+    id: "sh600519",
+    name: "贵州茅台",
+    symbol: "sh600519",
+    type: "A_SHARE",
+    price: 1800,
+    changePercent: 1.5,
+    currency: "CNY",
+  };
+  const nodeProfit = new StockItem(
+    itemProfit,
+    "A股",
+    "sh600519",
+    false, // maskMode
+    false,
+    undefined,
+    "贵州茅台",
+    "greenUpRedDown",
+    1600,
+    100
+  );
+  // 浮盈: (1800 - 1600) * 100 = 20,000 = 2.00万，收益率: +12.5%
+  assert.ok(nodeProfit.description?.toString().includes("+¥2.00万 (+12.5%)"), "盈利应格式化输出万分位与收益率");
+  const tooltipProfit = (nodeProfit.tooltip as any)?.value || String(nodeProfit.tooltip || "");
+  assert.ok(tooltipProfit.includes("持仓盈亏对账"), "Tooltip 应包含持仓盈亏对账");
+  assert.ok(tooltipProfit.includes("今日盈亏"), "Tooltip 应包含今日盈亏");
+  assert.ok(tooltipProfit.includes("累计浮盈"), "Tooltip 应包含累计浮盈");
+  assert.ok(tooltipProfit.includes("+¥2.00万"), "Tooltip 应包含累计浮盈金额");
+
+  // 3.1 测试 Alpha 链上代币 Tooltip 持仓盈亏对账与双货币符号防回归
+  const itemAlpha: MarketItem = {
+    id: "0x73b84f7e3901f39fc29f3704a03126d317ab4444",
+    name: "PUP",
+    symbol: "PUP",
+    type: "ALPHA_TOKEN",
+    price: 0.000291,
+    changePercent: -6.59,
+    currency: "USD",
+  };
+  const nodeAlpha = new StockItem(
+    itemAlpha,
+    "Alpha",
+    "0x73b84f7e3901f39fc29f3704a03126d317ab4444",
+    false,
+    false,
+    undefined,
+    "PUP",
+    "greenUpRedDown",
+    0.000300,
+    3000000
+  );
+  const tooltipAlpha = (nodeAlpha.tooltip as any)?.value || String(nodeAlpha.tooltip || "");
+  assert.ok(tooltipAlpha.includes("持仓盈亏对账"), "Alpha Tooltip 应包含持仓盈亏对账");
+  assert.ok(tooltipAlpha.includes("$0.000300"), "Alpha Tooltip 应包含持仓均价");
+  assert.ok(tooltipAlpha.includes("3,000,000"), "Alpha Tooltip 应包含千分位持仓数量");
+  assert.ok(tooltipAlpha.includes("今日盈亏"), "Alpha Tooltip 应包含今日盈亏");
+  assert.ok(tooltipAlpha.includes("累计浮盈"), "Alpha Tooltip 应包含累计浮盈");
+  assert.strictEqual(tooltipAlpha.includes("$$"), false, "Alpha Tooltip 严禁出现双货币符号 $$");
+
+  // 3. StockItem 亏损状态渲染 (现价 1500, 成本 1600, 100 股)
+  const itemLoss: MarketItem = {
+    id: "sh600519",
+    name: "贵州茅台",
+    symbol: "sh600519",
+    type: "A_SHARE",
+    price: 1500,
+    changePercent: -2.0,
+    currency: "CNY",
+  };
+  const nodeLoss = new StockItem(
+    itemLoss,
+    "A股",
+    "sh600519",
+    false,
+    false,
+    undefined,
+    "贵州茅台",
+    "greenUpRedDown",
+    1600,
+    100
+  );
+  // 浮亏: (1500 - 1600) * 100 = -10,000 = -1.00万，收益率: -6.25% -> -6.3%
+  assert.ok(nodeLoss.description?.toString().includes("-¥1.00万 (-6.3%)"), "亏损应正确渲染负号");
+
+  // 4. 摸鱼脱敏模式 (maskMode = true) 下一票否决持仓数字泄露
+  const nodeMasked = new StockItem(
+    itemProfit,
+    "A股",
+    "sh600519",
+    true, // maskMode = true
+    false,
+    undefined,
+    "贵州茅台",
+    "greenUpRedDown",
+    1600,
+    100
+  );
+  assert.ok(nodeMasked.description?.toString().includes("[***]"), "脱敏模式下持仓浮盈应打码为 [***]");
+  assert.strictEqual(nodeMasked.description?.toString().includes("2.00万"), false, "脱敏模式严禁泄露真实盈亏");
+  assert.strictEqual(nodeMasked.description?.toString().includes("1800"), false, "脱敏模式严禁泄露现价");
+
+  // 5. WatchlistOps addCommonIndices 一键导入大盘指数
+  let savedWatchlist: WatchlistConfig = {};
+  await vscode.workspace.getConfiguration("marketlens").update("watchlist", {
+    "A股": [{ symbol: "sh600519", name: "贵州茅台", type: "A_SHARE" }],
+  }, vscode.ConfigurationTarget.Global);
+
+  const ops = new WatchlistOps({
+    quoteCache: new Map(),
+    rebuildTree: (wl) => {
+      if (wl) savedWatchlist = wl;
+    },
+  });
+  await ops.addCommonIndices();
+  assert.ok(savedWatchlist["A股"].some((it: WatchConfigItem) => it.symbol === "sh000001"), "应导入上证指数");
+  assert.ok(savedWatchlist["港股"].some((it: WatchConfigItem) => it.symbol === "hkHSI"), "应导入恒生指数");
+  assert.ok(savedWatchlist["美股"].some((it: WatchConfigItem) => it.symbol === "us.IXIC"), "应导入纳斯达克");
+  assert.ok(savedWatchlist["Binance"].some((it: WatchConfigItem) => it.symbol === "BTCUSDT"), "应导入比特币");
+
+  // 再次执行应幂等防重
+  const originalCount = savedWatchlist["A股"].length;
+  await vscode.workspace.getConfiguration("marketlens").update("watchlist", savedWatchlist, vscode.ConfigurationTarget.Global);
+  await ops.addCommonIndices();
+  assert.strictEqual(savedWatchlist["A股"].length, originalCount, "重复执行不应重复追加已有指数");
+
+  // 6. 验证通用与全局设置 Webview 面板包含一键导入大盘指数按钮
+  const { getSettingsWebviewHtml } = await import("../src/ui/settingsHtml.ts");
+  const html = getSettingsWebviewHtml("nonce123", "1.2.6", "vscode-resource://", {} as any);
+  assert.ok(html.includes("btnAddCommonIndices"), "Webview HTML 必须包含 btnAddCommonIndices 按钮");
+  assert.ok(html.includes("一键导入全球大盘指数"), "Webview HTML 必须包含一键导入全球大盘指数说明");
+});
+
+test("F3: 状态栏持仓盈亏独立轮播条 (方案3智能混合模式 + 模式B摸鱼伪装安全防线 + 自定义间隔)", async () => {
+  const { StatusBar } = await import("../src/ui/statusBar.ts");
+  const { readConfig } = await import("../src/utils/config.ts");
+  const { getSettingsWebviewHtml } = await import("../src/ui/settingsHtml.ts");
+
+  // 1. 初始化 StatusBar
+  const bar = new StatusBar({ maskMode: false, colorNeutral: false, colorScheme: "greenUpRedDown" });
+  try {
+    const mockHoldings = [
+      {
+        name: "贵州茅台",
+        symbol: "sh600519",
+        currency: "CNY" as const,
+        cost: 1600,
+        shares: 100,
+        price: 1800,
+        changePercent: 1.25,
+        change: 22.5,
+      },
+      {
+        name: "PUP",
+        symbol: "PUPUSDT",
+        currency: "USD" as const,
+        cost: 0.000300,
+        shares: 3000000,
+        price: 0.000291,
+        changePercent: -6.59,
+        change: -0.0000205,
+      },
+    ];
+
+    // 2. setHoldings 触发渲染 Frame 0 (全账户总账)
+    bar.setHoldings(mockHoldings, true, 3);
+    const holdingItem = (bar as any).holdingBarItem;
+    assert.ok(holdingItem.text.includes("今日:"), "第0帧应展示全账户今日盈亏总账");
+    assert.ok(holdingItem.text.includes("浮盈:"), "第0帧应展示全账户累计浮盈总账");
+    assert.ok(holdingItem.text.includes("¥"), "第0帧应展示主导币种符号");
+    assert.ok(bar.isHoldingCarouselRunning(), "轮播定时器应当处于运行中");
+
+    // 3. 悬停 Tooltip 验证
+    const tooltip = holdingItem.tooltip?.value || String(holdingItem.tooltip || "");
+    assert.ok(tooltip.includes("持仓盈亏独立对账看板"), "Tooltip 应包含持仓对账标题");
+    assert.ok(tooltip.includes("贵州茅台"), "Tooltip 应包含茅台持仓明细");
+    assert.ok(tooltip.includes("PUP"), "Tooltip 应包含 PUP 持仓明细");
+
+    // 4. 模拟轮播下一帧 Frame 1 (单标的茅台)
+    (bar as any).holdingIndex = 1;
+    (bar as any).renderHolding();
+    assert.ok(holdingItem.text.includes("贵州茅台"), "第1帧应展示贵州茅台");
+    assert.ok(holdingItem.text.includes("[1/2]"), "第1帧应展示标的序号 [1/2]");
+
+    // 5. 模拟轮播下一帧 Frame 2 (单标的 PUP)
+    (bar as any).holdingIndex = 2;
+    (bar as any).renderHolding();
+    assert.ok(holdingItem.text.includes("PUP"), "第2帧应展示 PUP");
+    assert.ok(holdingItem.text.includes("[2/2]"), "第2帧应展示标的序号 [2/2]");
+
+    // 6. 模式 B 守卫验证：切换摸鱼伪装模式 (maskMode = true)，一票否决彻底隐藏
+    bar.setMaskMode(true);
+    assert.strictEqual(holdingItem.text, "", "摸鱼模式下持仓状态栏条目文本必须清空");
+    assert.strictEqual(bar.isHoldingCarouselRunning(), false, "摸鱼模式下轮播定时器必须停止");
+
+    // 切回正常模式
+    bar.setMaskMode(false);
+    assert.ok(holdingItem.text.length > 0, "切回正常模式后应恢复持仓显示");
+    assert.ok(bar.isHoldingCarouselRunning(), "切回正常模式后应重启轮播定时器");
+
+    // 7. 老板键守卫验证：按下老板键 (bossKey = true)，一票否决彻底隐藏
+    bar.toggleBossKey(true);
+    assert.strictEqual(holdingItem.text, "", "老板键激活下持仓状态栏条目必须清空");
+    assert.strictEqual(bar.isHoldingCarouselRunning(), false, "老板键激活下轮播定时器必须停止");
+
+    // 再次按下恢复
+    bar.toggleBossKey(false);
+    assert.ok(holdingItem.text.length > 0, "解除老板键后应恢复持仓展示");
+
+    // 8. 无持仓时自动静默隐藏
+    bar.setHoldings([], true, 3);
+    assert.strictEqual(holdingItem.text, "", "无持仓标的时应自动静默隐藏");
+    assert.strictEqual(bar.isHoldingCarouselRunning(), false, "无持仓标的时定时器应停止");
+  } finally {
+    bar.dispose();
+  }
+
+  // 9. 配置与设置 Webview 验证
+  const cfg = readConfig();
+  assert.strictEqual(cfg.statusBar.holdingEnabled, true, "holdingEnabled 默认应为 true");
+  assert.strictEqual(cfg.statusBar.holdingInterval, 3, "holdingInterval 默认应为 3 秒");
+
+  const html = getSettingsWebviewHtml("test-nonce", "1.2.6", "vscode-resource://", {} as any);
+  assert.ok(html.includes("statusBarHoldingEnabled"), "设置面板必须包含 statusBarHoldingEnabled 开关");
+  assert.ok(html.includes("statusBarHoldingInterval"), "设置面板必须包含 statusBarHoldingInterval 输入框");
+  assert.ok(html.includes("持仓盈亏独立轮播条"), "设置面板必须包含持仓盈亏独立轮播条标题");
+});
+
+test("P-12 ~ P-15: 状态栏持仓总控/板块过滤、Tooltip安全基线、order去冲突与边界钳制防线", async () => {
+  const { extractHoldingQuotes } = await import("../src/utils/symbolHelper.ts");
+  const { StatusBar } = await import("../src/ui/statusBar.ts");
+  const fs = await import("node:fs");
+
+  const mockWatchlist = {
+    "A股": [
+      { symbol: "sh600519", name: "贵州茅台", type: "A_SHARE" as const, cost: 1600, shares: 100 },
+    ],
+    "美股": [
+      { symbol: "usAAPL", name: "苹果", type: "US_STOCK" as const, cost: 150, shares: 10 },
+    ],
+    "基金": [
+      { symbol: "sh510300", name: "沪深300ETF", type: "A_SHARE" as const, cost: 3.5, shares: 1000 },
+    ],
+  };
+
+  const mockCache = new Map<string, any>([
+    ["sh600519", { id: "sh600519", symbol: "sh600519", name: "贵州茅台", type: "A_SHARE", price: 1800, changePercent: 1.0 }],
+    ["usaapl", { id: "usAAPL", symbol: "usAAPL", name: "苹果", type: "US_STOCK", price: 200, changePercent: 2.0, currency: "USD" }],
+    ["sh510300", { id: "sh510300", symbol: "sh510300", name: "沪深300ETF", type: "A_SHARE", price: 4.0, changePercent: 0.5 }],
+  ]);
+
+  // 1. P-12: statusBarEnabled = false 时 extractHoldingQuotes 必须直接返回空数组
+  const noStatusBarHoldings = extractHoldingQuotes(mockWatchlist, mockCache, {
+    statusBarEnabled: false,
+  });
+  assert.strictEqual(noStatusBarHoldings.length, 0, "总控关闭时持仓行情必须为空");
+
+  // 2. P-12: 分板块开关过滤（例如关闭美股 statusBar）
+  const noUsHoldings = extractHoldingQuotes(mockWatchlist, mockCache, {
+    statusBarEnabled: true,
+    usStock: { enabled: true, statusBar: false },
+    aShare: { enabled: true, statusBar: true },
+    fund: { enabled: true, statusBar: true },
+  });
+  assert.strictEqual(noUsHoldings.some((h) => h.symbol === "usAAPL"), false, "美股状态栏关闭时不应提取美股持仓");
+  assert.strictEqual(noUsHoldings.some((h) => h.symbol === "sh600519"), true, "A股正常开启时应保留A股持仓");
+
+  // 3. P-12: 基金板块关闭时过滤
+  const noFundHoldings = extractHoldingQuotes(mockWatchlist, mockCache, {
+    statusBarEnabled: true,
+    fund: { enabled: false, statusBar: true },
+    aShare: { enabled: true, statusBar: true },
+  });
+  assert.strictEqual(noFundHoldings.some((h) => h.symbol === "sh510300"), false, "基金板块关闭时不应提取基金持仓");
+
+  // 4. P-13: Tooltip 安全基线验证 (isTrusted = false, supportHtml = false, 特殊字符名称转义)
+  const bar = new StatusBar({ maskMode: false, colorNeutral: false });
+  try {
+    bar.setHoldings([
+      {
+        name: "<img src=x onerror=alert(1)>测试标的",
+        symbol: "sh000001",
+        currency: "CNY",
+        cost: 3000,
+        shares: 100,
+        price: 3200,
+        changePercent: 1.0,
+      },
+    ]);
+    const holdingItem = (bar as any).holdingBarItem;
+    const tooltip = holdingItem.tooltip;
+    assert.strictEqual(tooltip.isTrusted, false, "Tooltip isTrusted 必须为 false 贯彻最小权限");
+    assert.strictEqual(tooltip.supportHtml, false, "Tooltip supportHtml 必须为 false 杜绝 HTML 注入");
+    assert.strictEqual(tooltip.value.includes("<img src=x"), false, "外部标的名称必须转义，严禁原样输出 HTML 标签");
+    assert.ok(tooltip.value.includes("&lt;img"), "特殊 HTML 字符必须被转义");
+  } finally {
+    bar.dispose();
+  }
+
+  // 5. P-14: package.json order 序号冲突验证 (holdingEnabled 64, holdingInterval 65, 不与 70/71 冲突)
+  const pkgContent = JSON.parse(fs.readFileSync("package.json", "utf8"));
+  const props = pkgContent.contributes.configuration.properties;
+  assert.strictEqual(props["marketlens.statusBar.holdingEnabled"].order, 64, "holdingEnabled order 应为 64");
+  assert.strictEqual(props["marketlens.statusBar.holdingInterval"].order, 65, "holdingInterval order 应为 65");
+  assert.strictEqual(props["marketlens.alerts"].order, 70, "alerts order 应为 70");
+  assert.notStrictEqual(props["marketlens.statusBar.holdingEnabled"].order, props["marketlens.alerts"].order, "holdingEnabled 与 alerts 严禁 order 冲突");
+
+  // 6. P-15: holdingInterval 边界钳制验证 (1~60s)
+  const testBar = new StatusBar({ maskMode: false, colorNeutral: false });
+  try {
+    testBar.setHoldings([{ name: "test", symbol: "test", currency: "CNY", cost: 1, shares: 1, price: 1, changePercent: 0 }], true, 100);
+    assert.strictEqual((testBar as any).holdingInterval, 60, "超上限数值应钳制在 60s");
+    testBar.setHoldings([{ name: "test", symbol: "test", currency: "CNY", cost: 1, shares: 1, price: 1, changePercent: 0 }], true, -10);
+    assert.strictEqual((testBar as any).holdingInterval, 1, "负数应钳制在 1s");
+    testBar.setHoldings([{ name: "test", symbol: "test", currency: "CNY", cost: 1, shares: 1, price: 1, changePercent: 0 }], true, NaN);
+    assert.strictEqual((testBar as any).holdingInterval, 3, "NaN 应安全回退默认值 3s");
+  } finally {
+    testBar.dispose();
+  }
+});
+
+
 
 
 

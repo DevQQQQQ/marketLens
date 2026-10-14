@@ -328,6 +328,30 @@ export function registerCommands(
       }
     ),
 
+    // 设置持仓成本与数量 (F1: Cost & PnL)
+    vscode.commands.registerCommand(
+      "marketlens.setHolding",
+      async (node?: StockItem) => {
+        if (shouldBlockNodeCommand(statusBar.isBossKeyActive(), readConfig().maskMode, Boolean(node))) {
+          logger.info("专注/简洁展示模式激活期间拒绝设置持仓（老板键/打码守卫已生效）");
+          return;
+        }
+        await watchlistOps.setHolding(node);
+      }
+    ),
+
+    // 一键添加常用核心大盘指数 (F2: Core Indices)
+    vscode.commands.registerCommand(
+      "marketlens.addCommonIndices",
+      async () => {
+        if (!canEmitUserFeedback(statusBar.isBossKeyActive())) {
+          logger.info("专注模式激活期间拒绝添加大盘指数（老板键守卫已生效）");
+          return;
+        }
+        await watchlistOps.addCommonIndices();
+      }
+    ),
+
     // 查看运行日志（OutputChannel）
     vscode.commands.registerCommand("marketlens.showLogs", () => {
       // 老板键守卫：诊断日志中包含真实标的代码与行情数值（服务请求/预警记录），

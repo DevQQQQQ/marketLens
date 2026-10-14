@@ -23,6 +23,8 @@ const GLOBAL_CONFIG_KEYS = [
   "colorNeutral",
   "colorScheme",
   "statusBar.enabled",
+  "statusBar.holdingEnabled",
+  "statusBar.holdingInterval",
   "autoCollapseClosedGroups",
   "alerts",
   "alertNotificationMode",
@@ -219,6 +221,10 @@ export class SettingsWebviewPanel {
             }
             logger.show();
             break;
+          case "addCommonIndices":
+            await vscode.commands.executeCommand("marketlens.addCommonIndices");
+            SettingsWebviewPanel.syncSettings();
+            break;
           case "clearWatchlist":
             await SettingsWebviewPanel.clearWatchlist();
             break;
@@ -255,6 +261,35 @@ export class SettingsWebviewPanel {
               logger.warn(`拦截到非 HTTP/HTTPS 外部链接请求: ${message.url}`);
             }
             break;
+          case "updateHolding": {
+            if (message.group && message.symbol) {
+              const cfg = vscode.workspace.getConfiguration("marketlens");
+              const watchlist = JSON.parse(JSON.stringify(cfg.get("watchlist") || {}));
+              const grpList = watchlist[message.group] || [];
+              const it = grpList.find(
+                (x: { symbol?: string }) =>
+                  x &&
+                  typeof x.symbol === "string" &&
+                  (normalizeSymbolKey(x.symbol) === normalizeSymbolKey(message.symbol) ||
+                    x.symbol === message.symbol)
+              );
+              if (it) {
+                if (typeof message.cost === "number" && Number.isFinite(message.cost) && message.cost > 0) {
+                  it.cost = message.cost;
+                } else {
+                  delete it.cost;
+                }
+                if (typeof message.shares === "number" && Number.isFinite(message.shares) && message.shares > 0) {
+                  it.shares = message.shares;
+                } else {
+                  delete it.shares;
+                }
+                await cfg.update("watchlist", watchlist, vscode.ConfigurationTarget.Global);
+                this.sendCurrentSettings();
+              }
+            }
+            break;
+          }
           case "copyToClipboard":
             if (message.text) {
               await vscode.env.clipboard.writeText(message.text);
@@ -402,6 +437,8 @@ export class SettingsWebviewPanel {
       // 总控开关直接采用全局 statusBar.enabled 语义（未显式关闭即为开启）。
       // 此前用五个板块 statusBar 的逻辑与判定，会导致「只关掉 A 股轮播」时总控开关被误显示为关闭。
       statusBarEnabled:         config.statusBar.enabled,
+      statusBarHoldingEnabled:  config.statusBar.holdingEnabled ?? true,
+      statusBarHoldingInterval: config.statusBar.holdingInterval ?? 3,
       autoCollapseClosedGroups: config.autoCollapseClosedGroups ?? true,
       proxyPort:                effectivePort,
       proxyUrl:                 proxyUrl,
