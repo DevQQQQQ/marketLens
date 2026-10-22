@@ -29,7 +29,7 @@ npm run package
 
 ### 方式二：指定输出版本文件名
 ```powershell
-npx @vscode/vsce package -o marketlens-1.3.1.vsix --allow-missing-repository --no-dependencies
+npx @vscode/vsce package -o marketlens-1.3.2.vsix --allow-missing-repository --no-dependencies
 ```
 
 > **参数解析**：
@@ -44,7 +44,7 @@ npx @vscode/vsce package -o marketlens-1.3.1.vsix --allow-missing-repository --n
 
 ### 终端一键强制安装
 ```powershell
-code --install-extension marketlens-1.3.1.vsix --force
+code --install-extension marketlens-1.3.2.vsix --force
 ```
 
 ### VS Code 图形界面安装
@@ -57,21 +57,22 @@ code --install-extension marketlens-1.3.1.vsix --force
 
 ## 🚀 4. 双平台发布 (VS Code Marketplace & Open VSX)
 
-### 1. VS Code Marketplace
+### 1. VS Code Marketplace（**本平台手动发布**）
 - **管理后台上传**：访问 [Marketplace Portal](https://marketplace.visualstudio.com/manage) 上传 `.vsix`；
 - **命令行发布**：
   ```powershell
   npx @vscode/vsce publish -p <YOUR_VSCE_PAT> --no-dependencies
   ```
 
-### 2. Open VSX Registry (面向 VSCodium / Gitpod)
+### 2. Open VSX Registry (面向 VSCodium / Gitpod)（**本平台由 CI 自动发布**）
 - **管理后台上传**：访问 [Open VSX Registry](https://open-vsx.org/)；
-- **命令行发布**：
+- **命令行发布**（与 CI 同一版本、同一产物）：
   ```powershell
-  npx ovsx publish -p <YOUR_OVSX_PAT> --no-dependencies
+  npx --yes ovsx@1.3.0 publish --packagePath marketlens-<version>.vsix -p <YOUR_OVSX_PAT>
   ```
 
-> 💡 **GitHub Actions 自动化**：推送版本 tag（如 `git tag v1.3.1 && git push origin v1.3.1`）后，`.github/workflows/release.yml` 将自动并发打包并同时发布到双平台。
+> 💡 **GitHub Actions 自动化**：推送版本 tag（如 `git tag v1.3.2 && git push origin v1.3.2`）后，`.github/workflows/release.yml` 会自动跑四道发版守卫 → 打包 → 建 GitHub Release 并挂 `.vsix` → **发布 Open VSX**（需仓库 secret `OVSX_PAT`）。
+> **Marketplace 不在 CI 里发**：未配置 `VSCE_PAT` 时该步骤自动跳过（只出 `::warning::`），请按上面第 1 节从 GitHub Release 下载同一个 `.vsix` 手动发布。两个 secret 都没配时流水线才会判红。
 
 ---
 

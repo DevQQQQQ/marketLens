@@ -57,16 +57,23 @@ jobs:
       - name: Guard - release assets must already be in sync
         run: npm run sync-version:check
 
-      # ── Guard 4：凭据缺失要失败，不要静默跳过 ───────────────────────────────────
-      # 旧版用 `if: env.VSCE_PAT != ''` 跳过，secret 缺失时流水线全绿并制造「已发布」假象。
+      # ── Guard 4：两个注册表都缺凭据才判红 ───────────────────────────────────────
+      # 产品口径（v1.3.1 实测校准）：Open VSX 由 CI 自动发布，VS Code Marketplace 由
+      # 维护者本人手动发布，因此「只配了一个 secret」是**常态而非误配**。
+      # 旧版把 VSCE_PAT 缺失写成 exit 1，结果连带后面的 GitHub Release 制品一起被拦掉
+      # （v1.3.1 那次 10 秒即红、什么都没发出去）。只有两者皆空时这条流水线才真的
+      # 什么都不发布——那才是需要判红的静默空跑。
       - name: Guard - publishing credentials must be present
         run: |
           if [ -z "$VSCE_PAT" ]; then
-            echo "::error::VSCE_PAT 未配置，无法发布到 VS Code Marketplace。终止而非静默跳过。"
-            exit 1
+            echo "::warning::VSCE_PAT 未配置：跳过 Marketplace 发布（该平台按 §9.2 由维护者手动发布）"
           fi
           if [ -z "$OVSX_PAT" ]; then
-            echo "::warning::OVSX_PAT 未配置：本次只发布到 VS Code Marketplace，Open VSX 将停留在旧版本"
+            echo "::warning::OVSX_PAT 未配置：跳过 Open VSX 发布"
+          fi
+          if [ -z "$VSCE_PAT" ] && [ -z "$OVSX_PAT" ]; then
+            echo "::error::VSCE_PAT 与 OVSX_PAT 均未配置：本次流水线不会发布到任何注册表。若只想产出 GitHub Release 制品，请删掉本守卫后重跑。"
+            exit 1
           fi
 
       - name: Setup Node.js 22
@@ -102,7 +109,10 @@ jobs:
           files: "*.vsix"
           generate_release_notes: true
 
+      # Marketplace 由维护者手动发布时本步自动跳过；`.vsix` 已挂在 GitHub Release 上，
+      # 下载后 `code --install-extension` 或 vsce publish 均可。
       - name: Publish to VS Code Marketplace
+        if: env.VSCE_PAT != ''
         run: npx vsce publish --packagePath "$VSIX"
 
       - name: Publish to Open VSX Registry
