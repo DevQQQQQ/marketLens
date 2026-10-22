@@ -4,11 +4,20 @@
 import * as vscode from "vscode";
 import type { MarketItem } from "../types/index.ts";
 import { getProxyStatus } from "../services/network.ts";
-import { escapeHtml, type HoldingItemQuote } from "../utils/symbolHelper.ts";
+import { escapeHtml, deriveTodayProfit, type HoldingItemQuote } from "../utils/symbolHelper.ts";
 
 // ────────────────────────────────────────────────────────────────
 //  常量与工具函数
 // ────────────────────────────────────────────────────────────────
+
+/** 单一币种的持仓聚合桶 */
+interface HoldingCurrencyBucket {
+  todayProfit: number;
+  totalProfit: number;
+  count: number;
+  marketVal: number;
+  costVal: number;
+}
 
 const CAMO_BRANCHES = ["main", "dev", "feat/ui", "fix/perf", "release/v2"];
 const CAMO_LABELS = [
@@ -293,6 +302,11 @@ export class StatusBar implements vscode.Disposable {
     return this.bossKeyActive;
   }
 
+  /** 简洁展示模式（伪装摸鱼）是否处于开启状态，供脱敏状态快照来源读取 */
+  isMaskModeActive(): boolean {
+    return this.maskMode;
+  }
+
   /** 检查轮播定时器是否处于活跃运行状态（供单元测试和状态检查使用） */
   isCarouselRunning(): boolean {
     return this.carouselTimer !== undefined;
@@ -392,7 +406,9 @@ export class StatusBar implements vscode.Disposable {
       ? ` [${this.carouselIndex + 1}/${this.quotes.length}]`
       : "";
     this.barItem.text = `$(git-branch) ${branch}${countPart}  ${parts.join("  |  ")}`;
-    this.barItem.tooltip = "MarketLens — 点击立即刷新";
+    // 伪装态下 tooltip 必须一并收敛：文本已伪装成 git 分支，若 tooltip 仍写「MarketLens」
+    // 则鼠标悬停即自曝，伪装防线形同虚设（AGENTS.md §6.3 规则七）。
+    this.barItem.tooltip = undefined;
     // 伪装模式下强制无色
     this.barItem.backgroundColor = undefined;
     this.barItem.color = undefined;
@@ -451,6 +467,27 @@ export class StatusBar implements vscode.Disposable {
 
   // ── 持仓轮播与渲染 ──────────────────────────────────────────────
 
+  /**
+   * 按币种聚合持仓（今日盈亏经 `deriveTodayProfit` 单一出口，AGENTS.md §6.9）。
+   * 持仓条第 0 帧概览与持仓看板 Tooltip 共用本方法，禁止在两处各写一份累加逻辑。
+   */
+  private aggregateHoldings(): Array<[string, HoldingCurrencyBucket]> {
+    const currencyMap: Record<string, HoldingCurrencyBucket> = {};
+    for (const h of this.holdings) {
+      const cur = h.currency || "CNY";
+      if (!currencyMap[cur]) {
+        currencyMap[cur] = { todayProfit: 0, totalProfit: 0, count: 0, marketVal: 0, costVal: 0 };
+      }
+      const data = currencyMap[cur];
+      data.count++;
+      data.costVal += h.cost * h.shares;
+      data.marketVal += h.price * h.shares;
+      data.totalProfit += (h.price - h.cost) * h.shares;
+      data.todayProfit += deriveTodayProfit(h, h.shares);
+    }
+    return Object.entries(currencyMap);
+  }
+
   private restartHoldingCarousel(): void {
     this.stopHoldingCarousel();
     if (this.bossKeyActive || this.maskMode || !this.holdingEnabled || this.holdings.length === 0) {
@@ -484,34 +521,7 @@ export class StatusBar implements vscode.Disposable {
 
     if (this.holdingIndex === 0) {
       // ── 第 0 帧：全账户总持仓概览 ──
-      const currencyMap: Record<string, { todayProfit: number; totalProfit: number; count: number; marketVal: number; costVal: number }> = {};
-      for (const h of this.holdings) {
-        const cur = h.currency || "CNY";
-        if (!currencyMap[cur]) {
-          currencyMap[cur] = { todayProfit: 0, totalProfit: 0, count: 0, marketVal: 0, costVal: 0 };
-        }
-        const data = currencyMap[cur];
-        data.count++;
-        data.costVal += h.cost * h.shares;
-        data.marketVal += h.price * h.shares;
-        data.totalProfit += (h.price - h.cost) * h.shares;
-
-        let tProf = 0;
-        if (h.change !== undefined && Number.isFinite(h.change)) {
-          tProf = h.change * h.shares;
-        } else if (h.open !== undefined && h.open > 0) {
-          tProf = (h.price - h.open) * h.shares;
-        } else if (h.prevClose !== undefined && h.prevClose > 0) {
-          tProf = (h.price - h.prevClose) * h.shares;
-        } else if (h.price > 0 && h.changePercent !== undefined && Number.isFinite(h.changePercent)) {
-          const r = h.changePercent / 100;
-          const prevPrice = r > -1 ? h.price / (1 + r) : h.price;
-          tProf = (h.price - prevPrice) * h.shares;
-        }
-        data.todayProfit += tProf;
-      }
-
-      const entries = Object.entries(currencyMap).sort((a, b) => b[1].count - a[1].count);
+      const entries = this.aggregateHoldings().sort((a, b) => b[1].count - a[1].count);
       const [primaryCur, primaryData] = entries[0];
       const pSym = primaryCur === "CNY" ? "¥" : primaryCur === "HKD" ? "HK$" : "$";
       const tSign = primaryData.todayProfit >= 0 ? "+" : "-";
@@ -559,36 +569,9 @@ export class StatusBar implements vscode.Disposable {
     md.isTrusted = false;
     md.supportHtml = false;
 
-    const currencyMap: Record<string, { todayProfit: number; totalProfit: number; count: number; marketVal: number; costVal: number }> = {};
-    for (const h of this.holdings) {
-      const cur = h.currency || "CNY";
-      if (!currencyMap[cur]) {
-        currencyMap[cur] = { todayProfit: 0, totalProfit: 0, count: 0, marketVal: 0, costVal: 0 };
-      }
-      const data = currencyMap[cur];
-      data.count++;
-      data.costVal += h.cost * h.shares;
-      data.marketVal += h.price * h.shares;
-      data.totalProfit += (h.price - h.cost) * h.shares;
-
-      let tProf = 0;
-      if (h.change !== undefined && Number.isFinite(h.change)) {
-        tProf = h.change * h.shares;
-      } else if (h.open !== undefined && h.open > 0) {
-        tProf = (h.price - h.open) * h.shares;
-      } else if (h.prevClose !== undefined && h.prevClose > 0) {
-        tProf = (h.price - h.prevClose) * h.shares;
-      } else if (h.price > 0 && h.changePercent !== undefined && Number.isFinite(h.changePercent)) {
-        const r = h.changePercent / 100;
-        const prevPrice = r > -1 ? h.price / (1 + r) : h.price;
-        tProf = (h.price - prevPrice) * h.shares;
-      }
-      data.todayProfit += tProf;
-    }
+    const entries = this.aggregateHoldings();
 
     md.appendMarkdown(`### 💼 持仓盈亏独立对账看板\n\n`);
-
-    const entries = Object.entries(currencyMap);
     if (entries.length === 1) {
       const [cur, d] = entries[0];
       const s = cur === "CNY" ? "¥" : cur === "HKD" ? "HK$" : "$";
@@ -616,7 +599,10 @@ export class StatusBar implements vscode.Disposable {
         const fFmt = formatHoldingProfit(d.totalProfit);
         const mFmt = formatHoldingProfit(d.marketVal);
         const cFmt = formatHoldingProfit(d.costVal);
-        const label = cur === "CNY" ? "人民币 (¥)" : cur === "HKD" ? "港币 (HK$)" : "美元 ($)";
+        const label =
+          cur === "CNY" ? "人民币 (¥)" :
+          cur === "HKD" ? "港币 (HK$)" :
+          cur === "USDT" ? "U 本位 (USDT $)" : "美元 ($)";
         md.appendMarkdown(`| **${label}** | ${tSign}${s}${tFmt} | ${fSign}${s}${fFmt} | ${s}${mFmt} | ${s}${cFmt} |\n`);
       }
       md.appendMarkdown(`\n`);

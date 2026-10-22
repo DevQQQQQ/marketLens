@@ -85,7 +85,8 @@ export class BinanceService {
       change:       parseFloat(item.priceChange)       || 0,
       volume:       parseFloat(item.volume)            || 0,
       turnover:     parseFloat(item.quoteVolume)       || 0,
-      currency:     "USD",
+      // 加密标的按 U 本位计价：币安 ticker 的 lastPrice / quoteVolume 都以交易对报价币种（稳定币）表达
+      currency:     "USDT",
     };
   }
 

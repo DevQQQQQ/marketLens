@@ -2,7 +2,7 @@
 import type { MarketItem } from "../types";
 import { logger } from "../utils/logger.ts";
 import { normalizeAShareCode } from "../utils/symbolHelper.ts";
-import { TencentBaseService } from "./tencentBaseService.ts";
+import { TencentBaseService, MIN_TENCENT_FIELDS, parseOptionalFloat } from "./tencentBaseService.ts";
 
 /**
  * 腾讯行情 API 字段索引（经验证）
@@ -32,17 +32,6 @@ const F = {
   AVG_PRICE:    51,  // 日内均价
 } as const;
 
-/**
- * 安全解析可选浮点数：空串、"-"、"-1" 或非有限数值统一返回 undefined
- */
-function parseOptionalFloat(val: string | undefined): number | undefined {
-  if (!val || val === "" || val === "-" || val === "-1") {
-    return undefined;
-  }
-  const n = parseFloat(val);
-  return Number.isFinite(n) ? n : undefined;
-}
-
 export class AShareService extends TencentBaseService {
   public readonly serviceName = "AShareService";
   public readonly currency = "CNY" as const;
@@ -62,7 +51,7 @@ export class AShareService extends TencentBaseService {
 
       const fullCode = match[1];
       const f = match[2].split("~");
-      if (f.length < 35) {
+      if (f.length < MIN_TENCENT_FIELDS) {
         logger.warn(
           `[AShareService] 标的 ${fullCode} 返回字段不足 (length=${f.length})，该代码可能不存在或已退市`
         );
@@ -81,8 +70,11 @@ export class AShareService extends TencentBaseService {
 
       // 成交量：腾讯接口 A 股单位为“手”，转换为“股”
       const volume    = (parseFloat(f[F.VOLUME_LOTS]) || 0) * 100;
-      // 成交额：腾讯接口 A 股单位为“万元”，转换为“元”
-      const turnover  = (parseFloat(f[F.TURNOVER])    || 0) * 10000;
+      // 成交额：腾讯接口 A 股单位为“万元”，转换为“元”。
+      // ⚠ `F.TURNOVER` = 37 落在上方 `f.length < MIN_TENCENT_FIELDS` 守卫的覆盖范围之外，
+      // 必须走可选解析出口，禁止用 `|| 0` 把「上游未供数」伪装成「成交额为 0」（§6.13）。
+      const rawTurnover = parseOptionalFloat(f[F.TURNOVER]);
+      const turnover  = rawTurnover === undefined ? undefined : rawTurnover * 10000;
 
       // ── 深度量价与估值指标解析（具备防越界与无效数据防御） ──
       const turnoverRate = parseOptionalFloat(f[F.TURNOVER_RATE]);

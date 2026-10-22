@@ -1113,6 +1113,18 @@ export function getSettingsWebviewHtml(
       var currentWatchlist = ${JSON.stringify(d.watchlist).replace(/</g, '\\u003c')};
       var alertSaveTimer = null;
 
+      // 本地镜像只用于渲染：存在尚未发送出去的编辑时，禁止用后端快照整体替换 currentAlerts，
+      // 否则用户正在输入的阈值会被一次回推抹掉（AGENTS.md §6.2）。
+      var dirtyAlertKeys = {};
+      function markAlertDirty(key) { if (key) dirtyAlertKeys[key] = true; }
+      function clearAlertDirty(key) { if (key) delete dirtyAlertKeys[key]; }
+      function hasAlertDirty() {
+        for (var k in dirtyAlertKeys) {
+          if (Object.prototype.hasOwnProperty.call(dirtyAlertKeys, k)) return true;
+        }
+        return false;
+      }
+
       function escapeHtml(str) {
         if (str === null || str === undefined) return '';
         return String(str)
@@ -1259,6 +1271,15 @@ export function getSettingsWebviewHtml(
             enabled: enabled
           };
         }
+        markAlertDirty(key);
+      }
+
+      // 只发送本行的增量：后端以磁盘现值为基准合并该标的，绝不回写整幅 alerts 镜像
+      function sendAlertRuleForRow(tr) {
+        var key = tr.getAttribute('data-key');
+        var rule = Object.prototype.hasOwnProperty.call(currentAlerts, key) ? currentAlerts[key] : null;
+        postCmd('updateAlertRule', { key: key, rule: rule });
+        clearAlertDirty(key);
       }
 
       function bindAlertTableEvents(tbody) {
@@ -1271,7 +1292,7 @@ export function getSettingsWebviewHtml(
                 updateAlertRuleFromRow(tr);
                 clearTimeout(alertSaveTimer);
                 alertSaveTimer = setTimeout(function() {
-                  sendUpdate('alerts', currentAlerts);
+                  sendAlertRuleForRow(tr);
                   showToast('⚡ 预警规则已保存');
                 }, 500);
               });
@@ -1280,7 +1301,7 @@ export function getSettingsWebviewHtml(
             if (chk) {
               chk.addEventListener('change', function() {
                 updateAlertRuleFromRow(tr);
-                sendUpdate('alerts', currentAlerts);
+                sendAlertRuleForRow(tr);
                 showToast(chk.checked ? '✅ 已开启预警监控' : '⚪ 已暂停预警监控');
               });
             }
@@ -1688,7 +1709,7 @@ export function getSettingsWebviewHtml(
           // 到价预警
           setValue('alertNotificationMode', d.alertNotificationMode || 'notification');
           setValue('alertCooldownMinutes', d.alertCooldownMinutes !== undefined ? d.alertCooldownMinutes : 15);
-          if (d.alerts !== undefined) currentAlerts = d.alerts || {};
+          if (d.alerts !== undefined && !hasAlertDirty()) currentAlerts = d.alerts || {};
           if (d.watchlist !== undefined) currentWatchlist = d.watchlist || {};
           renderAlertTable(currentWatchlist, currentAlerts);
 

@@ -6,6 +6,7 @@ import { validateAndParseInput } from "./utils/inputValidator.ts";
 import { readConfig } from "./utils/config.ts";
 import { SettingsWebviewPanel } from "./ui/settingsWebview.ts";
 import { logger } from "./utils/logger.ts";
+import { canOpenPrompt, emitStatusMessage, isBossKeyActive, maskNumbers, showInfoMessage } from "./utils/feedback.ts";
 
 export interface WatchlistOpsContext {
   quoteCache: Map<string, MarketItem>;
@@ -16,7 +17,8 @@ export interface WatchlistOpsContext {
 export class WatchlistOps {
   private readonly quoteCache: Map<string, MarketItem>;
   private readonly rebuildTree: (customWatchlist?: WatchlistConfig) => void;
-  private readonly treeProvider?: WatchlistProvider;
+  // 上下文里 treeProvider 可缺省，构造时存入 `undefined`，故声明为必需可空而非可选键
+  private readonly treeProvider: WatchlistProvider | undefined;
 
   constructor(context: WatchlistOpsContext) {
     this.quoteCache = context.quoteCache;
@@ -64,6 +66,13 @@ export class WatchlistOps {
    * 添加自选（带实时严格校验）
    */
   public async addItem(): Promise<void> {
+    // 守卫下沉：本模块可读到全部真实自选名称、代码与现价，命令层之外（菜单、其他扩展调用）
+    // 同样能直达此处，故入口自带判定。addItem 无 node 上下文，脱敏态一律静默拒绝。
+    if (!canOpenPrompt(false)) {
+      logger.info("专注/简洁展示模式激活期间拒绝添加自选标的（模块级脱敏守卫）");
+      return;
+    }
+
     // ── Step 1: 获取用户输入并实时校验 ────────────────────────────
     const input = await vscode.window.showInputBox({
       prompt: "输入股票代码 / 币对 / 合约地址",
@@ -168,10 +177,7 @@ export class WatchlistOps {
       SettingsWebviewPanel.syncSettings();
 
       const displayDesc = finalName !== sym ? `${finalName} (${sym})` : sym;
-      vscode.window.setStatusBarMessage(
-        `$(check) 已添加 "${displayDesc}" 到 ${targetGroup}`,
-        3000
-      );
+      emitStatusMessage(maskNumbers(`$(check) 已添加 "${displayDesc}" 到 ${targetGroup}`), 3000);
     } catch (err: unknown) {
       vscode.window.showErrorMessage(
         `无法写入用户设置：${(err as Error)?.message || String(err)}。请检查 VS Code 的 settings.json 文件是否包含语法错误。`
@@ -183,6 +189,11 @@ export class WatchlistOps {
    * 置顶标的（点击图钉图标或命令触发）
    */
   public async pinToTop(node?: StockItem): Promise<void> {
+    if (!canOpenPrompt(Boolean(node))) {
+      logger.info("专注/简洁展示模式激活期间拒绝置顶标的（模块级脱敏守卫）");
+      return;
+    }
+
     const cfg = readConfig();
     const watchlist = { ...cfg.watchlist };
 
@@ -209,7 +220,7 @@ export class WatchlistOps {
       }
 
       if (allItems.length === 0) {
-        vscode.window.showInformationMessage("MarketLens: 当前自选列表为空");
+        showInfoMessage("MarketLens: 当前自选列表为空");
         return;
       }
 
@@ -249,7 +260,7 @@ export class WatchlistOps {
       return;
     }
     if (index === 0) {
-      vscode.window.setStatusBarMessage(`$(info) "${targetName || targetSymbol}" 已在最顶部`, 2500);
+      emitStatusMessage(maskNumbers(`$(info) "${targetName || targetSymbol}" 已在最顶部`), 2500);
       return;
     }
 
@@ -265,7 +276,7 @@ export class WatchlistOps {
       this.rebuildTree(watchlist);
       SettingsWebviewPanel.syncSettings();
 
-      vscode.window.setStatusBarMessage(`$(pin) 已将 "${targetName || targetSymbol}" 置顶`, 3000);
+      emitStatusMessage(maskNumbers(`$(pin) 已将 "${targetName || targetSymbol}" 置顶`), 3000);
     } catch (err: unknown) {
       vscode.window.showErrorMessage(
         `无法更新设置：${(err as Error)?.message || String(err)}。请检查 VS Code 的 settings.json 文件是否包含语法错误。`
@@ -277,6 +288,11 @@ export class WatchlistOps {
    * 删除自选（点击垃圾桶图标或命令触发）
    */
   public async removeItem(node?: StockItem): Promise<void> {
+    if (!canOpenPrompt(Boolean(node))) {
+      logger.info("专注/简洁展示模式激活期间拒绝删除自选（模块级脱敏守卫）");
+      return;
+    }
+
     const cfg = readConfig();
     const watchlist = { ...cfg.watchlist };
 
@@ -304,7 +320,7 @@ export class WatchlistOps {
       }
 
       if (allItems.length === 0) {
-        vscode.window.showInformationMessage("MarketLens: 当前自选列表为空");
+        showInfoMessage("MarketLens: 当前自选列表为空");
         return;
       }
 
@@ -329,43 +345,39 @@ export class WatchlistOps {
     );
     if (confirm !== "删除") { return; }
 
-    const matchItem = (it?: { symbol?: string; name?: string } | null): boolean => {
+    // 匹配只认符号身份（isSameSymbol 与节点 id/symbol），严禁以显示名称相等作为删除判据：
+    // 跨市场同名标的（不同代码、同中文名）会因名称命中而被连带误删（AGENTS.md §6.5）。
+    // targetName 仅用于展示与确认文案，不进入匹配谓词。
+    const matchItem = (it?: { symbol?: string } | null): boolean => {
       if (!it || !it.symbol || !targetSymbol) return false;
       if (isSameSymbol(it.symbol, targetSymbol)) return true;
-      if (it.name && targetName && it.name.toLowerCase() === targetName.toLowerCase()) return true;
       if (node?.item?.id && isSameSymbol(it.symbol, node.item.id)) return true;
       if (node?.item?.symbol && isSameSymbol(it.symbol, node.item.symbol)) return true;
       return false;
     };
 
+    // 严格限定在目标分组内移除；targetGroup 已锁定时不得越组做全局兜底清扫
+    let removed = false;
+    for (const [grp, items] of Object.entries(watchlist)) {
+      if (targetGroup && grp !== targetGroup) { continue; }
+      if (!Array.isArray(items)) { continue; }
+      const beforeLen = items.length;
+      const filtered = items.filter((it) => !matchItem(it));
+      if (filtered.length !== beforeLen) {
+        watchlist[grp] = filtered;
+        removed = true;
+      }
+    }
+
+    if (!removed) {
+      showInfoMessage(
+        `MarketLens: 未在${targetGroup ? `分组【${targetGroup}】的` : ""}自选里找到 "${targetName || targetSymbol}"`
+      );
+      return;
+    }
+
     // 保存更新到全局配置
     try {
-      // 从分组中移除该项
-      let removed = false;
-      for (const [grp, items] of Object.entries(watchlist)) {
-        if (targetGroup && grp !== targetGroup) { continue; }
-        if (!Array.isArray(items)) { continue; }
-        const beforeLen = items.length;
-        const filtered = items.filter((it) => !matchItem(it));
-        if (filtered.length !== beforeLen) {
-          watchlist[grp] = filtered;
-          removed = true;
-        }
-      }
-
-      // 若特定分组未匹配，进行全局清理兜底
-      if (!removed) {
-        for (const [grp, items] of Object.entries(watchlist)) {
-          if (!Array.isArray(items)) { continue; }
-          const beforeLen = items.length;
-          const filtered = items.filter((it) => !matchItem(it));
-          if (filtered.length !== beforeLen) {
-            watchlist[grp] = filtered;
-            removed = true;
-          }
-        }
-      }
-
       await vscode.workspace
         .getConfiguration("marketlens")
         .update("watchlist", watchlist, vscode.ConfigurationTarget.Global);
@@ -437,7 +449,7 @@ export class WatchlistOps {
       this.rebuildTree(watchlist);
       SettingsWebviewPanel.syncSettings();
 
-      vscode.window.setStatusBarMessage(`$(trash) 已删除 "${targetName || targetSymbol}"`, 3000);
+      emitStatusMessage(maskNumbers(`$(trash) 已删除 "${targetName || targetSymbol}"`), 3000);
     } catch (err: unknown) {
       vscode.window.showErrorMessage(
         `无法更新设置：${(err as Error)?.message || String(err)}。请检查 VS Code 的 settings.json 文件是否包含语法错误。`
@@ -449,6 +461,11 @@ export class WatchlistOps {
    * 设置标的价格预警（向导式 QuickPick）
    */
   public async setAlert(node?: StockItem): Promise<void> {
+    if (!canOpenPrompt(Boolean(node))) {
+      logger.info("专注/简洁展示模式激活期间拒绝设置预警（模块级脱敏守卫）");
+      return;
+    }
+
     let targetSymbol: string | undefined;
     let targetName: string | undefined;
     let currentPrice: number | undefined;
@@ -460,7 +477,7 @@ export class WatchlistOps {
     } else {
       // 若非右键点击触发，则提供自选标的列表以供选择
       const cfg = readConfig();
-      const allItems: Array<{ label: string; description: string; symbol: string; currentPrice?: number }> = [];
+      const allItems: Array<{ label: string; description: string; symbol: string; currentPrice?: number | undefined }> = [];
       for (const [grp, items] of Object.entries(cfg.watchlist)) {
         for (const item of items ?? []) {
           if (!item?.symbol) continue;
@@ -469,7 +486,7 @@ export class WatchlistOps {
           const finalName = resolveItemDisplayName(item.name, item.symbol, cached);
           allItems.push({
             label: finalName,
-            description: `${grp} · ${item.symbol} ${cached?.price ? `(现价: ${cached.price})` : ""}`,
+            description: maskNumbers(`${grp} · ${item.symbol} ${cached?.price ? `(现价: ${cached.price})` : ""}`),
             symbol: item.symbol,
             currentPrice: cached?.price,
           });
@@ -477,7 +494,7 @@ export class WatchlistOps {
       }
 
       if (allItems.length === 0) {
-        vscode.window.showInformationMessage("自选列表为空，请先添加自选标的");
+        showInfoMessage("自选列表为空，请先添加自选标的");
         return;
       }
 
@@ -498,10 +515,11 @@ export class WatchlistOps {
     const existingAlerts = { ...(cfg.alerts || {}) };
     const existing = existingAlerts[normKey] || { symbol: targetSymbol, name: targetName, enabled: true };
 
-    const priceHint = currentPrice ? `当前现价: ${currentPrice}` : "暂无现价";
-    const aboveHint = existing.above !== undefined ? ` (当前: ≥ ${existing.above})` : "";
-    const belowHint = existing.below !== undefined ? ` (当前: ≤ ${existing.below})` : "";
-    const pctHint   = existing.changePercent !== undefined ? ` (当前: ±${existing.changePercent}%)` : "";
+    // 出口 A：向导文案保留标的名以便确认目标，但现价与既有阈值属敏感数值，脱敏态一律打码
+    const priceHint = currentPrice ? maskNumbers(`当前现价: ${currentPrice}`) : "暂无现价";
+    const aboveHint = existing.above !== undefined ? maskNumbers(` (当前: ≥ ${existing.above})`) : "";
+    const belowHint = existing.below !== undefined ? maskNumbers(` (当前: ≤ ${existing.below})`) : "";
+    const pctHint   = existing.changePercent !== undefined ? maskNumbers(` (当前: ±${existing.changePercent}%)`) : "";
 
     const conditionOptions = [
       {
@@ -540,17 +558,17 @@ export class WatchlistOps {
         .update("alerts", existingAlerts, vscode.ConfigurationTarget.Global);
       this.rebuildTree();
       SettingsWebviewPanel.syncSettings();
-      vscode.window.setStatusBarMessage(`$(bell-slash) 已清除【${targetName || targetSymbol}】的所有预警`, 3000);
+      emitStatusMessage(maskNumbers(`$(bell-slash) 已清除【${targetName || targetSymbol}】的所有预警`), 3000);
       return;
     }
 
     let prompt = "";
     let defaultValue = "";
     if (pickedCond.action === "above") {
-      prompt = `请输入【${targetName || targetSymbol}】突破上限价格（需大于 0，现价 ${currentPrice || "--"}）:`;
+      prompt = maskNumbers(`请输入【${targetName || targetSymbol}】突破上限价格（需大于 0，现价 ${currentPrice || "--"}）:`);
       defaultValue = existing.above ? String(existing.above) : currentPrice ? String(currentPrice) : "";
     } else if (pickedCond.action === "below") {
-      prompt = `请输入【${targetName || targetSymbol}】跌破下限价格（需大于 0，现价 ${currentPrice || "--"}）:`;
+      prompt = maskNumbers(`请输入【${targetName || targetSymbol}】跌破下限价格（需大于 0，现价 ${currentPrice || "--"}）:`);
       defaultValue = existing.below ? String(existing.below) : currentPrice ? String(currentPrice) : "";
     } else if (pickedCond.action === "changePercent") {
       prompt = `请输入【${targetName || targetSymbol}】单日涨跌幅阈值百分比（如输入 5 表示涨跌超 5% 预警）:`;
@@ -596,8 +614,8 @@ export class WatchlistOps {
         .update("alerts", existingAlerts, vscode.ConfigurationTarget.Global);
       this.rebuildTree();
       SettingsWebviewPanel.syncSettings();
-      vscode.window.setStatusBarMessage(
-        `$(bell) 已设置【${targetName || targetSymbol}】预警规则`,
+      emitStatusMessage(
+        maskNumbers(`$(bell) 已设置【${targetName || targetSymbol}】预警规则`),
         3000
       );
     } catch (err: unknown) {
@@ -609,6 +627,11 @@ export class WatchlistOps {
    * 设置标的持仓成本与数量 (F1: Cost & PnL)
    */
   public async setHolding(node?: StockItem): Promise<void> {
+    if (!canOpenPrompt(Boolean(node))) {
+      logger.info("专注/简洁展示模式激活期间拒绝设置持仓（模块级脱敏守卫）");
+      return;
+    }
+
     let targetGroup: string | undefined;
     let targetSymbol: string | undefined;
     let targetName: string | undefined;
@@ -626,7 +649,7 @@ export class WatchlistOps {
         description: string;
         group: string;
         symbol: string;
-        currentPrice?: number;
+        currentPrice?: number | undefined;
       }> = [];
 
       for (const [grp, items] of Object.entries(cfg.watchlist)) {
@@ -641,7 +664,7 @@ export class WatchlistOps {
               : "";
           allItems.push({
             label: finalName,
-            description: `${grp} · ${item.symbol}${holdingDesc}`,
+            description: maskNumbers(`${grp} · ${item.symbol}${holdingDesc}`),
             group: grp,
             symbol: item.symbol,
             currentPrice: cached?.price,
@@ -650,7 +673,7 @@ export class WatchlistOps {
       }
 
       if (allItems.length === 0) {
-        vscode.window.showInformationMessage("自选列表为空，请先添加自选标的");
+        showInfoMessage("自选列表为空，请先添加自选标的");
         return;
       }
 
@@ -682,7 +705,7 @@ export class WatchlistOps {
     const initialCost = currentItem.cost !== undefined ? String(currentItem.cost) : "";
     const initialShares = currentItem.shares !== undefined ? String(currentItem.shares) : "";
 
-    const pricePrompt = currentPrice && currentPrice > 0 ? ` (当前现价: ${currentPrice})` : "";
+    const pricePrompt = currentPrice && currentPrice > 0 ? maskNumbers(` (当前现价: ${currentPrice})`) : "";
     const costInput = await vscode.window.showInputBox({
       title: `设置持仓成本 - ${targetName} (${targetSymbol})`,
       prompt: `请输入买入成本单价${pricePrompt}，留空或输入 0 则清除持仓`,
@@ -710,7 +733,7 @@ export class WatchlistOps {
           .update("watchlist", watchlist, vscode.ConfigurationTarget.Global);
         this.rebuildTree(watchlist);
         SettingsWebviewPanel.syncSettings();
-        vscode.window.showInformationMessage(`已清除【${targetName}】的持仓信息`);
+        showInfoMessage(maskNumbers(`已清除【${targetName}】的持仓信息`));
       } catch (err: unknown) {
         vscode.window.showErrorMessage(`清除持仓失败: ${(err as Error)?.message || String(err)}`);
       }
@@ -748,8 +771,8 @@ export class WatchlistOps {
         .update("watchlist", watchlist, vscode.ConfigurationTarget.Global);
       this.rebuildTree(watchlist);
       SettingsWebviewPanel.syncSettings();
-      vscode.window.showInformationMessage(
-        `✅ 已设置【${targetName}】持仓：${sharesVal} 股/份，成本价 ${costVal}`
+      showInfoMessage(
+        maskNumbers(`✅ 已设置【${targetName}】持仓：${sharesVal} 股/份，成本价 ${costVal}`)
       );
     } catch (err: unknown) {
       vscode.window.showErrorMessage(`保存持仓失败: ${(err as Error)?.message || String(err)}`);
@@ -760,6 +783,13 @@ export class WatchlistOps {
    * 一键添加核心大盘指数到自选列表 (F2: Core Indices)
    */
   public async addCommonIndices(): Promise<void> {
+    // 该向导写入的是固定的公开指数代码，不涉及用户既有自选，故简洁展示态可正常使用；
+    // 老板键激活期间仍须完全静默（一票否决）。
+    if (isBossKeyActive()) {
+      logger.info("专注模式激活期间拒绝添加大盘指数（模块级脱敏守卫）");
+      return;
+    }
+
     const COMMON_INDICES: Array<{
       group: string;
       symbol: string;
@@ -801,7 +831,7 @@ export class WatchlistOps {
     }
 
     if (addedCount === 0) {
-      vscode.window.showInformationMessage("常用大盘指数已全部在自选列表中，无需重复添加");
+      showInfoMessage("常用大盘指数已全部在自选列表中，无需重复添加");
       return;
     }
 
@@ -816,7 +846,7 @@ export class WatchlistOps {
       } catch (err) {
         logger.debug("[addCommonIndices] refresh command failed", err);
       }
-      vscode.window.showInformationMessage(
+      showInfoMessage(
         `✅ 已成功添加 ${addedCount} 只常用大盘指数到自选看板！`
       );
     } catch (err: unknown) {

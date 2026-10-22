@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
-import type { MarketItem, WatchlistConfig, WatchConfigItem, PriceAlertItem, AlertsConfig, GroupSortMode } from "../types/index.ts";
-import { normalizeSymbolKey, stripMarketPrefix, resolveItemAssetType, resolveItemDisplayName, resolveTrendColors, type ColorScheme, ASSET_TYPE_TO_SECTION_MAP, isGroupMarketClosed, buildGroupNodeId, isItemMarketClosed } from "../utils/symbolHelper.ts";
+import type { MarketItem, WatchlistConfig, WatchConfigItem, PriceAlertItem, AlertsConfig, GroupSortMode, MarketSection } from "../types/index.ts";
+import { normalizeSymbolKey, stripMarketPrefix, resolveItemAssetType, resolveItemDisplayName, resolveTrendColors, type ColorScheme, isFundGroupName, resolveItemSection, deriveTodayProfit, escapeHtml, isGroupMarketClosed, buildGroupNodeId, isItemMarketClosed, resolveQuoteCurrency } from "../utils/symbolHelper.ts";
 import { isDisplayMasked, resolveStockTooltip } from "../utils/maskState.ts";
 import { DEFAULT_PROXY_PORT, getProxyStatus } from "../services/network.ts";
 import { logger } from "../utils/logger.ts";
@@ -8,7 +8,7 @@ import { logger } from "../utils/logger.ts";
 /**
  * 智能格式化价格
  */
-function formatPrice(price: number, currency: "CNY" | "USD" | "HKD" = "USD"): string {
+function formatPrice(price: number, currency: "CNY" | "USD" | "HKD" | "USDT" = "USD"): string {
   if (price === 0) return "0.00";
   let sym = "$";
   if (currency === "CNY") sym = "¥";
@@ -23,7 +23,7 @@ function formatPrice(price: number, currency: "CNY" | "USD" | "HKD" = "USD"): st
 /**
  * 格式化大数值（成交量 / 成交额 / 流动性）
  */
-function formatLargeNumber(num: number | undefined, isVolume: boolean, currency: "CNY" | "USD" | "HKD" = "USD"): string {
+function formatLargeNumber(num: number | undefined, isVolume: boolean, currency: "CNY" | "USD" | "HKD" | "USDT" = "USD"): string {
   if (num === undefined || num === 0) return "--";
 
   let prefix = "";
@@ -147,15 +147,16 @@ export class GroupItem extends vscode.TreeItem {
 
 /** 单只股票 / 代币节点 */
 export class StockItem extends vscode.TreeItem {
-  public alertRule?: PriceAlertItem;
-  public confName?: string;
+  // 构造与 refresh 总会写入这四个字段，缺省时写入的是 `undefined` 而非「键不存在」；
+  // `exactOptionalPropertyTypes` 下如实声明为可空必需属性，禁止用 `?` 掩盖真实赋值语义。
+  public alertRule: PriceAlertItem | undefined;
+  public confName: string | undefined;
   public colorScheme: ColorScheme;
   public item: MarketItem;
   public groupName: string;
   public readonly confSymbol: string;
-  public cost?: number;
-  public shares?: number;
-  private maskMode: boolean;
+  public cost: number | undefined;
+  public shares: number | undefined;
   private colorNeutral: boolean;
 
   constructor(
@@ -174,7 +175,6 @@ export class StockItem extends vscode.TreeItem {
     this.item = item;
     this.groupName = groupName;
     this.confSymbol = confSymbol;
-    this.maskMode = maskMode;
     this.colorNeutral = colorNeutral;
     this.confName = confName;
     this.colorScheme = colorScheme;
@@ -222,7 +222,7 @@ export class StockItem extends vscode.TreeItem {
        (currentAlert.changePercent !== undefined && Number.isFinite(currentAlert.changePercent)))
     );
 
-    const currency = item.currency || (item.type === "A_SHARE" ? "CNY" : (item.type === "HK_STOCK" ? "HKD" : "USD"));
+    const currency = resolveQuoteCurrency(item);
     const currSym = currency === "CNY" ? "¥" : (currency === "HKD" ? "HK$" : "$");
 
     const hasQuote = item.price !== undefined && item.price > 0;
@@ -272,27 +272,29 @@ export class StockItem extends vscode.TreeItem {
 
       let mdText = "";
       if (isAlpha) {
-        // 链上 Alpha 专属卡片
+        // 链上 Alpha 专属卡片（计价口径与 resolveQuoteCurrency 同源，加密标的为 U 本位）
+        const alphaCur = resolveQuoteCurrency(item);
+        const alphaSym = alphaCur === "CNY" ? "¥" : alphaCur === "HKD" ? "HK$" : "$";
         const chainBadge = item.chain ? `\`${item.chain}\`` : "`DEX`";
         const dexBadge = item.dex ? `\`${item.dex}\`` : "`DEX`";
-        const liqStr = formatLargeNumber(item.liquidity, false, "USD");
-        const turnoverStr = formatLargeNumber(item.turnover, false, "USD");
-        const openStr = item.open ? formatPrice(item.open, "USD") : "--";
+        const liqStr = formatLargeNumber(item.liquidity, false, alphaCur);
+        const turnoverStr = formatLargeNumber(item.turnover, false, alphaCur);
+        const openStr = item.open ? formatPrice(item.open, alphaCur) : "--";
 
         let changeAmtStr = "--";
         if (item.price && item.changePercent !== undefined) {
           const approxChange = item.price * (item.changePercent / 100);
           const cSign = approxChange >= 0 ? "+" : "";
-          changeAmtStr = `${cSign}$${Math.abs(approxChange).toFixed(item.price < 1 ? 6 : 2)}`;
+          changeAmtStr = `${cSign}${alphaSym}${Math.abs(approxChange).toFixed(item.price < 1 ? 6 : 2)}`;
         }
 
         const copyTokenUri = `command:marketlens.copyCode?${encodeURIComponent(JSON.stringify(item.symbol))}`;
         const copyContractUri = `command:marketlens.copyCode?${encodeURIComponent(JSON.stringify(item.id))}`;
 
-        const holdingSection = this._buildHoldingTooltipSection(item, "USD", "$");
+        const holdingSection = this._buildHoldingTooltipSection(item, alphaCur, alphaSym);
 
         mdText =
-          `### ${item.name} (\`${item.symbol}\`) [📋 复制](${copyTokenUri})\n` +
+          `### ${escapeHtml(item.name)} (\`${item.symbol}\`) [📋 复制](${copyTokenUri})\n` +
           `公链网络：${chainBadge} &nbsp;|&nbsp; 交易池：${dexBadge}\n\n` +
           `| 核心指标 | 实时行情 |\n` +
           `| :--- | :--- |\n` +
@@ -374,7 +376,7 @@ export class StockItem extends vscode.TreeItem {
         const holdingSection = this._buildHoldingTooltipSection(item, currency, currSym);
 
         mdText =
-          `### ${item.name} (\`${item.symbol}\`) [📋 复制](${copyCmdUri})\n` +
+          `### ${escapeHtml(item.name)} (\`${item.symbol}\`) [📋 复制](${copyCmdUri})\n` +
           `计价货币：**${currencyLabel}**\n\n` +
           `| 核心指标 | 实时行情 |\n` +
           `| :--- | :--- |\n` +
@@ -408,7 +410,9 @@ export class StockItem extends vscode.TreeItem {
       }
 
       const md = new vscode.MarkdownString(mdText);
-      md.supportHtml = true;
+      // AGENTS.md §6.15：树节点 Tooltip 一律关闭 HTML 渲染——卡片里的标的名、公链名、
+      // 合约地址都来自行情接口，开启 supportHtml 等于把报文直灌进富文本渲染器（CWE-79）。
+      md.supportHtml = false;
       // 精准白名单授权：仅允许执行安全无害的 copyCode 命令，一票拦截任意未知系统命令
       md.isTrusted = { enabledCommands: ["marketlens.copyCode"] };
       return md;
@@ -434,7 +438,7 @@ export class StockItem extends vscode.TreeItem {
    */
   private _buildHoldingTooltipSection(
     item: MarketItem,
-    currency: "CNY" | "USD" | "HKD",
+    currency: "CNY" | "USD" | "HKD" | "USDT",
     currSym: string
   ): string {
     if (
@@ -457,20 +461,9 @@ export class StockItem extends vscode.TreeItem {
     const marketValStr = formatLargeNumber(marketVal, false, currency);
     const costValStr = formatLargeNumber(costVal, false, currency);
 
-    // 1. 今日盈亏计算
-    let todayProfit = 0;
+    // 1. 今日盈亏计算（公式收口于 deriveTodayProfit，§6.9）
+    const todayProfit = deriveTodayProfit(item, this.shares);
     const todayRate = item.changePercent ?? 0;
-    if (item.change !== undefined && Number.isFinite(item.change)) {
-      todayProfit = item.change * this.shares;
-    } else if (item.open !== undefined && item.open > 0) {
-      todayProfit = (item.price - item.open) * this.shares;
-    } else if (item.prevClose !== undefined && item.prevClose > 0) {
-      todayProfit = (item.price - item.prevClose) * this.shares;
-    } else if (item.price > 0 && item.changePercent !== undefined && Number.isFinite(item.changePercent)) {
-      const r = item.changePercent / 100;
-      const prevPrice = r > -1 ? item.price / (1 + r) : item.price;
-      todayProfit = (item.price - prevPrice) * this.shares;
-    }
 
     const isTodayLoss = todayProfit < 0;
     const todaySign = isTodayLoss ? "-" : "+";
@@ -919,7 +912,7 @@ export class WatchlistProvider
   buildTree(
     config: WatchlistConfig,
     quoteMap: Map<string, MarketItem>,
-    enabledSections: { fund?: boolean; aShare: boolean; hkStock?: boolean; usStock?: boolean; binance: boolean; alpha: boolean } = {
+    enabledSections: Partial<Record<MarketSection, boolean>> = {
       fund: true,
       aShare: true,
       hkStock: true,
@@ -934,24 +927,24 @@ export class WatchlistProvider
     }
     this.stockMap.clear();
 
-    const isSectionEnabled = (type?: string): boolean => {
-      if (!type) return true; // 中立空组不归属任何单一边界板块，默认保持展示
-      const sec = ASSET_TYPE_TO_SECTION_MAP[type as keyof typeof ASSET_TYPE_TO_SECTION_MAP];
-      if (!sec) return true;
-      return enabledSections[sec] !== false;
+    const isSectionEnabled = (section?: MarketSection): boolean => {
+      // 中立分组不归属任何单一板块，默认保持展示
+      if (!section) return true;
+      return enabledSections[section] !== false;
     };
 
     const isGroupEnabled = (groupName: string, items?: WatchConfigItem[]): boolean => {
-      if (groupName.includes("基金") || /\betf\b/i.test(groupName)) {
+      // 基金板块没有独立 AssetType，只能由分组名门控；条目级过滤走 resolveItemSection 同一判定源，
+      // 避免「分组因基金开关展示、条目却按 aShare 开关被全部过滤」的分支漂移（AGENTS.md §6.8）。
+      if (isFundGroupName(groupName)) {
         return enabledSections.fund !== false;
       }
       if (items && items.length > 0) {
-        // 先看组内 item 的真实 type：只要组内至少存在一个处于启用板块的标的，该组即保持展示
-        return items.some((item) => item && item.symbol && isSectionEnabled(resolveItemAssetType(item, groupName)));
+        // 先看组内 item 的真实板块：只要组内至少存在一个处于启用板块的标的，该组即保持展示
+        return items.some((item) => item && item.symbol && isSectionEnabled(resolveItemSection(item, groupName)));
       }
       // 组内为空时，按组名关键词推导所属板块进行兜底；若为中立组（如 "自选"）推导为 undefined，返回 true 保持展示
-      const inferredType = resolveItemAssetType({ symbol: "" }, groupName);
-      return isSectionEnabled(inferredType);
+      return isSectionEnabled(resolveItemSection({ symbol: "" }, groupName));
     };
 
     const filteredEntries = Object.entries(config).filter(([groupName, items]) => {
@@ -960,7 +953,7 @@ export class WatchlistProvider
 
     const getGroupWeight = (name: string, items?: WatchConfigItem[]): number => {
       // 组名显式包含“基金”或“ETF”时，置于最顶层（排在 A 股上方，权重为 0）
-      if (name.includes("基金") || /\betf\b/i.test(name)) {
+      if (isFundGroupName(name)) {
         return 0;
       }
       // 组权重优先看组内标的主流类型，空组或无标的时按组名关键词兜底
@@ -987,7 +980,7 @@ export class WatchlistProvider
     this.groups = filteredEntries.map(([groupName, items]) => {
       const activeItems = (items || []).filter((conf) =>
         conf && typeof conf.symbol === "string" && conf.symbol.trim() !== "" &&
-        isSectionEnabled(resolveItemAssetType(conf, groupName))
+        isSectionEnabled(resolveItemSection(conf, groupName))
       );
       const children = activeItems.map((conf) => {
         const normKey = normalizeSymbolKey(conf.symbol);

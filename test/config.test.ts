@@ -9,11 +9,11 @@ import {
   affectsNetworkConfig,
 } from "../src/utils/config.ts";
 
-test("config - MARKET_SECTIONS 覆盖全量子市场", () => {
+void test("config - MARKET_SECTIONS 覆盖全量子市场", () => {
   assert.deepStrictEqual(MARKET_SECTIONS, ["fund", "aShare", "hkStock", "usStock", "binance", "alpha"]);
 });
 
-test("config - applyProxyToAllSections 全量覆盖所有板块（含 fund 修复回归）", () => {
+void test("config - applyProxyToAllSections 全量覆盖所有板块（含 fund 修复回归）", () => {
   const dummyConfig: any = {
     proxyPort: 10808,
     proxyUrl: "http://127.0.0.1:10808",
@@ -36,7 +36,7 @@ test("config - applyProxyToAllSections 全量覆盖所有板块（含 fund 修�
   assert.strictEqual(dummyConfig.alpha.proxyUrl, "http://127.0.0.1:7890");
 });
 
-test("config - applyStatusBarToAllSections 全量覆盖所有板块（含 fund 修复回归）", () => {
+void test("config - applyStatusBarToAllSections 全量覆盖所有板块（含 fund 修复回归）", () => {
   const dummyConfig: any = {
     statusBar: { enabled: true },
     fund: { statusBar: true },
@@ -57,7 +57,7 @@ test("config - applyStatusBarToAllSections 全量覆盖所有板块（含 fund �
   assert.strictEqual(dummyConfig.alpha.statusBar, false);
 });
 
-test("config - recomputeStatusBarEnabled 聚合判定（含 fund 修复回归）", () => {
+void test("config - recomputeStatusBarEnabled 聚合判定（含 fund 修复回归）", () => {
   const dummyConfig: any = {
     statusBar: { enabled: false },
     fund: { statusBar: false },
@@ -77,7 +77,7 @@ test("config - recomputeStatusBarEnabled 聚合判定（含 fund 修复回归）
   assert.strictEqual(dummyConfig.statusBar.enabled, true);
 });
 
-test("config - affectsNetworkConfig 判定敏感配置变动（含 fund 修复回归）", () => {
+void test("config - affectsNetworkConfig 判定敏感配置变动（含 fund 修复回归）", () => {
   function makeMockEvent(changedKeys: string[]) {
     return {
       affectsConfiguration: (key: string) => changedKeys.some((k) => k === key || k.startsWith(key + ".")),

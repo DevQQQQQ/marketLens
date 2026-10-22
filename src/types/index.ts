@@ -2,10 +2,32 @@
 
 export type AssetType = "A_SHARE" | "HK_STOCK" | "US_STOCK" | "CRYPTO" | "BSC_TOKEN" | "ALPHA_TOKEN";
 
-export type MarketSection = "fund" | "aShare" | "hkStock" | "usStock" | "binance" | "alpha";
+/**
+ * 板块六项枚举的**唯一真相源**（AGENTS.md §5.2）。
+ *
+ * 类型 `MarketSection` 直接由这份值列表下标派生，杜绝旧版在 `types` 与 `utils/config`
+ * 各写一份导致的「新增板块漏改其一，typecheck 不红但运行时集合漏项」双写风险。
+ * `utils/config.ts` 再导出本常量，既有调用点的导入路径不变。
+ */
+export const MARKET_SECTIONS = ["fund", "aShare", "hkStock", "usStock", "binance", "alpha"] as const;
+export type MarketSection = (typeof MARKET_SECTIONS)[number];
 export type MarketType = MarketSection;
 
-/** 统一行情数据结构 */
+/**
+ * 「有休市概念的板块子集」的唯一定义点。Binance / Alpha 为 7×24 市场，
+ * 不得为其合成 `stopOnMarketClosed`（§6.10）；休市键白名单与导入落盘守卫一律取自此。
+ */
+export const MARKET_CLOSING_SECTIONS = ["fund", "aShare", "hkStock", "usStock"] as const;
+export type MarketClosingSection = (typeof MARKET_CLOSING_SECTIONS)[number];
+
+/**
+ * 统一行情数据结构。
+ *
+ * 可选数值位一律显式允许 `undefined`：解析层（§6.13）对「上游未供数」的语义就是产出
+ * `undefined`（如恒发 `"0"` 的换手率、指数的 `-1` 占位），而不是省略键。
+ * 在 `exactOptionalPropertyTypes` 下，省略键与存 `undefined` 是两种类型，
+ * 契约必须如实描述后者，否则各抓取服务只能靠类型断言绕过。
+ */
 export interface MarketItem {
   id: string;
   name: string;
@@ -15,31 +37,31 @@ export interface MarketItem {
   changePercent: number;
 
   // ── 扩展行情字段 ──
-  open?: number;       // 今日开盘价 / 24h 前参考价
-  prevClose?: number;  // 昨日收盘价
-  high?: number;       // 今日最高价
-  low?: number;        // 今日最低价
-  change?: number;     // 涨跌额
-  volume?: number;     // 成交量
-  turnover?: number;   // 成交额 (USD / CNY / HKD)
-  currency?: "CNY" | "USD" | "HKD"; // 计价货币
+  open?: number | undefined;       // 今日开盘价 / 24h 前参考价
+  prevClose?: number | undefined;  // 昨日收盘价
+  high?: number | undefined;       // 今日最高价
+  low?: number | undefined;        // 今日最低价
+  change?: number | undefined;     // 涨跌额
+  volume?: number | undefined;     // 成交量
+  turnover?: number | undefined;   // 成交额 (USD / CNY / HKD)
+  currency?: "CNY" | "USD" | "HKD" | "USDT" | undefined; // 计价货币（加密标的统一 U 本位，见 AGENTS.md §6.9）
 
   // ── 深度量价与估值指标（A股等板块） ──
-  turnoverRate?: number;           // 换手率 %
-  peTtm?: number;                  // 市盈率 (TTM)
-  pb?: number;                     // 市净率
-  amplitude?: number;              // 振幅 %
-  circulationMarketValue?: number; // 流通市值 (基准货币单位：元)
-  totalMarketValue?: number;       // 总市值 (基准货币单位：元)
-  limitUp?: number;                // 涨停价
-  limitDown?: number;              // 跌停价
-  volumeRatio?: number;            // 量比
-  avgPrice?: number;               // 日内成交均价
+  turnoverRate?: number | undefined;           // 换手率 %
+  peTtm?: number | undefined;                  // 市盈率 (TTM)
+  pb?: number | undefined;                     // 市净率
+  amplitude?: number | undefined;              // 振幅 %
+  circulationMarketValue?: number | undefined; // 流通市值 (基准货币单位：元)
+  totalMarketValue?: number | undefined;       // 总市值 (基准货币单位：元)
+  limitUp?: number | undefined;                // 涨停价
+  limitDown?: number | undefined;              // 跌停价
+  volumeRatio?: number | undefined;            // 量比
+  avgPrice?: number | undefined;               // 日内成交均价
 
   // ── Alpha 链上代币专属字段 ──
-  chain?: string;      // 公链标识，如 "bsc", "solana", "base", "ethereum"
-  dex?: string;        // 所在 DEX，如 "pancakeswap", "raydium", "uniswap", "pumpfun"
-  liquidity?: number;  // 流动性池资金 (USD)
+  chain?: string | undefined;      // 公链标识，如 "bsc", "solana", "base", "ethereum"
+  dex?: string | undefined;        // 所在 DEX，如 "pancakeswap", "raydium", "uniswap", "pumpfun"
+  liquidity?: number | undefined;  // 流动性池资金 (USD)
 }
 
 // 兼容别名
@@ -60,10 +82,10 @@ export interface WatchlistConfig {
 // ── 价格预警与剧烈波动类型 ──
 export interface PriceAlertItem {
   symbol: string;
-  name?: string;
-  above?: number;          // 突破上限价格 (> X)
-  below?: number;          // 跌破下限价格 (< X)
-  changePercent?: number;  // 单日涨跌幅突破绝对值 (|%| >= X)
+  name?: string | undefined;
+  above?: number | undefined;          // 突破上限价格 (> X)
+  below?: number | undefined;          // 跌破下限价格 (< X)
+  changePercent?: number | undefined;  // 单日涨跌幅突破绝对值 (|%| >= X)
   enabled: boolean;        // 是否启用预警
 }
 

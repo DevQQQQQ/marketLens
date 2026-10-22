@@ -5,6 +5,7 @@ import { WatchlistProvider } from "./ui/watchlistProvider.ts";
 import { StatusBar } from "./ui/statusBar.ts";
 import { logger } from "./utils/logger.ts";
 import { shouldAutoExitBossKey } from "./utils/maskState.ts";
+import { setMaskSnapshotSource } from "./utils/feedback.ts";
 import { resetProxyCache, DEFAULT_PROXY_PORT, DEFAULT_PROXY_URL } from "./services/network.ts";
 import {
   readConfig,
@@ -13,7 +14,8 @@ import {
   applyStatusBarToAllSections,
   recomputeStatusBarEnabled,
   affectsNetworkConfig,
-  MARKET_SECTIONS,
+  isMarketSection,
+  sanitizeAlerts,
 } from "./utils/config.ts";
 import { RefreshScheduler } from "./scheduler.ts";
 import { WatchlistOps } from "./watchlistOps.ts";
@@ -45,6 +47,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   // 绑定到模块级变量，使 deactivate() 可以显式清理
   _statusBar = statusBar;
+
+  // 脱敏状态唯一来源注入给回显统一出口：feedback.ts 与命令层必须读到同一份
+  // bossKey / maskMode，否则会出现「守卫判定一套、回显判定另一套」。
+  setMaskSnapshotSource(() => ({
+    bossKeyActive: statusBar.isBossKeyActive(),
+    maskMode: statusBar.isMaskModeActive(),
+  }));
 
   const treeView = vscode.window.createTreeView("marketlens.watchlist", {
     treeDataProvider: treeProvider,
@@ -151,7 +160,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
 
     if (key === "alerts") {
-      config.alerts = (value && typeof value === "object" && !Array.isArray(value) ? value as import("./types").AlertsConfig : {});
+      // 内存先行同样要过消毒：这里收到的 value 可能来自面板增量合并，也可能来自磁盘变更事件
+      config.alerts = sanitizeAlerts(value);
       treeProvider.setAlerts(config.alerts);
       scheduler.rebuildTree(undefined, config);
       SettingsWebviewPanel.syncSettings();
@@ -230,8 +240,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const dotIndex = key.indexOf(".");
     if (dotIndex > 0) {
       const section = key.slice(0, dotIndex);
-      if ((MARKET_SECTIONS as readonly string[]).includes(section)) {
-        const targetSection = config[section as "fund" | "aShare" | "hkStock" | "usStock" | "binance" | "alpha"];
+      if (isMarketSection(section)) {
+        const targetSection = config[section];
         const field = key.slice(dotIndex + 1);
         if (targetSection && typeof targetSection === "object" && field in targetSection) {
           (targetSection as Record<string, unknown>)[field] = value;

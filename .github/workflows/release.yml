@@ -8,6 +8,12 @@ on:
 permissions:
   contents: write
 
+# 同一 tag 的重复推送不再并发跑两条发布链（旧版无此段：两条流水线会同时向
+# Marketplace 推同一个版本，且后一条会覆盖前一条的 Release 制品）。
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   release:
     name: Build & Release VSIX
@@ -19,6 +25,49 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          # Guard 需要 main 的历史来判断 tag 是否已合入发布基线，浅克隆拿不到 merge-base
+          fetch-depth: 0
+
+      # ── Guard 1：tag 名必须等于 package.json.version ────────────────────────────
+      # 旧版没有这条校验，打错 tag（如把 v1.3.1 打成 v1.30.1）会照发不误，
+      # 发出去的版本号与 CHANGELOG / README 徽章全部错位。
+      - name: Guard - tag version must equal package.json version
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG="$(node -p "require('./package.json').version")"
+          echo "tag=v$TAG  package.json=v$PKG"
+          if [ "$TAG" != "$PKG" ]; then
+            echo "::error::tag ($GITHUB_REF_NAME) 与 package.json.version ($PKG) 不一致，终止发布"
+            exit 1
+          fi
+
+      # ── Guard 2：tag 必须打在 main 上 ───────────────────────────────────────────
+      # 旧版允许打在 dev 私有提交上的 tag 直接发布，会把未评审的增量推到生产。
+      - name: Guard - tag commit must already be on main
+        run: |
+          git fetch origin main --no-tags
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::tag $GITHUB_REF_NAME 指向的提交不在 main 基线上，请先按 §4.1 把 dev 合入 main 再打 tag"
+            exit 1
+          fi
+
+      # ── Guard 3：发版资产同步只校验、不代做 ─────────────────────────────────────
+      # 与 §9.3 的口径一致：漂移直接判红，而不是像 prepackage 那样顺手改写并删包。
+      - name: Guard - release assets must already be in sync
+        run: npm run sync-version:check
+
+      # ── Guard 4：凭据缺失要失败，不要静默跳过 ───────────────────────────────────
+      # 旧版用 `if: env.VSCE_PAT != ''` 跳过，secret 缺失时流水线全绿并制造「已发布」假象。
+      - name: Guard - publishing credentials must be present
+        run: |
+          if [ -z "$VSCE_PAT" ]; then
+            echo "::error::VSCE_PAT 未配置，无法发布到 VS Code Marketplace。终止而非静默跳过。"
+            exit 1
+          fi
+          if [ -z "$OVSX_PAT" ]; then
+            echo "::warning::OVSX_PAT 未配置：本次只发布到 VS Code Marketplace，Open VSX 将停留在旧版本"
+          fi
 
       - name: Setup Node.js 22
         uses: actions/setup-node@v4
@@ -35,6 +84,18 @@ jobs:
       - name: Package extension (.vsix)
         run: npm run package
 
+      # 产物锚定：后续两个 publish 步骤都发布这同一个文件，杜绝「CI 里重新打包」
+      # 导致 Release 制品与注册表制品不同源。
+      - name: Resolve VSIX artifact
+        run: |
+          count=$(ls marketlens-*.vsix 2>/dev/null | wc -l)
+          if [ "$count" -ne 1 ]; then
+            echo "::error::期望恰好 1 个 vsix，实际 $count 个"
+            exit 1
+          fi
+          ls -l marketlens-*.vsix
+          echo "VSIX=$(ls marketlens-*.vsix | head -1)" >> "$GITHUB_ENV"
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -42,9 +103,8 @@ jobs:
           generate_release_notes: true
 
       - name: Publish to VS Code Marketplace
-        if: env.VSCE_PAT != ''
-        run: npx vsce publish -p $VSCE_PAT --no-dependencies
+        run: npx vsce publish --packagePath "$VSIX"
 
       - name: Publish to Open VSX Registry
         if: env.OVSX_PAT != ''
-        run: npx ovsx publish -p $OVSX_PAT --no-dependencies
+        run: npx --yes ovsx@1.3.0 publish --packagePath "$VSIX" -p "$OVSX_PAT"

@@ -1,9 +1,10 @@
 // src/utils/backupHelper.ts
 import * as vscode from "vscode";
 import type { MarketLensConfig, GroupSortMode, WatchConfigItem, PriceAlertItem } from "../types/index.ts";
-import { MARKET_SECTIONS } from "./config.ts";
+import { MARKET_SECTIONS, isClosingSection } from "./config.ts";
 import { logger } from "./logger.ts";
 import { sanitizeWatchlist } from "./symbolHelper.ts";
+import { isBossKeyActive, showInfoMessage } from "./feedback.ts";
 
 /** MarketLens 标准备份数据结构 */
 export interface MarketLensBackupData {
@@ -11,15 +12,18 @@ export interface MarketLensBackupData {
   exportedAt: string;
   schemaVersion: number;
   settings: {
-    autoRefresh?: boolean;
-    refreshInterval?: number;
-    maskMode?: boolean;
-    colorNeutral?: boolean;
-    colorScheme?: "greenUpRedDown" | "redUpGreenDown";
-    statusBarEnabled?: boolean;
-    autoCollapseClosedGroups?: boolean;
-    proxyPort?: number;
-    proxyUrl?: string;
+    // 导出侧的可选设置来自内存配置（可能未设值），导入侧的归一化把非法类型显式写成
+    // `undefined`；`exactOptionalPropertyTypes` 下「省略键」与「存 undefined」是两种类型，
+    // 故契约如实允许 undefined（JSON 序列化时 undefined 键自然消失，产物格式不变）。
+    autoRefresh?: boolean | undefined;
+    refreshInterval?: number | undefined;
+    maskMode?: boolean | undefined;
+    colorNeutral?: boolean | undefined;
+    colorScheme?: "greenUpRedDown" | "redUpGreenDown" | undefined;
+    statusBarEnabled?: boolean | undefined;
+    autoCollapseClosedGroups?: boolean | undefined;
+    proxyPort?: number | undefined;
+    proxyUrl?: string | undefined;
 
     fund?: unknown;
     aShare?: unknown;
@@ -28,10 +32,10 @@ export interface MarketLensBackupData {
     binance?: unknown;
     alpha?: unknown;
 
-    watchlist?: Record<string, WatchConfigItem[]>;
-    alerts?: Record<string, PriceAlertItem>;
-    alertNotificationMode?: "notification" | "statusBarOnly" | "both";
-    alertCooldownMinutes?: number;
+    watchlist?: Record<string, WatchConfigItem[]> | undefined;
+    alerts?: Record<string, PriceAlertItem> | undefined;
+    alertNotificationMode?: "notification" | "statusBarOnly" | "both" | undefined;
+    alertCooldownMinutes?: number | undefined;
   };
   groupSortModes?: Record<string, GroupSortMode>;
 }
@@ -236,6 +240,11 @@ export async function exportSettingsToFile(
   groupSortModes?: Record<string, GroupSortMode>,
   version?: string
 ): Promise<boolean> {
+  // 守卫下沉（AGENTS.md §6.3 规则六）：备份文件是含真实自选、成本价与预警阈值的明文 JSON，
+  // 且 showSaveDialog 属系统对话框——老板键激活时必须完全静默，连对话框与回执都不出现。
+  if (isBossKeyActive()) {
+    return false;
+  }
   try {
     const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, "");
     const defaultFileName = `marketlens-backup-${dateStr}.json`;
@@ -264,7 +273,7 @@ export async function exportSettingsToFile(
     );
     const alertCount = Object.keys(backupData.settings.alerts || {}).length;
 
-    vscode.window.showInformationMessage(
+    showInfoMessage(
       `✅ MarketLens 配置已成功导出至：${targetUri.fsPath}（包含 ${totalSymbols} 只标的，${alertCount} 条预警规则）`
     );
     return true;
@@ -280,8 +289,12 @@ export async function exportSettingsToFile(
  */
 export async function importSettingsFromFile(options: {
   onSuccess?: (backupData: MarketLensBackupData) => Promise<void> | void;
-  globalState?: vscode.Memento;
+  globalState?: vscode.Memento | undefined;
 }): Promise<boolean> {
+  // 同 exportSettingsToFile：导入流程会弹出明文备份内容与标的数量，老板键激活时静默拒绝。
+  if (isBossKeyActive()) {
+    return false;
+  }
   try {
     const fileUris = await vscode.window.showOpenDialog({
       canSelectMany: false,
@@ -308,7 +321,7 @@ export async function importSettingsFromFile(options: {
     let parsed: unknown;
     try {
       parsed = JSON.parse(rawText);
-    } catch (_) {
+    } catch {
       vscode.window.showErrorMessage("导入失败：所选文件不是合法的 JSON 格式。");
       return false;
     }
@@ -382,23 +395,26 @@ export async function importSettingsFromFile(options: {
     }
 
     // 3. 各市场板块独立配置
+    //    导入文件是外部可控 JSON，写入公开契约前必须逐键验型；且 `stopOnMarketClosed`
+    //    只能落在有休市概念的板块上，否则会把设置面板上永远不可见的野键写进 settings.json
+    //    （AGENTS.md §6.1 公开契约 / §6.10 休市判定）。
     for (const sec of MARKET_SECTIONS) {
       const rawSecConfig = (data.settings as Record<string, unknown>)[sec];
       if (rawSecConfig && typeof rawSecConfig === "object") {
         const secConfig = rawSecConfig as Record<string, unknown>;
-        if (secConfig.enabled !== undefined) {
+        if (typeof secConfig.enabled === "boolean") {
           await cfg.update(`${sec}.enabled`, secConfig.enabled, target);
         }
-        if (secConfig.statusBar !== undefined) {
+        if (typeof secConfig.statusBar === "boolean") {
           await cfg.update(`${sec}.statusBar`, secConfig.statusBar, target);
         }
-        if (secConfig.networkMode !== undefined) {
+        if (secConfig.networkMode === "proxy" || secConfig.networkMode === "direct") {
           await cfg.update(`${sec}.networkMode`, secConfig.networkMode, target);
         }
-        if (secConfig.proxyUrl !== undefined) {
+        if (typeof secConfig.proxyUrl === "string") {
           await cfg.update(`${sec}.proxyUrl`, secConfig.proxyUrl, target);
         }
-        if (secConfig.stopOnMarketClosed !== undefined) {
+        if (typeof secConfig.stopOnMarketClosed === "boolean" && isClosingSection(sec)) {
           await cfg.update(`${sec}.stopOnMarketClosed`, secConfig.stopOnMarketClosed, target);
         }
       }
@@ -423,7 +439,7 @@ export async function importSettingsFromFile(options: {
       }
     }
 
-    vscode.window.showInformationMessage(
+    showInfoMessage(
       `🎉 MarketLens 配置导入成功！已成功恢复 ${symCount} 只自选标的与 ${alertCount} 条预警规则。`
     );
     return true;

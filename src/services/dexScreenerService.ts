@@ -253,7 +253,8 @@ export class DexScreenerService {
           liquidity:     best.liquidity?.usd ?? 0,
           chain:         formatChainName(best.chainId),
           dex:           formatDexName(best.dexId),
-          currency:      "USD",
+          // 链上标的与币安同为 U 本位口径（价源自 priceUsd，稳定币计价）
+          currency:      "USDT",
         });
       }
       return { items, networkError: false };

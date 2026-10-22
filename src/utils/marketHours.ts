@@ -159,14 +159,29 @@ export const US_HOLIDAYS = new Set<string>([
 
 export const MAX_COVERED_HOLIDAY_YEAR = 2027;
 
+/**
+ * 仍为「提前占位预测数据」的年份：日历条目已写入，但尚未对照交易所官方终版公告复核。
+ * 官方终版通常在 2026 年 11 月下旬 ~ 12 月中旬发布，复核校准后必须把该年份从本集合移除（AGENTS.md §6.12）。
+ */
+export const FORECAST_HOLIDAY_YEARS: ReadonlySet<number> = new Set([2027]);
+
 const warnedHolidayYears = new Set<number>();
+const warnedForecastYears = new Set<number>();
 
 /**
  * 节假日日历覆盖有效性护栏：
- * 若当前年份超出已知日历上限（2027），按年度去重输出告警提示开发者更新休市日历，防止静默失效
+ * - 年份超出已知日历上限：按年度去重告警，防止静默失效；
+ * - 年份仍属占位预测数据：按年度去重提示，避免把预测当成官方终版口径长期无人复核。
+ *
+ * 年份口径必须与调用方查日历键所用的**同一个** Intl 格式化器同源：
+ * 用 `date.getFullYear()`（宿主机本地时区）会在跨年边界（12-31 / 01-01）与查表时区错位，
+ * 造成超限年份漏告警或未超限年份误告警（AGENTS.md §6.12）。
  */
-export function checkHolidayCoverage(date: Date = new Date()): boolean {
-  const year = date.getFullYear();
+export function checkHolidayCoverage(
+  date: Date = new Date(),
+  formatter: Intl.DateTimeFormat = beijingDateFormatter
+): boolean {
+  const year = Number(getZonedDateString(formatter, date).slice(0, 4));
   if (year > MAX_COVERED_HOLIDAY_YEAR) {
     if (!warnedHolidayYears.has(year)) {
       warnedHolidayYears.add(year);
@@ -176,23 +191,29 @@ export function checkHolidayCoverage(date: Date = new Date()): boolean {
     }
     return false;
   }
+  if (FORECAST_HOLIDAY_YEARS.has(year) && !warnedForecastYears.has(year)) {
+    warnedForecastYears.add(year);
+    logger.warn(
+      `[marketHours] ${year} 年休市日历目前为提前占位预测数据，尚未对照交易所官方终版公告复核；请在终版公布后更新日历并从 FORECAST_HOLIDAY_YEARS 移除该年份。`
+    );
+  }
   return true;
 }
 
 export function isAShareHoliday(date: Date = new Date()): boolean {
-  checkHolidayCoverage(date);
+  checkHolidayCoverage(date, beijingDateFormatter);
   const dateStr = getZonedDateString(beijingDateFormatter, date);
   return A_SHARE_HOLIDAYS.has(dateStr);
 }
 
 export function isHKHoliday(date: Date = new Date()): boolean {
-  checkHolidayCoverage(date);
+  checkHolidayCoverage(date, beijingDateFormatter);
   const dateStr = getZonedDateString(beijingDateFormatter, date);
   return HK_HOLIDAYS.has(dateStr);
 }
 
 export function isUSHoliday(date: Date = new Date()): boolean {
-  checkHolidayCoverage(date);
+  checkHolidayCoverage(date, newYorkDateFormatter);
   const dateStr = getZonedDateString(newYorkDateFormatter, date);
   return US_HOLIDAYS.has(dateStr);
 }
@@ -341,15 +362,19 @@ export function evaluateAdaptiveThrottle(options: AdaptiveThrottleOptions): Adap
 
 export interface MarketPollingSkipOptions {
   /** 用户配置项：是否在闭市时停止轮询该板块 */
-  stopOnMarketClosed?: boolean;
+  stopOnMarketClosed?: boolean | undefined;
   /** 当前板块是否正处于交易开盘时段 */
   isMarketOpen: boolean;
   /** 插件生命周期内是否已成功加载过首轮行情（用于避免冷启动盘面空白） */
   hasLoadedInitialQuotes: boolean;
   /** 是否由用户发起了全局强制刷新 */
-  forceAll?: boolean;
-  /** 是否指定刷新单一分组名称 */
-  specificGroupName?: string;
+  forceAll?: boolean | undefined;
+  /**
+   * 是否指定刷新单一分组名称。
+   * 调用方（scheduler）传入的是配置里的可空分组名，因此 `undefined` 是合法入参而非「未提供键」，
+   * `exactOptionalPropertyTypes` 下必须如实允许（§6.10 三条休市链路的粒度判定依赖此默认值语义）。
+   */
+  specificGroupName?: string | undefined;
 }
 
 /**

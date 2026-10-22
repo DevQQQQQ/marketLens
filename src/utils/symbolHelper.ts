@@ -1,7 +1,18 @@
 // src/utils/symbolHelper.ts
-import type { AssetType, MarketSection, WatchConfigItem, MarketItem } from "../types";
+import type { AssetType, MarketSection, WatchConfigItem, MarketItem, PriceAlertItem, AlertsConfig } from "../types";
 import { isAShareMarketOpen, isHKMarketOpen, isUSMarketOpen } from "./marketHours.ts";
 export type { AssetType, MarketSection, WatchConfigItem };
+
+/** 磁盘/外部 JSON 可能携带的原型污染键名，任何读写路径都必须丢弃 */
+const DANGEROUS_CONFIG_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
+function isDangerousKey(key: string): boolean {
+  return DANGEROUS_CONFIG_KEYS.has(key);
+}
+
+function positiveFinite(raw: unknown): number | undefined {
+  return typeof raw === "number" && Number.isFinite(raw) && raw > 0 ? raw : undefined;
+}
 
 /**
  * 资产底层类型 (AssetType) 到市场业务板块 (MarketSection) 的全局唯一映射字典
@@ -16,8 +27,72 @@ export const ASSET_TYPE_TO_SECTION_MAP: Record<AssetType, MarketSection> = {
   ALPHA_TOKEN: "alpha",
 };
 
+/**
+ * 分组名是否属于基金板块。
+ *
+ * 基金没有独立 AssetType（场内 ETF 复用 A股行情通道，`resolveItemAssetType` 返回 `A_SHARE`），
+ * 板块归属只能由分组名判定。本函数是该判定的**唯一实现**，禁止在各模块就地复制
+ * `includes("基金") || /\betf\b/i.test(...)`——复制即漂移（AGENTS.md §6.8）。
+ */
+export function isFundGroupName(groupName?: string): boolean {
+  if (!groupName) return false;
+  return groupName.includes("基金") || /\betf\b/i.test(groupName);
+}
+
+/**
+ * 解析条目所属业务板块：板块开关判定与条目级过滤必须共用本出口（AGENTS.md §6.8）。
+ *
+ * 基金由分组名门控（`isFundGroupName`），其余板块经 `ASSET_TYPE_TO_SECTION_MAP` 映射。
+ * 若只按映射表判定，基金条目会被 `aShare` 开关错误过滤——分组显示、条目全空。
+ * 返回 undefined 表示中立分组（如「自选」），不归属任何单一板块，默认保持展示。
+ */
+export function resolveItemSection(
+  item: { symbol?: string; type?: string },
+  groupName: string
+): MarketSection | undefined {
+  if (isFundGroupName(groupName)) return "fund";
+  const assetType = resolveItemAssetType(item, groupName);
+  return assetType ? ASSET_TYPE_TO_SECTION_MAP[assetType] : undefined;
+}
+
 export function isContractAddress(str: string): boolean {
   return /^0x[0-9a-fA-F]{40}$/.test(str) || /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(str);
+}
+
+/** `deriveTodayProfit` 所需的最小行情字段集（MarketItem 与持仓条目均结构兼容） */
+export interface TodayProfitSource {
+  price: number;
+  // 入参来自 MarketItem / HoldingItemQuote，四个来源都可能「上游未供数 = undefined」，
+  // 这正是 deriveTodayProfit 的降级链要逐个判定的前提，契约必须如实允许 undefined。
+  change?: number | undefined;
+  open?: number | undefined;
+  prevClose?: number | undefined;
+  changePercent?: number | undefined;
+}
+
+/**
+ * 今日盈亏反推的**唯一实现**（AGENTS.md §6.9）。
+ *
+ * 优先级：报文真实涨跌额 > 今开价差 > 昨收价差 > 由涨跌幅反推昨收。
+ * 新增展示位需要该数值时必须调用本函数，禁止就地复制公式——
+ * 侧边栏卡片、状态栏持仓条、持仓看板曾各写一份，任一处口径调整就会产生两套盈亏数字。
+ */
+export function deriveTodayProfit(source: TodayProfitSource, shares: number): number {
+  if (source.change !== undefined && Number.isFinite(source.change)) {
+    return source.change * shares;
+  }
+  if (source.open !== undefined && source.open > 0) {
+    return (source.price - source.open) * shares;
+  }
+  if (source.prevClose !== undefined && source.prevClose > 0) {
+    return (source.price - source.prevClose) * shares;
+  }
+  if (source.price > 0 && source.changePercent !== undefined && Number.isFinite(source.changePercent)) {
+    const r = source.changePercent / 100;
+    const prevPrice = r > -1 ? source.price / (1 + r) : source.price;
+    return (source.price - prevPrice) * shares;
+  }
+  return 0;
 }
 
 /**
@@ -351,8 +426,7 @@ export function resolveItemAssetType(
     groupName.includes("A股") ||
     groupName.includes("a股") ||
     lowerGroup.includes("ashare") ||
-    groupName.includes("基金") ||
-    /\betf\b/i.test(groupName)
+    isFundGroupName(groupName)
   ) {
     return "A_SHARE";
   }
@@ -451,6 +525,118 @@ export function sanitizeWatchlist(raw: unknown): Record<string, WatchConfigItem[
 }
 
 /**
+ * 归一化单条预警规则：数值必须为有限正数，非法一律丢弃。
+ * 返回 null 表示这条规则没有任何生效阈值（等同删除）。
+ */
+function normalizeAlertRule(raw: unknown): PriceAlertItem | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return null;
+  }
+  const candidate = raw as Record<string, unknown>;
+  const above = positiveFinite(candidate.above);
+  const below = positiveFinite(candidate.below);
+  const changePercent = positiveFinite(candidate.changePercent);
+
+  if (above === undefined && below === undefined && changePercent === undefined) {
+    return null;
+  }
+
+  const symbol = typeof candidate.symbol === "string" ? candidate.symbol.trim() : "";
+  if (!symbol) {
+    return null;
+  }
+
+  const rule: PriceAlertItem = { symbol, enabled: candidate.enabled !== false };
+  if (above !== undefined) rule.above = above;
+  if (below !== undefined) rule.below = below;
+  if (changePercent !== undefined) rule.changePercent = changePercent;
+  if (typeof candidate.name === "string" && candidate.name.trim() !== "") {
+    rule.name = candidate.name.trim();
+  }
+  return rule;
+}
+
+/**
+ * 预警规则消毒：`alerts` 与 `watchlist` 一样来自磁盘 JSON，禁止 `cfg.get("alerts", {})` 裸取后直接消费。
+ *
+ * 丢弃内容：非对象输入、原型污染键（`__proto__` / `constructor` / `prototype`）、
+ * 无有效阈值的规则、非有限/非正数的阈值。
+ */
+export function sanitizeAlerts(raw: unknown): AlertsConfig {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return {};
+  }
+
+  const result: AlertsConfig = Object.create(null);
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (isDangerousKey(key)) {
+      continue;
+    }
+    const rule = normalizeAlertRule(value);
+    if (rule) {
+      result[key] = rule;
+    }
+  }
+  return result;
+}
+
+/**
+ * 按标的增量合并预警规则（设置面板唯一的 alerts 写入口）。
+ *
+ * 为什么不能整幅镜像回写：后端快照会在防抖窗口内覆盖用户尚未落盘的其他编辑，
+ * 且同一标的的历史别名键（大小写 / 前缀形态）会永久并存，导致冷却键与静音失效。
+ * 因此本函数以**磁盘现值**为基准，只改动目标标的：写入规范键、回收该标的的全部别名键。
+ *
+ * @param diskAlerts 磁盘上的现有 alerts（已消毒）
+ * @param rawKey     前端送来的标的键
+ * @param rawRule    规则对象；传 null / undefined 表示删除该标的的所有预警
+ * @returns 合并后的新对象；rawKey 非法时返回 null 表示拒绝本次写入
+ */
+export function applyAlertRuleDelta(
+  diskAlerts: AlertsConfig,
+  rawKey: unknown,
+  rawRule: unknown
+): AlertsConfig | null {
+  if (typeof rawKey !== "string") {
+    return null;
+  }
+  const trimmed = rawKey.trim();
+  if (!trimmed || isDangerousKey(trimmed)) {
+    return null;
+  }
+
+  const canonicalKey = normalizeSymbolKey(trimmed) || trimmed.toLowerCase();
+  if (!canonicalKey || isDangerousKey(canonicalKey)) {
+    return null;
+  }
+
+  const rule = normalizeAlertRule(rawRule);
+
+  const next: AlertsConfig = {};
+  for (const [existingKey, existingRule] of Object.entries(diskAlerts || {})) {
+    if (isDangerousKey(existingKey)) {
+      continue;
+    }
+    const existingCanonical = normalizeSymbolKey(existingKey) || existingKey.toLowerCase();
+    // 同一标的的规范键与历史别名键全部先剔除，再按需只写回规范键那一条。
+    // 别名判定同时走 isSameSymbol：`sh600519` / `SH600519` / `600519` 这类同标的多形态键
+    // 若并存，会让冷却键与静音判定按键形态分裂失效（§6.11）。
+    if (existingCanonical === canonicalKey || isSameSymbol(existingKey, canonicalKey)) {
+      continue;
+    }
+    const normalized = normalizeAlertRule(existingRule);
+    if (normalized) {
+      next[existingKey] = normalized;
+    }
+  }
+
+  if (rule) {
+    next[canonicalKey] = rule;
+  }
+  return next;
+}
+
+/**
  * 计算自选标的的唯一代码集合指纹（完全忽略分组归属与排列顺序）
  * 仅当有标的新增或删除（即全局监控标的集合改变）时指纹才会改变
  * 同组拖拽重排、跨组移动等仅改变本地展示层级，不会改变此指纹，避免重复触发全量网络请求
@@ -478,17 +664,18 @@ export function getWatchlistFingerprint(watchlist: RawWatchlistMap): string {
 }
 
 export interface TargetExtractionOptions {
-  fundEnabled?: boolean;
-  aShareEnabled?: boolean;
-  hkStockEnabled?: boolean;
-  usStockEnabled?: boolean;
-  binanceEnabled?: boolean;
-  alphaEnabled?: boolean;
-  specificGroupName?: string;
-  skipFund?: boolean;
-  skipAShare?: boolean;
-  skipHKStock?: boolean;
-  skipUSStock?: boolean;
+  fundEnabled?: boolean | undefined;
+  aShareEnabled?: boolean | undefined;
+  hkStockEnabled?: boolean | undefined;
+  usStockEnabled?: boolean | undefined;
+  binanceEnabled?: boolean | undefined;
+  alphaEnabled?: boolean | undefined;
+  /** 调用方传入的可空分组名（全局刷新时为 undefined），与下方 `= undefined` 解构默认值同源 */
+  specificGroupName?: string | undefined;
+  skipFund?: boolean | undefined;
+  skipAShare?: boolean | undefined;
+  skipHKStock?: boolean | undefined;
+  skipUSStock?: boolean | undefined;
 }
 
 export interface ExtractedTargets {
@@ -533,7 +720,7 @@ export function extractTargetsFromWatchlist(
       continue;
     }
 
-    const isFundGroup = groupName.includes("基金") || /\betf\b/i.test(groupName);
+    const isFundGroup = isFundGroupName(groupName);
 
     for (const item of items ?? []) {
       const sym = item?.symbol;
@@ -603,7 +790,7 @@ export function isItemMarketClosed(
   groupName: string = "",
   now: Date = new Date()
 ): boolean {
-  if (groupName.includes("基金") || /\betf\b/i.test(groupName)) {
+  if (isFundGroupName(groupName)) {
     return !isAShareMarketOpen(now);
   }
   const assetType = resolveItemAssetType(item, groupName);
@@ -764,7 +951,7 @@ export function extractStatusBarQuotes<
   const seenSymbols = new Set<string>();
 
   for (const [groupName, items] of Object.entries(watchlist || {})) {
-    const isFundGroup = groupName.includes("基金") || /\betf\b/i.test(groupName);
+    const isFundGroup = isFundGroupName(groupName);
 
     for (const item of items || []) {
       if (!item?.symbol) continue;
@@ -1159,18 +1346,44 @@ export function escapeHtml(str: unknown): string {
     .replace(/'/g, "&#39;");
 }
 
+/**
+ * 推导条目的计价货币（单一出口，§6.9）
+ * 加密与链上标的按 U 本位（USDT）计价：币安报价来自 USDT 等稳定币交易对，
+ * DexScreener 的 priceUsd 在本产品口径下同样按 U 本位表达，不做多币种换算。
+ * 侧边栏卡片与持仓看板必须共用本函数，否则同一标的会出现两套盈亏币种口径。
+ */
+export function resolveQuoteCurrency(item: {
+  currency?: MarketItem["currency"];
+  type?: MarketItem["type"];
+}): "CNY" | "USD" | "HKD" | "USDT" {
+  if (item.currency) return item.currency;
+  switch (item.type) {
+    case "A_SHARE":
+      return "CNY";
+    case "HK_STOCK":
+      return "HKD";
+    case "CRYPTO":
+    case "BSC_TOKEN":
+    case "ALPHA_TOKEN":
+      return "USDT";
+    default:
+      return "USD";
+  }
+}
+
 /** 状态栏持仓盈亏条目数据模型 */
 export interface HoldingItemQuote {
   name: string;
   symbol: string;
-  currency: "CNY" | "USD" | "HKD";
+  currency: "CNY" | "USD" | "HKD" | "USDT";
   cost: number;
   shares: number;
   price: number;
   changePercent: number;
-  change?: number;
-  open?: number;
-  prevClose?: number;
+  // 行情解析层对「上游未供数」产出 undefined（§6.13），此处的可选位同样如实允许
+  change?: number | undefined;
+  open?: number | undefined;
+  prevClose?: number | undefined;
 }
 
 /** 提取持仓行情过滤选项 */
@@ -1221,7 +1434,7 @@ export function extractHoldingQuotes(
   const seenSymbols = new Set<string>();
 
   for (const [groupName, items] of Object.entries(watchlist || {})) {
-    const isFundGroup = groupName.includes("基金") || /\betf\b/i.test(groupName);
+    const isFundGroup = isFundGroupName(groupName);
 
     for (const conf of items || []) {
       if (!conf || typeof conf === "string" || !conf.symbol) continue;
@@ -1262,9 +1475,7 @@ export function extractHoldingQuotes(
 
       seenSymbols.add(normKey);
 
-      const currency: "CNY" | "USD" | "HKD" =
-        q.currency ||
-        (q.type === "A_SHARE" ? "CNY" : q.type === "HK_STOCK" ? "HKD" : "USD");
+      const currency = resolveQuoteCurrency(q);
 
       result.push({
         name: resolveItemDisplayName(conf.name, conf.symbol, q),

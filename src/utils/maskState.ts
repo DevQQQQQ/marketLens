@@ -112,8 +112,13 @@ export function resolveMaskToggle(bossKeyActive: boolean, currentMaskMode: boole
   };
 }
 
-/** 简洁展示模式下自选列表标的节点的脱敏 Tooltip 静态提示 */
-export const MASKED_TOOLTIP_TEXT = "MarketLens — 简洁展示模式 (Alt+K 切换)";
+/**
+ * 简洁展示模式下自选列表标的节点的脱敏 Tooltip 静态提示。
+ *
+ * 安全约束：占位文案**不得含插件名、模式名与快捷键**——伪装态下鼠标无意悬停即会读出
+ * 「MarketLens / 简洁展示模式 / Alt+K」这类自曝信息，与文本打码同等重要（AGENTS.md §6.3 规则七）。
+ */
+export const MASKED_TOOLTIP_TEXT = "****";
 
 /**
  * 决议自选列表节点的 Tooltip 内容与展示策略

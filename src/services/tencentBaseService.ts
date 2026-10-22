@@ -5,6 +5,33 @@ import { logger } from "../utils/logger.ts";
 import { chunkArray, decodeGbk } from "../utils/symbolHelper.ts";
 
 /**
+ * 腾讯报文「字段不足」守卫的最小字段数（三个腾讯服务共用的**单一真相源**）。
+ *
+ * 它同时是「守卫内下标」与「守卫外下标」的分界线：各服务 `F` 字段表里任何
+ * **≥ 本值**的下标（A股的 37/38/39/43/44/45/46/47/48/49/51，港美股的 37），
+ * 上游少发字段时取到的是 `undefined`，读取**必须**走 `parseOptionalFloat`，
+ * 禁止 `parseFloat(...) || 0` 把「未供数」伪装成「数值为 0」（AGENTS.md §6.13）。
+ * 三个服务原本各写一份内联字面量，正是这类脱节长期无人发现的原因。
+ */
+export const MIN_TENCENT_FIELDS = 35;
+
+/**
+ * 腾讯报文可选浮点字段的**唯一**解析出口（AGENTS.md §6.13）。
+ *
+ * 空串、`"-"`、`"-1"` 占位、非有限数值以及**下标越界拿到的 `undefined`** 一律返回 `undefined`。
+ * 产品口径是「上游未供数」与「数值为 0」是两件事：用 `parseFloat(...) || 0` 兜底会让卡片把
+ * 「没有这个字段」渲染成「该数值为 0」，且不抛错、不告警，属最难发现的一类静默失真。
+ * 因此凡读取 `f.length < 35` 守卫**覆盖范围之外**的字段下标，必须走本函数，不得就地 `|| 0`。
+ */
+export function parseOptionalFloat(val: string | undefined): number | undefined {
+  if (!val || val === "-" || val === "-1") {
+    return undefined;
+  }
+  const n = parseFloat(val);
+  return Number.isFinite(n) ? n : undefined;
+}
+
+/**
  * 腾讯行情通用基类 (TencentBaseService)
  * 统一承载腾讯股票/指数 API (qt.gtimg.cn) 的通用分批调度、GBK解码、网络容错与三角数学自洽自愈逻辑。
  * 各子类仅需提供板块特定的字段映射与代码归一化规则。

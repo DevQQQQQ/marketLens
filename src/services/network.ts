@@ -9,7 +9,8 @@ export interface CryptoNetworkOptions {
 }
 
 export interface ProxyStatus {
-  activePort?: number;
+  /** 当前探测成功的本地端口；尚无可用端口时为 `undefined`（非省略键） */
+  activePort?: number | undefined;
   inCooldown: boolean;
   cooldownRemainingSeconds: number;
 }
@@ -55,6 +56,14 @@ export const SYSTEM_PROXY_FALLBACK_TIMEOUT_MS = 2500;
 export const QUICK_PROXY_PROBE_TIMEOUT_MS = 1500;
 /** 本地代理端口轻量前置探活超时（毫秒） */
 export const PORT_PROBE_TIMEOUT_MS = 600;
+/**
+ * 行情请求最大重定向跳数。
+ *
+ * 代理模式下 `parseProxy()` 会把用户代理凭据作为 `proxy.auth` 下发给 axios，
+ * 每一跳重定向都是一次凭据外抛面；行情接口（腾讯 / Binance / DexScreener）实测均为
+ * 零跳转直出 JSON，故把默认 5 跳收紧到 3，只作为防御纵深兜底，不改变正常链路行为。
+ */
+export const MAX_REDIRECTS = 3;
 
 /** 获取当前已探测并生效的本地代理端口 */
 export function getCachedWorkingPort(): number | undefined {
@@ -269,6 +278,8 @@ export async function smartNetworkGet<T = unknown>(
   const mergedConfig: AxiosRequestConfig = {
     ...config,
     timeout: config.timeout || DEFAULT_REQUEST_TIMEOUT_MS,
+    // 防御纵深：显式收窄重定向跳数，避免代理凭据在多跳重定向中被外抛（见 MAX_REDIRECTS 注释）
+    maxRedirects: config.maxRedirects ?? MAX_REDIRECTS,
     headers: { ...BASE_HEADERS, ...config.headers },
   };
 

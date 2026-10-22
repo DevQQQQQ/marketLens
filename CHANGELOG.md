@@ -5,6 +5,24 @@ All notable changes to the "MarketLens" extension will be documented in this fil
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-10-22
+
+- **🔒 隐私与脱敏收口**：新增 `src/utils/feedback.ts` 作为面向用户回显的唯一出口（状态栏闪条、信息弹窗、向导文案数值打码、对话框入口判定），收口原先散落在命令模块/自选操作/预警模块的直接 `setStatusBarMessage` 调用；`watchlistOps.ts` 每个命令入口前置 `canOpenPrompt` / `shouldBlockNodeCommand`，补齐「守卫下沉」。
+- **🩹 数据链路修正**：自选删除改为**只按符号身份**（`isSameSymbol` / `normalizeSymbolKey`）匹配并限定目标分组，消除同名标的跨市场误删；`alerts` 走 `sanitizeAlerts` 消毒 + `applyAlertRuleDelta` 按标的增量回写（拒绝原型污染键、回收历史别名键）；预警冷却表改存**绝对到期时刻**并到期自清理。
+- **🧩 派生单一真相源**：休市板块子集收口进 `MARKET_CLOSING_SECTIONS`，板块级状态栏开关键收口进 `SECTION_STATUS_BAR_KEYS`；板块开关与条目过滤统一走 `resolveItemSection`；今日盈亏公式、按币种聚合与持仓取数不再有第二份副本。
+- **💱 计价货币单一出口（加密标的 U 本位）**：新增 `resolveQuoteCurrency(item)`，`A_SHARE→CNY / HK_STOCK→HKD / CRYPTO·BSC·ALPHA→USDT`，显式 `currency` 优先于类型推导；币安与 DexScreener 取数源、侧边栏卡片与 Tooltip、状态栏持仓看板全部改从该出口取计价单位，`USDT` 独立成币种桶，禁止展示位硬编码 `"USD"` 兜底。
+- **📅 休市日历护栏**：`checkHolidayCoverage` 的年份口径改为与查表同一个 Intl 时区（避免跨年边界误告警），2027 作为**预测年**显式挂牌在 `FORECAST_HOLIDAY_YEARS` 并按年去重告警。
+- **📅 休市日历维护口径（产品决策）**：`AGENTS.md` §6.12 由「每年 11~12 月强制追补次年日历」改判为**「未来年份不预置、不追补、不登记为待办；每年 1 月由维护者本人专项检查并授权补录」**，补录动作收敛成「写日期 → 抬上限 → 移出预测年 → 补数量断言」四件套（附录 B 新增第 18 条探针，实测 2028+ 键 0 个）。实测依据：剔除全部 2027 键后 2026-10-22~12-31 逐日休市判定差异 **0 天 / 0 告警**（查表键为 `YYYY-MM-DD` 全等匹配），故体检报告的「2027 A股日历待官方公告」条目已删除；`RELEASE.md` §6 的核验时间窗同步从 11~12 月改为 1 月。
+- **📦 依赖与供应链收口（生产链 + 开发链双清零）**：`npm audit --omit=dev` 由 1 high（`follow-redirects@1.16.0` 两条凭据泄露通告）降为 **0**，`follow-redirects` → 1.16.1、`axios` → 1.20.0；开发链以 `npm audit fix --force` 升 `esbuild@0.28.2` / `@typescript-eslint/*@8.72.0` / `@vscode/vsce@4.0.0`，全量 `npm audit` 亦为 **0**（产物字节与升级前仅差 1 字节，属压缩器差异）；`package-lock.json` 的 295 条 `resolved` 全量归一到 `https://registry.npmjs.org`（镜像 0 条），`npm ci --dry-run` 验过可解析；lock 根包 `version` 同步为 `1.3.0`。
+- **🛡️ 静态守卫补齐（工程护栏层，不改用户可见行为）**：`tsconfig.json` 开启 `exactOptionalPropertyTypes` / `noUnusedLocals` / `noImplicitOverride`，为此把「代码实际会存入 `undefined`」的可选契约如实加宽（`MarketItem`、`PriceAlertItem`、`TodayProfitSource`、`HoldingItemQuote`、`ProxyStatus`、`MarketPollingSkipOptions`、`TargetExtractionOptions`、`MarketLensBackupData.settings`），宿主不可改写的 `QuickPickItem.detail` 与 `currentPrice` 改为条件展开省略键；`.eslintrc.json` 升为 **type-aware** 并启用 `no-floating-promises` / `no-misused-promises`，测试文件顶层 `test(...)` 显式改为 `void test(...)`（现 100 处）。唯一未开启项 `noUncheckedIndexedAccess` 已按规约登记为能力缺口，**未用断言或 disable 刷绿**（逐处取证与裁决见「🔬 解析层守卫外下标收口」条目）。
+- **🔬 解析层守卫外下标收口（行情正确性）**：三个腾讯行情服务（A股/港股/美股）原先都用 `parseFloat(f[F.TURNOVER]) || 0` 读**下标 37**，而字段不足守卫只保证 `f.length >= 35`——37 落在守卫之外，报文偏短时常量越界得到 `undefined`，被 `|| 0` 伪装成「成交额为 0」，不抛错也不告警。现把 `parseOptionalFloat`（空串 / `-` / `-1` / 非有限值 → `undefined`）与守卫长度 `MIN_TENCENT_FIELDS` 一并提到 `tencentBaseService.ts` 作为**单一出口**（此前只有 A股 有一份私有实现、港美股完全没有），三处成交额改走可选语义，三份内联字面量 `35` 全部换成共享常量；`undefined` 直传到 `watchlistProvider.formatLargeNumber` 仍渲染为 `--`，**观感不变而语义诚实**。同步纠正 `AGENTS.md` §6.13 的失实引用（可选解析符号 `parseNonZeroFloat` 在仓库里不存在；港股 `F` 表最大下标为 37，不读 `[38]` 换手率），新增**附录 B 第 19 条**可机械校验探针（「下标 ≥ `MIN_TENCENT_FIELDS` 只能走 `parseOptionalFloat`」）与回归用例「P2-9 回归 - 腾讯短报文（35~37 字段）成交额保持 undefined」；变异验证：任一服务改回 `|| 0` 即该用例红，既有 Golden Sample 仍绿（全字段报文看不见这个缺口）。**全局 `noUncheckedIndexedAccess` 维持不开**：临时打开的报错由 99 降至 **96** 处，其余属「TS 看不见的前置不变量」（正则捕获组、早退后下标、等长数组），刷绿只能靠 §2.4 禁止的断言或假兜底，已按裁决登记为能力缺口，留待 `symbolHelper` 拆分时一并评估。
+- **🧩 板块枚举与默认分组名收敛为单一真相源**：`MARKET_SECTIONS` / `MARKET_CLOSING_SECTIONS` 迁移到 `src/types/index.ts` 并由 `(typeof …)[number]` 下标派生类型，`utils/config.ts` 改为再导出，消除「类型与值列表两处各写一份、漏改其一 typecheck 不红」的双写风险；新增 `SECTION_DEFAULT_GROUP_NAMES`（`Record<MarketSection, string>`）与派生的 `DEFAULT_GROUP_NAMES`，设置面板「清空自选」不再手写六个分组名字面量（新增板块时漏补会让该板块分组消失）。
+- **🚀 发布链 Guard 落地**：`release.yml` 增加 `concurrency`、tag 版本 == `package.json.version`、tag 提交必须已在 `main`（`git merge-base --is-ancestor`）、`npm run sync-version:check` 资产同步只校验不代做、`VSCE_PAT` 缺失即硬失败；两个 publish 步骤改为发布同一个 `--packagePath` 产物（不再在 CI 里重新打包），`ovsx` 固定为 `npx --yes ovsx@1.3.0`。`scripts/sync-version.js` 补上 `--fail-on-drift` 的非零退出码，新增 `npm run sync-version:check` 只读门禁脚本。
+- **🎹 键位文档化契约自动化**：新增 `unit.test.ts`「§6.1 键位文档化契约」用例，读 `package.json` 的 `contributes.keybindings` 逐条断言每个已注册键位在 `README.md` / `README.en.md` / 设置面板 About 速查三处均可见（已做变异验证：改掉 `Alt + L` 即红并精确报出 3 处缺失）。
+- **📡 请求防御纵深**：`network.ts` 单一漏斗显式设置 `MAX_REDIRECTS = 3`，收窄代理凭据在多跳重定向中的外抛面（行情接口实测零跳转）。
+- **🧪 测试**：新增回显出口、符号身份匹配、冷却自清理、板块同源、U 本位计价、键位文档契约、腾讯短报文成交额可选语义等回归，用例 102 → **105**，全绿。
+- **📚 规约纠偏与同步**：`AGENTS.md` 升为 v3.2，把本轮已落地的护栏从「⚠ 纠正 / 未落地」改写为现状陈述（§2.4 静态守卫、§5.2 板块真相源、§5.5 依赖供应链、§6.1 键位用例、§9.2/§9.3 发布链、附录 B 第 5/10/16/17 条），未落地项继续如实登记。
+
 ## [1.3.0] - 2026-10-14
 
 <details>

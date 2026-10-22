@@ -148,6 +148,10 @@ if (require.main === module) {
 	try {
 		const cleanAll = process.argv.includes('--clean-all');
 		const dryRun = process.argv.includes('--dry-run');
+		// --fail-on-drift：只做检查不写盘，一旦发现宣发资产与 package.json 版本不同步，
+		// 立即以非零码退出，使其可以当作发版门禁使用（AGENTS.md §9.3 / 附录 B 第 10 条）。
+		// 不加这个开关时，脚本从不因「有漂移」而失败，只会打印 modifiedFiles，极易被误读成门禁已通过。
+		const failOnDrift = process.argv.includes('--fail-on-drift');
 		const result = syncVersion(undefined, cleanAll, dryRun);
 		if (result.modifiedFiles.length > 0) {
 			console.log(`[MarketLens] 🔄 Version synchronized to v${result.version} in: ${result.modifiedFiles.join(', ')}`);
@@ -156,6 +160,13 @@ if (require.main === module) {
 		}
 		if (result.deletedVsix && result.deletedVsix.length > 0) {
 			console.log(`[MarketLens] 🗑️ Cleaned up VSIX package(s): ${result.deletedVsix.join(', ')}`);
+		}
+		if (failOnDrift && dryRun && result.modifiedFiles.length > 0) {
+			console.error(
+				`[MarketLens] ❌ Version drift detected (${result.modifiedFiles.length} file(s) out of sync with v${result.version}): ` +
+				`${result.modifiedFiles.join(', ')}. 请先执行 npm run sync-version 再打 tag。`
+			);
+			process.exit(1);
 		}
 	} catch (err) {
 		console.error('[MarketLens] ❌ Failed to sync version:', err);

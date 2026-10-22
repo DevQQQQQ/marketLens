@@ -3,7 +3,8 @@
   "parser": "@typescript-eslint/parser",
   "parserOptions": {
     "ecmaVersion": 2020,
-    "sourceType": "module"
+    "sourceType": "module",
+    "project": ["./tsconfig.test.json"]
   },
   "plugins": [
     "@typescript-eslint"
@@ -13,6 +14,8 @@
     "plugin:@typescript-eslint/recommended"
   ],
   "rules": {
+    "@typescript-eslint/no-floating-promises": "error",
+    "@typescript-eslint/no-misused-promises": "error",
     "@typescript-eslint/naming-convention": "off",
     "@typescript-eslint/semi": "off",
     "@typescript-eslint/no-explicit-any": "off",

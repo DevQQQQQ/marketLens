@@ -3,6 +3,7 @@ import * as vscode from "vscode";
 import type { MarketItem, MarketLensConfig, PriceAlertItem } from "../types/index.ts";
 import { normalizeSymbolKey, stripMarketPrefix } from "../utils/symbolHelper.ts";
 import { isDisplayMasked } from "../utils/maskState.ts";
+import { emitStatusMessage } from "../utils/feedback.ts";
 import type { StatusBar } from "../ui/statusBar.ts";
 import { readConfig } from "../utils/config.ts";
 
@@ -12,7 +13,7 @@ export const DEFAULT_ALERT_COOLDOWN_MINUTES = 15;
 function readConfigFallback(): Partial<MarketLensConfig> {
   try {
     return readConfig();
-  } catch (_) {
+  } catch {
     return {
       alerts: {},
       alertNotificationMode: "notification",
@@ -32,14 +33,18 @@ export interface AlertTriggerEvent {
 
 export class AlertManager {
   private readonly cooldownMap = new Map<string, number>();
-  private readonly statusBar?: StatusBar;
+  // 构造参数可缺省（无状态栏场景），存入的真是 `undefined` 而非「键不存在」
+  private readonly statusBar: StatusBar | undefined;
 
   constructor(statusBar?: StatusBar) {
     this.statusBar = statusBar;
   }
 
   /**
-   * 手动对指定标的加设静音冷却时间（毫秒）
+   * 手动对指定标的加设静音冷却。
+   *
+   * 存储口径唯一：值恒为**绝对到期时刻**。读取端一律用 `now >= expiry` 判定，
+   * 不得改回「上次触发时刻」语义——两套口径混用会让静音实际时长变成配置值的两倍（§6.11）。
    */
   public mute(symbolKey: string, minutes: number = DEFAULT_ALERT_COOLDOWN_MINUTES): void {
     const normKey = normalizeSymbolKey(symbolKey) || symbolKey.toLowerCase();
@@ -47,6 +52,13 @@ export class AlertManager {
     this.cooldownMap.set(`${normKey}:above`, expiry);
     this.cooldownMap.set(`${normKey}:below`, expiry);
     this.cooldownMap.set(`${normKey}:changePercent`, expiry);
+  }
+
+  /** 只读探针：当前是否仍处于静音冷却期内（供回归用例观测到期自清理链路） */
+  public isMuted(symbolKey: string, minutesSuffix: "above" | "below" | "changePercent" = "above"): boolean {
+    const normKey = normalizeSymbolKey(symbolKey) || symbolKey.toLowerCase();
+    const expiry = this.cooldownMap.get(`${normKey}:${minutesSuffix}`);
+    return expiry !== undefined && Date.now() < expiry;
   }
 
   /**
@@ -101,9 +113,9 @@ export class AlertManager {
       // 1. 检查突破上限
       if (rule.above !== undefined && Number.isFinite(rule.above) && q.price > 0 && q.price >= rule.above) {
         const cKey = `${matchedKey}:above`;
-        const lastTrigger = this.cooldownMap.get(cKey) || 0;
-        if (now - lastTrigger >= cooldownMs) {
-          this.cooldownMap.set(cKey, now);
+        const cooldownExpiry = this.cooldownMap.get(cKey) || 0;
+        if (now >= cooldownExpiry) {
+          this.cooldownMap.set(cKey, now + cooldownMs);
           triggeredEvents.push({
             symbolKey: matchedKey,
             item: q,
@@ -118,9 +130,9 @@ export class AlertManager {
       // 2. 检查跌破下限
       if (rule.below !== undefined && Number.isFinite(rule.below) && q.price > 0 && q.price <= rule.below) {
         const cKey = `${matchedKey}:below`;
-        const lastTrigger = this.cooldownMap.get(cKey) || 0;
-        if (now - lastTrigger >= cooldownMs) {
-          this.cooldownMap.set(cKey, now);
+        const cooldownExpiry = this.cooldownMap.get(cKey) || 0;
+        if (now >= cooldownExpiry) {
+          this.cooldownMap.set(cKey, now + cooldownMs);
           triggeredEvents.push({
             symbolKey: matchedKey,
             item: q,
@@ -140,9 +152,9 @@ export class AlertManager {
         Math.abs(q.changePercent) >= rule.changePercent
       ) {
         const cKey = `${matchedKey}:changePercent`;
-        const lastTrigger = this.cooldownMap.get(cKey) || 0;
-        if (now - lastTrigger >= cooldownMs) {
-          this.cooldownMap.set(cKey, now);
+        const cooldownExpiry = this.cooldownMap.get(cKey) || 0;
+        if (now >= cooldownExpiry) {
+          this.cooldownMap.set(cKey, now + cooldownMs);
           triggeredEvents.push({
             symbolKey: matchedKey,
             item: q,
@@ -152,6 +164,13 @@ export class AlertManager {
             thresholdValue: rule.changePercent,
           });
         }
+      }
+    }
+
+    // 冷却表到期即删：无人回收会让已删除自选的键永久滞留内存（AGENTS.md §6.6）
+    for (const [expiredKey, expiry] of this.cooldownMap) {
+      if (now >= expiry) {
+        this.cooldownMap.delete(expiredKey);
       }
     }
 
@@ -212,7 +231,7 @@ export class AlertManager {
           if (action === muteAction) {
             this.mute(evt.symbolKey, config.alertCooldownMinutes || 15);
             if (!masked) {
-              vscode.window?.setStatusBarMessage(`$(bell-slash) 已静音 ${displayName} 预警 ${config.alertCooldownMinutes || 15} 分钟`, 3000);
+              emitStatusMessage(`$(bell-slash) 已静音 ${displayName} 预警 ${config.alertCooldownMinutes || 15} 分钟`, 3000);
             }
           } else if (action === settingsAction) {
             void vscode.commands?.executeCommand("marketlens.openSettings");

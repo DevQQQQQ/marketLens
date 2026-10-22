@@ -29,7 +29,7 @@ npm run package
 
 ### 方式二：指定输出版本文件名
 ```powershell
-npx @vscode/vsce package -o marketlens-1.3.0.vsix --allow-missing-repository --no-dependencies
+npx @vscode/vsce package -o marketlens-1.3.1.vsix --allow-missing-repository --no-dependencies
 ```
 
 > **参数解析**：
@@ -44,7 +44,7 @@ npx @vscode/vsce package -o marketlens-1.3.0.vsix --allow-missing-repository --n
 
 ### 终端一键强制安装
 ```powershell
-code --install-extension marketlens-1.3.0.vsix --force
+code --install-extension marketlens-1.3.1.vsix --force
 ```
 
 ### VS Code 图形界面安装
@@ -71,7 +71,7 @@ code --install-extension marketlens-1.3.0.vsix --force
   npx ovsx publish -p <YOUR_OVSX_PAT> --no-dependencies
   ```
 
-> 💡 **GitHub Actions 自动化**：推送版本 tag（如 `git tag v1.3.0 && git push origin v1.3.0`）后，`.github/workflows/release.yml` 将自动并发打包并同时发布到双平台。
+> 💡 **GitHub Actions 自动化**：推送版本 tag（如 `git tag v1.3.1 && git push origin v1.3.1`）后，`.github/workflows/release.yml` 将自动并发打包并同时发布到双平台。
 
 ---
 
@@ -86,12 +86,12 @@ code --install-extension marketlens-1.3.0.vsix --force
 ## 📅 6. 年度法定节假日日历复核门禁 (Annual Holiday Gate)
 
 - **维护源文件**：`src/utils/marketHours.ts` 中的 `A_SHARE_HOLIDAYS`、`HK_HOLIDAYS`、`US_HOLIDAYS` 及 `MAX_COVERED_HOLIDAY_YEAR` 常量；
-- **周期与时间窗**：每年 11 月下旬至 12 月中旬（各国官方交易所与监管机构发布下年度法定放假排班终版后）；
-- **跨年发版核验 Checklist**：
-  1. **A股**：核对中国政府网 / 上交所 / 深交所发布的下年度休市及调休排班；
-  2. **港股**：核对香港交易所（HKEX）公布的耶稣受难节、复活节、圣诞节及香港公众假期；
+- **周期与时间窗**：**每年 1 月**由维护者本人专项检查上一年度官方终版排班并授权补录；**未来年份一律不提前预置**（不追踪 11~12 月公布的次年安排，也不为此上调护栏上限）。缺次年日历对当年判定**零影响**：查表键是 `YYYY-MM-DD` 全等匹配。
+- **补录核验 Checklist（同一次改动内四件齐做）**：
+  1. **A股**：核对中国政府网 / 上交所 / 深交所发布的该年度休市及调休排班；
+  2. **港股**：核对香港交易所（HKEX）公布的耶稣受难节、复活节、圣诞节及香港公众假期（**只录全日休市**，半日市不得写入）；
   3. **美股**：核对纽约证券交易所（NYSE）/ 纳斯达克（NASDAQ）公布的马丁路德金日、总统日、六月节等全休市日历；
-  4. **护栏递增**：将 `MAX_COVERED_HOLIDAY_YEAR` 递增至下一年度（如 2027 -> 2028），确保 `checkHolidayCoverage` 不误报过期；
-  5. **单测守卫**：运行 `npm test` 确保节假日离线日历单元测试 100% PASS。
+  4. **护栏与标记**：将 `MAX_COVERED_HOLIDAY_YEAR` 递增至该年度，并把该年从 `FORECAST_HOLIDAY_YEARS` 移除（避免预测告警永久刷日志）；
+  5. **单测守卫**：补齐该年度的数量断言（美股每年严格 10 天 / 港股平日数量 / 三市场全域不含周末），运行 `npm test` 确保节假日离线日历单元测试 100% PASS。
 
 

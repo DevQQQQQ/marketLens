@@ -4,15 +4,18 @@ import { detectAvailablePort, getCachedWorkingPort, resetProxyCache, DEFAULT_PRO
 import { getSettingsWebviewHtml } from "./settingsHtml.ts";
 import { logger } from "../utils/logger.ts";
 import type { MarketItem, WatchlistConfig, GroupSortMode } from "../types/index.ts";
-import { normalizeSymbolKey, stripMarketPrefix, resolveItemDisplayName } from "../utils/symbolHelper.ts";
+import { normalizeSymbolKey, stripMarketPrefix, resolveItemDisplayName, sanitizeAlerts, applyAlertRuleDelta } from "../utils/symbolHelper.ts";
 import {
   readConfig,
   persistProxyToAllSections,
   persistStatusBarToAllSections,
   persistSectionStatusBarAndRecompute,
   MARKET_SECTIONS,
+  MARKET_CLOSING_SECTIONS,
+  DEFAULT_GROUP_NAMES,
 } from "../utils/config.ts";
 import { exportSettingsToFile, importSettingsFromFile } from "../utils/backupHelper.ts";
+import { isBossKeyActive, maskIfNeeded, showInfoMessage } from "../utils/feedback.ts";
 
 const GLOBAL_CONFIG_KEYS = [
   "proxyPort",
@@ -26,7 +29,6 @@ const GLOBAL_CONFIG_KEYS = [
   "statusBar.holdingEnabled",
   "statusBar.holdingInterval",
   "autoCollapseClosedGroups",
-  "alerts",
   "alertNotificationMode",
   "alertCooldownMinutes",
 ] as const;
@@ -38,10 +40,11 @@ const COMMON_SECTION_PROPERTIES = [
   "proxyUrl",
 ] as const;
 
-const MARKET_CLOSING_SECTIONS = ["fund", "aShare", "hkStock", "usStock"] as const;
-
 /**
- * 允许由 Webview 设置面板前端发起变更的配置项白名单，严格从 MARKET_SECTIONS 唯一真相源派生
+ * 允许由 Webview 设置面板前端发起变更的配置项白名单，严格从 MARKET_SECTIONS 唯一真相源派生。
+ *
+ * 注意：`alerts` **不得**进入本白名单。预警规则只能由 `updateAlertRule` 按标的增量写入，
+ * 整幅镜像回写会让后端快照在防抖窗口内覆盖用户未落盘的编辑（AGENTS.md §6.2）。
  */
 export const ALLOWED_CONFIG_KEYS = new Set<string>([
   ...GLOBAL_CONFIG_KEYS,
@@ -50,6 +53,15 @@ export const ALLOWED_CONFIG_KEYS = new Set<string>([
   ),
   ...MARKET_CLOSING_SECTIONS.map((sec) => `${sec}.stopOnMarketClosed`),
 ]);
+
+/**
+ * 板块级状态栏开关键集合（同样由 MARKET_SECTIONS 派生）。
+ * 消息分发处必须用本集合做成员判定，禁止把各板块的 statusBar 键逐个写进 || 链式条件
+ * ——新增板块时链式判定必然漏项（AGENTS.md §5.2）。
+ */
+export const SECTION_STATUS_BAR_KEYS = new Set<string>(
+  MARKET_SECTIONS.map((sec) => `${sec}.statusBar`)
+);
 
 function isAllowedUrl(urlString: string): boolean {
   try {
@@ -62,9 +74,11 @@ function isAllowedUrl(urlString: string): boolean {
 
 export class SettingsWebviewPanel {
   public static currentPanel: SettingsWebviewPanel | undefined;
-  public static onDidUpdateSetting?: (key: string, value: unknown) => void;
-  public static getQuoteCache?: () => Map<string, MarketItem>;
-  public static globalState?: vscode.Memento;
+  // 三个静态注入位由 activate() 写入、deactivate() 显式复位为 undefined（§7.5 面板与订阅生命周期）。
+  // `exactOptionalPropertyTypes` 下必须声明成「必需但可为 undefined」，否则复位语句判红。
+  public static onDidUpdateSetting: ((key: string, value: unknown) => void) | undefined;
+  public static getQuoteCache: (() => Map<string, MarketItem>) | undefined;
+  public static globalState: vscode.Memento | undefined;
   private readonly _panel: vscode.WebviewPanel;
   private readonly _version: string;
   private _disposables: vscode.Disposable[] = [];
@@ -158,14 +172,7 @@ export class SettingsWebviewPanel {
                   const enableAll = !!message.value;
                   await persistStatusBarToAllSections(cfg, enableAll);
                   this.sendCurrentSettings();
-                } else if (
-                  message.key === "fund.statusBar" ||
-                  message.key === "aShare.statusBar" ||
-                  message.key === "hkStock.statusBar" ||
-                  message.key === "usStock.statusBar" ||
-                  message.key === "binance.statusBar" ||
-                  message.key === "alpha.statusBar"
-                ) {
+                } else if (SECTION_STATUS_BAR_KEYS.has(message.key)) {
                   await persistSectionStatusBarAndRecompute(cfg, message.key, !!message.value);
                   this.sendCurrentSettings();
                 } else if (message.key === "colorScheme") {
@@ -234,6 +241,26 @@ export class SettingsWebviewPanel {
           case "importSettings":
             await SettingsWebviewPanel.importSettings();
             break;
+          case "updateAlertRule": {
+            // alerts 只能按标的增量写入：以**磁盘现值**为基准合并单个标的，
+            // 绝不接受前端整幅镜像回写——那会让后端快照在防抖窗口内覆盖用户未落盘的编辑，
+            // 并让同一标的的历史别名键永久并存（AGENTS.md §6.2 / §6.11）。
+            const cfg = vscode.workspace.getConfiguration("marketlens");
+            const diskAlerts = sanitizeAlerts(cfg.get("alerts", {}));
+            const merged = applyAlertRuleDelta(diskAlerts, message.key, message.rule);
+            if (!merged) {
+              logger.warn(`[SettingsWebview] 拒绝非法预警标的键: ${String(message.key)}`);
+              break;
+            }
+            try {
+              SettingsWebviewPanel.onDidUpdateSetting?.("alerts", merged);
+            } catch (err) {
+              logger.warn("[SettingsWebview] notify alert delta failed", err);
+            }
+            await cfg.update("alerts", merged, vscode.ConfigurationTarget.Global);
+            this.sendCurrentSettings();
+            break;
+          }
           case "clearAllAlerts": {
             const confirm = await vscode.window.showWarningMessage(
               "确定要清空当前所有自选标的的价格预警规则吗？",
@@ -250,7 +277,7 @@ export class SettingsWebviewPanel {
               const cfg = vscode.workspace.getConfiguration("marketlens");
               await cfg.update("alerts", {}, vscode.ConfigurationTarget.Global);
               this.sendCurrentSettings();
-              vscode.window.showInformationMessage("✅ 已清空所有价格预警规则");
+              showInfoMessage("✅ 已清空所有价格预警规则");
             }
             break;
           }
@@ -293,7 +320,8 @@ export class SettingsWebviewPanel {
           case "copyToClipboard":
             if (message.text) {
               await vscode.env.clipboard.writeText(message.text);
-              vscode.window.showInformationMessage(`📋 已复制到剪贴板: ${message.text}`);
+              // 剪贴板按用户意图写入原文，但回显是被动可见面：脱敏态下必须收敛内容
+              showInfoMessage(`📋 已复制到剪贴板: ${maskIfNeeded(String(message.text))}`);
             }
             break;
         }
@@ -321,6 +349,11 @@ export class SettingsWebviewPanel {
   }
 
   public static async restoreDefaults(): Promise<boolean> {
+    // 守卫下沉（AGENTS.md §6.3 规则六）：本方法可由命令面板直达，老板键激活时
+    // 既不能弹出 modal 确认框（文案自曝插件名），也不能执行破坏性重置。
+    if (isBossKeyActive()) {
+      return false;
+    }
     const confirm = await vscode.window.showWarningMessage(
       "确定要将 MarketLens 恢复为出厂默认设置吗？\n所有自选标的列表将重置为初始预设（基金/A股/港股/美股/Binance/Alpha 各精选 5 只，共 30 个标的），所有价格预警规则与自定义配置也将全部还原。",
       { modal: true },
@@ -356,11 +389,15 @@ export class SettingsWebviewPanel {
     // 触发全局强制刷新全部最新行情
     await vscode.commands.executeCommand("marketlens.refresh");
 
-    vscode.window.showInformationMessage("✅ MarketLens 已成功恢复为出厂默认设置（价格预警与自选列表均已还原初始状态）！");
+    showInfoMessage("✅ MarketLens 已成功恢复为出厂默认设置（价格预警与自选列表均已还原初始状态）！");
     return true;
   }
 
   public static async clearWatchlist(): Promise<boolean> {
+    // 同 restoreDefaults：命令面板可直达，老板键激活时必须静默拒绝（modal 文案自曝插件名，且属破坏性操作）
+    if (isBossKeyActive()) {
+      return false;
+    }
     const confirm = await vscode.window.showWarningMessage(
       "确定要一键清空当前所有自选标的吗？\n清空后自选列表将变为空白（保留板块分类），方便您从零开始自由添加喜欢的资产。\n（注：您后续仍可随时通过【恢复出厂默认设置】重新找回系统预设标的）",
       { modal: true },
@@ -377,12 +414,11 @@ export class SettingsWebviewPanel {
     for (const group of Object.keys(currentWatchlist)) {
       emptyWatchlist[group] = [];
     }
-    if (!emptyWatchlist["基金"]) emptyWatchlist["基金"] = [];
-    if (!emptyWatchlist["A股"]) emptyWatchlist["A股"] = [];
-    if (!emptyWatchlist["港股"]) emptyWatchlist["港股"] = [];
-    if (!emptyWatchlist["美股"]) emptyWatchlist["美股"] = [];
-    if (!emptyWatchlist["Binance"]) emptyWatchlist["Binance"] = [];
-    if (!emptyWatchlist["Alpha"]) emptyWatchlist["Alpha"] = [];
+    // 保留板块分类：六个默认分组名由 MARKET_SECTIONS 派生，禁止在此手写平行列表（§5.2 / §6.7）。
+    // 新增板块时只改 config.ts 的 SECTION_DEFAULT_GROUP_NAMES，这里自动跟上。
+    for (const group of DEFAULT_GROUP_NAMES) {
+      if (!emptyWatchlist[group]) emptyWatchlist[group] = [];
+    }
 
     // 立即同步清空内存列表，状态栏立刻清空并隐藏
     try {
@@ -396,7 +432,7 @@ export class SettingsWebviewPanel {
     // 触发全局强制刷新
     await vscode.commands.executeCommand("marketlens.refresh");
 
-    vscode.window.showInformationMessage("🗑️ 已成功清空所有自选标的！您可以点击自选栏顶部的加号 [+] 开始添加属于您的标的。");
+    showInfoMessage("🗑️ 已成功清空所有自选标的！您可以点击自选栏顶部的加号 [+] 开始添加属于您的标的。");
     return true;
   }
 

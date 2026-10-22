@@ -8,26 +8,13 @@ import { SettingsWebviewPanel } from "../ui/settingsWebview.ts";
 import { readConfig } from "../utils/config.ts";
 import { logger } from "../utils/logger.ts";
 import { canEmitUserFeedback, resolveMaskToggle, shouldBlockNodeCommand } from "../utils/maskState.ts";
+import { emitStatusMessage, maskIfNeeded } from "../utils/feedback.ts";
 
 export interface CommandServices {
   scheduler: RefreshScheduler;
   watchlistOps: WatchlistOps;
   statusBar: StatusBar;
   treeProvider: WatchlistProvider;
-}
-
-/**
- * 状态栏临时消息的安全出口：老板键（专注模式）激活期间一票否决，保证完全静默。
- *
- * 注意：`vscode.window.setStatusBarMessage` 独立于 `StatusBar` 自身的 `barItem.hide()` 逻辑，
- * 行情条隐藏后该临时消息依然会在状态栏区域闪现——「已隐蔽」这类提示本身就是暴露源。
- * 所有面向用户的状态栏回显必须经由本函数，严禁直接调用 `setStatusBarMessage`。
- */
-function emitStatusMessage(statusBar: StatusBar, message: string, timeout: number = 2500): void {
-  if (!canEmitUserFeedback(statusBar.isBossKeyActive())) {
-    return;
-  }
-  vscode.window.setStatusBarMessage(message, timeout);
 }
 
 export function registerCommands(
@@ -127,31 +114,31 @@ export function registerCommands(
           {
             label: "$(three-bars) 默认顺序",
             description: "手动排列，支持拖拽与上下移动调整",
-            detail: currentMode === "default" ? "✓ 当前生效" : undefined,
+            ...(currentMode === "default" ? { detail: "✓ 当前生效" } : {}),
             mode: "default",
           },
           {
             label: "$(graph-line) 按涨幅排序",
             description: "涨跌幅从高到低 (涨幅优先)",
-            detail: currentMode === "changeDesc" ? "✓ 当前生效" : undefined,
+            ...(currentMode === "changeDesc" ? { detail: "✓ 当前生效" } : {}),
             mode: "changeDesc",
           },
           {
             label: "$(graph) 按跌幅排序",
             description: "涨跌幅从低到高 (跌幅优先)",
-            detail: currentMode === "changeAsc" ? "✓ 当前生效" : undefined,
+            ...(currentMode === "changeAsc" ? { detail: "✓ 当前生效" } : {}),
             mode: "changeAsc",
           },
           {
             label: "$(symbol-string) 按名称排序",
             description: "按股票名称拼音排序",
-            detail: currentMode === "nameAsc" ? "✓ 当前生效" : undefined,
+            ...(currentMode === "nameAsc" ? { detail: "✓ 当前生效" } : {}),
             mode: "nameAsc",
           },
           {
             label: "$(symbol-number) 按现价排序",
             description: "按当前价格从高到低",
-            detail: currentMode === "priceDesc" ? "✓ 当前生效" : undefined,
+            ...(currentMode === "priceDesc" ? { detail: "✓ 当前生效" } : {}),
             mode: "priceDesc",
           },
         ];
@@ -164,7 +151,6 @@ export function registerCommands(
         if (selected && selected.mode !== currentMode) {
           treeProvider.setGroupSortMode(targetGroup, selected.mode);
           emitStatusMessage(
-            statusBar,
             `【${targetGroup}】已切换为：${selected.label.replace(/\$\([a-z0-9-]+\)\s*/, "")}`,
             2500
           );
@@ -209,7 +195,7 @@ export function registerCommands(
         }
 
         // 3. 底部状态提示（此时已退出专注模式，回显安全）
-        emitStatusMessage(statusBar, "$(eye) MarketLens 行情已恢复", 3000);
+        emitStatusMessage("$(eye) MarketLens 行情已恢复", 3000);
       }
     }),
 
@@ -230,7 +216,6 @@ export function registerCommands(
       }
 
       emitStatusMessage(
-        statusBar,
         exitedBossKey
           ? "$(eye) MarketLens 已退出专注模式 (伪装摸鱼模式已关闭)"
           : plan.nextMaskMode
@@ -248,7 +233,6 @@ export function registerCommands(
         .getConfiguration("marketlens")
         .update("colorNeutral", next, vscode.ConfigurationTarget.Global);
       emitStatusMessage(
-        statusBar,
         next ? "$(paintcan) MarketLens: 颜色脱敏已开启 (无红绿视觉刺激)" : "$(paintcan) MarketLens: 颜色脱敏已关闭 (恢复红绿涨跌)",
         2500
       );
@@ -397,7 +381,9 @@ export function registerCommands(
         }
 
         await vscode.env.clipboard.writeText(textToCopy);
-        emitStatusMessage(statusBar, `$(clippy) 已复制${label}: ${textToCopy}`, 2500);
+        // 剪贴板内容本身按用户意图写入，但回显文案在脱敏态下必须收敛，
+        // 否则状态栏会替用户把真实代码 / 合约地址念出来。
+        emitStatusMessage(`$(clippy) 已复制${label}: ${maskIfNeeded(textToCopy)}`, 2500);
 
         // 1. 立即触发树视图轻量变更，使 VS Code 主动销毁/收起当前的 Hover 浮层，彻底根除停留的蓝色 focus 边框
         try {

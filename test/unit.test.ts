@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { isSameSymbol, normalizeSymbolKey, stripMarketPrefix, normalizeUSCode, inferAShareExchange, normalizeAShareCode, resolveItemAssetType, resolveItemDisplayName, getWatchlistFingerprint, reorderWatchlist, batchReorderWatchlist, pruneQuoteCache, extractTargetsFromWatchlist, extractStatusBarQuotes, computeStatusBarEnabled, resolveTrendColors, chunkArray, decodeGbk, escapeHtml, ASSET_TYPE_TO_SECTION_MAP, NORMALIZE_SYMBOL_KEY_CLIENT_SCRIPT, isItemMarketClosed, isGroupMarketClosed, buildGroupNodeId, sanitizeWatchlist } from "../src/utils/symbolHelper.ts";
 import type { MarketItem, WatchlistConfig, WatchConfigItem } from "../src/types/index.ts";
 import { validateAndParseInput, isContractAddress, extractContractAddressFromUrl } from "../src/utils/inputValidator.ts";
-import { isAShareMarketOpen, isHKMarketOpen, isUSMarketOpen, isAShareHoliday, isHKHoliday, isUSHoliday, evaluateAdaptiveThrottle, getZonedTimeParts, beijingFormatter, newYorkFormatter, shouldSkipMarketPolling, MAX_COVERED_HOLIDAY_YEAR, checkHolidayCoverage, US_HOLIDAYS, HK_HOLIDAYS } from "../src/utils/marketHours.ts";
+import { isAShareMarketOpen, isHKMarketOpen, isUSMarketOpen, isAShareHoliday, isHKHoliday, isUSHoliday, evaluateAdaptiveThrottle, getZonedTimeParts, beijingFormatter, newYorkFormatter, beijingDateFormatter, newYorkDateFormatter, shouldSkipMarketPolling, MAX_COVERED_HOLIDAY_YEAR, FORECAST_HOLIDAY_YEARS, checkHolidayCoverage, US_HOLIDAYS, HK_HOLIDAYS, A_SHARE_HOLIDAYS } from "../src/utils/marketHours.ts";
 import { validateAndNormalizeProxyUrl, parseProxy, resetProxyCache, getSystemProxyUrl, smartNetworkGet, getCachedWorkingPort, testLocalPort, DEFAULT_PROXY_PORT, DEFAULT_PROXY_URL, COMMON_PROXY_PORTS, DEFAULT_REQUEST_TIMEOUT_MS, SYSTEM_PROXY_FALLBACK_TIMEOUT_MS, QUICK_PROXY_PROBE_TIMEOUT_MS, PORT_PROBE_TIMEOUT_MS } from "../src/services/network.ts";
 import axios from "axios";
 import { isDisplayMasked, shouldAutoExitBossKey, canEmitUserFeedback, resolveMaskToggle, shouldBlockNodeCommand, MASKED_TOOLTIP_TEXT, resolveStockTooltip } from "../src/utils/maskState.ts";
@@ -23,7 +23,7 @@ import { USStockService } from "../src/services/usStockService.ts";
 import { generateBackupData, validateBackupData } from "../src/utils/backupHelper.ts";
 import "./config.test.ts";
 
-test("nls - package.json 占位符与语言包契约一致性", () => {
+void test("nls - package.json 占位符与语言包契约一致性", () => {
   // 防回归闸门：任何新增配置项 / 命令若忘记补 NLS 翻译，或误删既有翻译键，
   // 都会在此处立即红灯，杜绝「非中文环境下设置页与扩展描述全中文」的问题悄悄回归。
   const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -84,7 +84,7 @@ test("nls - package.json 占位符与语言包契约一致性", () => {
   assert.strictEqual(pkg.description, "%description%", "顶层 description 必须使用 %description% 占位符");
 });
 
-test("symbolHelper - 真实源码逻辑校验", () => {
+void test("symbolHelper - 真实源码逻辑校验", () => {
   // A股
   assert.strictEqual(isSameSymbol("sh600030", "600030"), true);
   assert.strictEqual(isSameSymbol("sh000001", "sz000001"), false);
@@ -136,7 +136,7 @@ test("symbolHelper - 真实源码逻辑校验", () => {
   assert.strictEqual(normalizeSymbolKey("SOL/USDT"), "solusdt");
 });
 
-test("inputValidator - 真实源码输入识别与非法拦截", () => {
+void test("inputValidator - 真实源码输入识别与非法拦截", () => {
   // A股
   const a1 = validateAndParseInput("600519");
   assert.strictEqual(a1.parsed?.symbol, "sh600519");
@@ -220,7 +220,7 @@ test("inputValidator - 真实源码输入识别与非法拦截", () => {
   assert.ok(errNum.error);
 });
 
-test("marketHours - 真实源码时区与交易时段计算", () => {
+void test("marketHours - 真实源码时区与交易时段计算", () => {
   // 1. 测试北京时间 UTC 转换
   const mondayUtc = new Date("2026-09-07T02:00:00Z"); // UTC 02:00 -> 北京时间周一 10:00 (开市)
   const beijingParts = getZonedTimeParts(beijingFormatter, mondayUtc);
@@ -243,7 +243,7 @@ test("marketHours - 真实源码时区与交易时段计算", () => {
   assert.strictEqual(isUSMarketOpen(usTradingUtc), true);
 });
 
-test("normalizeUSCode - 美股代码规范化与防双重前缀", () => {
+void test("normalizeUSCode - 美股代码规范化与防双重前缀", () => {
   // 3字母带腾讯前缀：绝对不可变成 usUSAMD / usUSNET / usUSTSM / usUSARM
   assert.strictEqual(normalizeUSCode("usAMD"), "usAMD");
   assert.strictEqual(normalizeUSCode("usNET"), "usNET");
@@ -276,7 +276,7 @@ test("normalizeUSCode - 美股代码规范化与防双重前缀", () => {
   assert.strictEqual(normalizeUSCode("us.BRK.B"), "usBRK.B");
 });
 
-test("bossKeyActive - 老板键状态与脱敏逻辑守卫校验（真实生产函数）", () => {
+void test("bossKeyActive - 老板键状态与脱敏逻辑守卫校验（真实生产函数）", () => {
   // 1. 常规模式：取决于用户配置 maskMode
   assert.strictEqual(isDisplayMasked(false, false), false);
   assert.strictEqual(isDisplayMasked(false, true), true);
@@ -286,7 +286,7 @@ test("bossKeyActive - 老板键状态与脱敏逻辑守卫校验（真实生产�
   assert.strictEqual(isDisplayMasked(true, true), true);
 });
 
-test("bossKeyActive - 重新打开看板自动解除专注模式（杜绝 Alt+K 静默失效回归）", () => {
+void test("bossKeyActive - 重新打开看板自动解除专注模式（杜绝 Alt+K 静默失效回归）", () => {
   // 1. 仅在「视图可见 + 老板键激活」双前提同时成立时才允许自动解除
   assert.strictEqual(shouldAutoExitBossKey(true, true), true);
 
@@ -304,7 +304,7 @@ test("bossKeyActive - 重新打开看板自动解除专注模式（杜绝 Alt+K 
   assert.strictEqual(isDisplayMasked(false, false), false, "解除老板键且关闭简洁模式后，必须恢复真实行情展示");
 });
 
-test("bossKeyActive - 专注模式静默守卫（状态栏消息 / 信息提示 / 设置面板统一收口）", () => {
+void test("bossKeyActive - 专注模式静默守卫（状态栏消息 / 信息提示 / 设置面板统一收口）", () => {
   // 1. 专注模式激活期间必须完全静默：任何 UI 回显（含「已隐蔽」这句本身）都是暴露源
   assert.strictEqual(canEmitUserFeedback(true), false);
 
@@ -316,7 +316,7 @@ test("bossKeyActive - 专注模式静默守卫（状态栏消息 / 信息提示 
   assert.strictEqual(canEmitUserFeedback(true), false);
 });
 
-test("bossKeyActive - Alt+K 语义决议（杜绝专注态下显示开关静默失效）", () => {
+void test("bossKeyActive - Alt+K 语义决议（杜绝专注态下显示开关静默失效）", () => {
   // 1. 常规态：保持纯粹的取反语义，与历史行为完全一致
   assert.deepStrictEqual(resolveMaskToggle(false, false), {
     exitBossKey: false,
@@ -353,7 +353,7 @@ test("bossKeyActive - Alt+K 语义决议（杜绝专注态下显示开关静默�
   }
 });
 
-test("resolveStockTooltip - 自选列表脱敏态 Tooltip 安全收敛与惰性求值", () => {
+void test("resolveStockTooltip - 自选列表脱敏态 Tooltip 安全收敛与惰性求值", () => {
   let builderCalled = false;
   const mockCardBuilder = () => {
     builderCalled = true;
@@ -401,7 +401,7 @@ test("resolveStockTooltip - 自选列表脱敏态 Tooltip 安全收敛与惰性�
   }
 });
 
-test("shouldBlockNodeCommand - 命令面板入口（pinToTop / removeItem / setAlert）脱敏态拦截守卫", () => {
+void test("shouldBlockNodeCommand - 命令面板入口（pinToTop / removeItem / setAlert）脱敏态拦截守卫", () => {
   // 命令面板触发的这三个入口在无 node 分支时会展示含真实名称/代码/现价的 QuickPick。
   // 防御策略：只要老板键激活，或在无 node 时 maskMode 开启，即静默拒绝防自曝；有 node 传入（右键菜单）在 maskMode 下正常放行。
   const scenarios = [
@@ -421,7 +421,7 @@ test("shouldBlockNodeCommand - 命令面板入口（pinToTop / removeItem / setA
   }
 });
 
-test("proxyUrl - 代理地址规范化与协议纠偏", () => {
+void test("proxyUrl - 代理地址规范化与协议纠偏", () => {
   // 1. https 纠偏为 http（杜绝 EPROTO）
   assert.strictEqual(validateAndNormalizeProxyUrl("https://127.0.0.1:7890"), "http://127.0.0.1:7890");
   assert.strictEqual(validateAndNormalizeProxyUrl("https://localhost:10808"), "http://localhost:10808");
@@ -476,7 +476,7 @@ test("proxyUrl - 代理地址规范化与协议纠偏", () => {
   }
 });
 
-test("getSystemProxyUrl - 操作系统环境变量代理自适应回退", () => {
+void test("getSystemProxyUrl - 操作系统环境变量代理自适应回退", () => {
   const savedEnv: Record<string, string | undefined> = {
     HTTP_PROXY: process.env.HTTP_PROXY,
     http_proxy: process.env.http_proxy,
@@ -535,7 +535,7 @@ test("getSystemProxyUrl - 操作系统环境变量代理自适应回退", () => 
   }
 });
 
-test("resolveItemAssetType & 分组板块判定策略（先看 item.type，彻底杜绝组名子串误伤）", () => {
+void test("resolveItemAssetType & 分组板块判定策略（先看 item.type，彻底杜绝组名子串误伤）", () => {
   // 1. 显式 type 拥有最高裁决权（First-Class Citizen）
   assert.strictEqual(resolveItemAssetType({ symbol: "BTCUSDT", type: "CRYPTO" }, "crypto-us"), "CRYPTO");
   assert.strictEqual(resolveItemAssetType({ symbol: "ETHUSDT", type: "CRYPTO" }, "USDT仓位"), "CRYPTO");
@@ -594,7 +594,7 @@ test("resolveItemAssetType & 分组板块判定策略（先看 item.type，彻�
   assert.strictEqual(resolveItemAssetType({ symbol: 123 as any }, "临时组"), undefined);
 });
 
-test("getWatchlistFingerprint - 自选指纹与防重复全量网络请求校验", () => {
+void test("getWatchlistFingerprint - 自选指纹与防重复全量网络请求校验", () => {
   // 1. 基准配置
   const baseWatchlist = {
     "A股": [
@@ -703,7 +703,7 @@ test("getWatchlistFingerprint - 自选指纹与防重复全量网络请求校验
   );
 });
 
-test("reorderWatchlist - 自选标的同组重排与跨组位移测试", () => {
+void test("reorderWatchlist - 自选标的同组重排与跨组位移测试", () => {
   const initList = () => ({
     "A股": [
       { symbol: "sh600030", name: "中信证券" },
@@ -745,7 +745,7 @@ test("reorderWatchlist - 自选标的同组重排与跨组位移测试", () => {
   assert.strictEqual(reorderWatchlist(initList(), "A股", "sh600030", "A股", "sh600030"), null);
 });
 
-test("batchReorderWatchlist - 多选批量拖拽原子重排测试", () => {
+void test("batchReorderWatchlist - 多选批量拖拽原子重排测试", () => {
   const initList = () => ({
     "A股": [
       { symbol: "sh600030", name: "中信证券" },
@@ -854,7 +854,7 @@ test("batchReorderWatchlist - 多选批量拖拽原子重排测试", () => {
   );
 });
 
-test("pruneQuoteCache - 活跃集对齐与死缓存回收测试 (Active-Set Prune)", () => {
+void test("pruneQuoteCache - 活跃集对齐与死缓存回收测试 (Active-Set Prune)", () => {
   const activeWatchlist = {
     "A股": [
       { symbol: "sh600030", name: "中信证券" },
@@ -931,7 +931,7 @@ test("pruneQuoteCache - 活跃集对齐与死缓存回收测试 (Active-Set Prun
   assert.strictEqual(pruneQuoteCache(activeWatchlist, new Map()), 0);
 });
 
-test("extractTargetsFromWatchlist - 标的分桶过滤与闭市跳过测试", () => {
+void test("extractTargetsFromWatchlist - 标的分桶过滤与闭市跳过测试", () => {
   const mockWatchlist = {
     "混合自选": [
       { symbol: "sh600519", type: "A_SHARE" },
@@ -983,7 +983,7 @@ test("extractTargetsFromWatchlist - 标的分桶过滤与闭市跳过测试", ()
   assert.deepStrictEqual(groupSpecificTargets.cryptos, []);
 });
 
-test("extractStatusBarQuotes - 底部状态栏49标的全量轮播与分板块开关即时过滤测试", () => {
+void test("extractStatusBarQuotes - 底部状态栏49标的全量轮播与分板块开关即时过滤测试", () => {
   // 构建符合真实生产配置的 49 个预设标的 Watchlist
   // A股: 10, 港股: 6, 美股: 9, Binance: 12, Alpha: 12 = 49
   const defaultWatchlist = {
@@ -1125,7 +1125,7 @@ test("extractStatusBarQuotes - 底部状态栏49标的全量轮播与分板块�
   assert.strictEqual(calcMaster(true, true, true, true, false), false, "Alpha关闭轮播时，全部标的参与轮播总开关为 false");
 });
 
-test("proxyPort - 端口校验与提取规则", () => {
+void test("proxyPort - 端口校验与提取规则", () => {
   function validatePort(val: any): number | null {
     let raw = String(val || "").trim();
     const match = raw.match(/:(\d{1,5})/);
@@ -1160,7 +1160,7 @@ test("proxyPort - 端口校验与提取规则", () => {
   assert.strictEqual(validatePort("99999"), null);
 });
 
-test("extractContractAddressFromUrl - 网页URL合约提取与校验", () => {
+void test("extractContractAddressFromUrl - 网页URL合约提取与校验", () => {
   // DexScreener Solana URL
   const dexSolUrl = "https://dexscreener.com/solana/4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R";
   assert.strictEqual(extractContractAddressFromUrl(dexSolUrl), "4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R");
@@ -1204,7 +1204,7 @@ test("extractContractAddressFromUrl - 网页URL合约提取与校验", () => {
   assert.ok(rawTxParsed.error && rawTxParsed.error.includes("Tx Hash"), "裸交易哈希应明确提示为 Tx Hash");
 });
 
-test("extractStatusBarQuotes - 状态栏总控与分板块开关精准过滤", () => {
+void test("extractStatusBarQuotes - 状态栏总控与分板块开关精准过滤", () => {
   const sampleWatchlist = {
     "A股": [
       { symbol: "sh600519", name: "贵州茅台", type: "A_SHARE" },
@@ -1282,7 +1282,7 @@ test("extractStatusBarQuotes - 状态栏总控与分板块开关精准过滤", (
   assert.strictEqual(allSubOff.length, 0);
 });
 
-test("computeStatusBarEnabled - 状态栏总控与分板块开关聚合判定", () => {
+void test("computeStatusBarEnabled - 状态栏总控与分板块开关聚合判定", () => {
   // 1. 用户显式设置 statusBar.enabled: false，无论分板块如何开启，状态栏必须彻底关闭
   assert.strictEqual(computeStatusBarEnabled(false, true), false, "显式关闭总控时，即使有活跃板块也必须关闭");
   assert.strictEqual(computeStatusBarEnabled(false, false), false, "显式关闭总控时，无活跃板块也必须关闭");
@@ -1296,7 +1296,7 @@ test("computeStatusBarEnabled - 状态栏总控与分板块开关聚合判定", 
   assert.strictEqual(computeStatusBarEnabled(undefined, false), false, "未显式配置但无活跃板块时，状态栏默认关闭");
 });
 
-test("AlertManager - 价格上限突破预警 (above > threshold)", () => {
+void test("AlertManager - 价格上限突破预警 (above > threshold)", () => {
   const manager = new AlertManager();
   const config: any = {
     alerts: {
@@ -1327,7 +1327,7 @@ test("AlertManager - 价格上限突破预警 (above > threshold)", () => {
   assert.strictEqual(noEvents.length, 0);
 });
 
-test("AlertManager - 价格下限跌破预警 (below < threshold)", () => {
+void test("AlertManager - 价格下限跌破预警 (below < threshold)", () => {
   const manager = new AlertManager();
   const config: any = {
     alerts: {
@@ -1355,7 +1355,7 @@ test("AlertManager - 价格下限跌破预警 (below < threshold)", () => {
   assert.strictEqual(noEvents.length, 0);
 });
 
-test("AlertManager - 单日剧烈涨跌幅绝对值预警 (|%| >= threshold)", () => {
+void test("AlertManager - 单日剧烈涨跌幅绝对值预警 (|%| >= threshold)", () => {
   const manager = new AlertManager();
   const config: any = {
     alerts: {
@@ -1393,7 +1393,7 @@ test("AlertManager - 单日剧烈涨跌幅绝对值预警 (|%| >= threshold)", (
   assert.strictEqual(normalEvents.length, 0);
 });
 
-test("AlertManager - 冷却防轰炸机制与静音拦截", () => {
+void test("AlertManager - 冷却防轰炸机制与静音拦截", () => {
   const manager = new AlertManager();
   const config: any = {
     alerts: {
@@ -1426,7 +1426,7 @@ test("AlertManager - 冷却防轰炸机制与静音拦截", () => {
   assert.strictEqual(muted.length, 0, "手动静音后不触发");
 });
 
-test("AlertManager - 老板键激活状态一票否决与静音守卫", () => {
+void test("AlertManager - 老板键激活状态一票否决与静音守卫", () => {
   let isBossActive = true;
   const mockStatusBar: any = {
     isBossKeyActive: () => isBossActive,
@@ -1455,7 +1455,7 @@ test("AlertManager - 老板键激活状态一票否决与静音守卫", () => {
   assert.strictEqual(resumed.length, 1, "老板键退出后正常响应");
 });
 
-test("AlertManager - 状态栏与通知通道联动分发", () => {
+void test("AlertManager - 状态栏与通知通道联动分发", () => {
   let flashedText = "";
   const mockStatusBar: any = {
     isBossKeyActive: () => false,
@@ -1495,7 +1495,7 @@ test("AlertManager - 状态栏与通知通道联动分发", () => {
   assert.strictEqual(flashedText, "", "简洁展示模式下状态栏闪光必须完全静默，避免顶掉伪装文本");
 });
 
-test("AlertManager - 禁用开关与空配置容错保护", () => {
+void test("AlertManager - 禁用开关与空配置容错保护", () => {
   const manager = new AlertManager();
 
   // 规则被禁用 enabled: false
@@ -1514,7 +1514,7 @@ test("AlertManager - 禁用开关与空配置容错保护", () => {
   assert.strictEqual(manager.checkQuotes([{ symbol: "sh600519" } as any], { alerts: {} } as any).length, 0);
 });
 
-test("AlertManager - 币对斜杠 (SOL/USDT vs SOLUSDT) 跨格式匹配预警", () => {
+void test("AlertManager - 币对斜杠 (SOL/USDT vs SOLUSDT) 跨格式匹配预警", () => {
   const manager = new AlertManager();
   const config: any = {
     alerts: {
@@ -1534,7 +1534,7 @@ test("AlertManager - 币对斜杠 (SOL/USDT vs SOLUSDT) 跨格式匹配预警", 
   assert.strictEqual(events[0].currentValue, 100);
 });
 
-test("resolveItemDisplayName - 侧边栏与设置面板标的名称一致性与优先级解析", () => {
+void test("resolveItemDisplayName - 侧边栏与设置面板标的名称一致性与优先级解析", () => {
   // 1. 用户显式配置自定义名称（如 usNET 配置为 Cloudflare），即便腾讯接口返回机器译名“科赋锐”，仍应锁定展示 Cloudflare
   const cfName = resolveItemDisplayName("Cloudflare", "usNET", { name: "科赋锐", symbol: "NET" });
   assert.strictEqual(cfName, "Cloudflare", "应优先使用用户配置的 Cloudflare");
@@ -1560,7 +1560,7 @@ test("resolveItemDisplayName - 侧边栏与设置面板标的名称一致性与�
   assert.strictEqual(fallbackSym, "000001", "行情未到达时兜底展示代码");
 });
 
-test("resolveTrendColors - 涨跌配色习惯切换 (greenUpRedDown vs redUpGreenDown) 与颜色脱敏", () => {
+void test("resolveTrendColors - 涨跌配色习惯切换 (greenUpRedDown vs redUpGreenDown) 与颜色脱敏", () => {
   // 1. 默认国际/加密/美股习惯：greenUpRedDown (绿涨红跌)
   const intlUp = resolveTrendColors(2.5, false, "greenUpRedDown");
   assert.strictEqual(intlUp.colorHint, "🟢", "国际惯例上涨应为绿色圆点");
@@ -1601,7 +1601,7 @@ test("resolveTrendColors - 涨跌配色习惯切换 (greenUpRedDown vs redUpGree
   assert.strictEqual(neutralDown.themeColor, undefined, "脱敏模式无主题色");
 });
 
-test("marketHours - 节假日离线日历与休市精准判定", () => {
+void test("marketHours - 节假日离线日历与休市精准判定", () => {
   // 1. A股法定休市日拦截（2026国庆节周四 10:00，非周末，通常为交易时段）
   const aNationalDayUtc = new Date("2026-10-01T02:00:00Z"); // 北京时间 2026-10-01 10:00
   assert.strictEqual(isAShareHoliday(aNationalDayUtc), true, "2026-10-01 应被识别为 A 股国庆休市日");
@@ -1675,7 +1675,7 @@ test("marketHours - 节假日离线日历与休市精准判定", () => {
   assert.strictEqual(checkHolidayCoverage(new Date("2028-01-01")), false, "超出覆盖年限应触发护栏拦截并返回 false");
 });
 
-test("evaluateAdaptiveThrottle - 休市与无行情变动自适应降频评估", () => {
+void test("evaluateAdaptiveThrottle - 休市与无行情变动自适应降频评估", () => {
   const normalTradingUtc = new Date("2026-09-07T02:00:00Z"); // A股开盘
   const holidayUtc = new Date("2026-10-01T02:00:00Z"); // 国庆休市
 
@@ -1758,7 +1758,7 @@ test("evaluateAdaptiveThrottle - 休市与无行情变动自适应降频评估",
   assert.strictEqual(rFundOnly.consecutiveUnchangedCount, 2);
 });
 
-test("chunkArray - 大批量标的切片保护与边界分块校验", () => {
+void test("chunkArray - 大批量标的切片保护与边界分块校验", () => {
   // 1. 空数组或非法大小容错
   assert.deepStrictEqual(chunkArray([], 40), []);
   assert.deepStrictEqual(chunkArray(["a"], 0), []);
@@ -1785,7 +1785,7 @@ test("chunkArray - 大批量标的切片保护与边界分块校验", () => {
   assert.deepStrictEqual(chunks95.flat(), items95);
 });
 
-test("decodeGbk - 原生零依赖 GBK 解码与多级容错兜底", () => {
+void test("decodeGbk - 原生零依赖 GBK 解码与多级容错兜底", () => {
   // 1. 标准 ASCII 腾讯数据流解析（最关键的行情数字/符号验证）
   const asciiData = 'v_sh600519="1~Moutai~600519~1700.50~1680.00~1690.00~1000~...~";';
   const asciiBuf = Buffer.from(asciiData, "utf-8");
@@ -1815,7 +1815,7 @@ test("decodeGbk - 原生零依赖 GBK 解码与多级容错兜底", () => {
   }
 });
 
-test("inferAShareExchange - A股交易所前缀精确推断（修复 ETF/债券/深B 被误判为北交所）", () => {
+void test("inferAShareExchange - A股交易所前缀精确推断（修复 ETF/债券/深B 被误判为北交所）", () => {
   // ── 1. 沪市：5xxxxx 基金/ETF、6xxxxx 股票、9xxxxx B股 ──
   assert.strictEqual(inferAShareExchange("600519"), "sh"); // 贵州茅台
   assert.strictEqual(inferAShareExchange("601318"), "sh"); // 中国平安
@@ -1852,7 +1852,7 @@ test("inferAShareExchange - A股交易所前缀精确推断（修复 ETF/债券/
   assert.strictEqual(inferAShareExchange("6005199"), "sh");
 });
 
-test("normalizeAShareCode - 输入解析端与行情抓取端前缀规则绝对一致", () => {
+void test("normalizeAShareCode - 输入解析端与行情抓取端前缀规则绝对一致", () => {
   // 已带前缀：原样返回，不做二次推断
   assert.strictEqual(normalizeAShareCode("sh600519"), "sh600519");
   assert.strictEqual(normalizeAShareCode("sz159915"), "sz159915");
@@ -1872,7 +1872,7 @@ test("normalizeAShareCode - 输入解析端与行情抓取端前缀规则绝对�
   assert.strictEqual(normalizeAShareCode("001"), "sz001");
 });
 
-test("validateAndParseInput - ETF/债券代码端到端前缀正确（P0 回归守卫）", () => {
+void test("validateAndParseInput - ETF/债券代码端到端前缀正确（P0 回归守卫）", () => {
   // 用户直接输入裸 6 位 ETF / 债券代码，必须落到正确交易所
   assert.strictEqual(validateAndParseInput("159915").parsed?.symbol, "sz159915");
   assert.strictEqual(validateAndParseInput("510300").parsed?.symbol, "sh510300");
@@ -1898,7 +1898,7 @@ test("validateAndParseInput - ETF/债券代码端到端前缀正确（P0 回归�
   }
 });
 
-test("DexScreenerService - Alpha 无效/已下架合约地址抑制黑名单机制", async () => {
+void test("DexScreenerService - Alpha 无效/已下架合约地址抑制黑名单机制", async () => {
   const service = new DexScreenerService();
   const deadAddr = "0x000000000000000000000000000000000000dead";
 
@@ -1939,7 +1939,7 @@ test("DexScreenerService - Alpha 无效/已下架合约地址抑制黑名单机�
   assert.strictEqual(networkCalls, callsBefore, "处于抑制期内的坏地址完全不再打网");
 });
 
-test("Tencent行情解析 - A股/港股/美股 Golden Sample 契约测试与三角数学自洽自愈", () => {
+void test("Tencent行情解析 - A股/港股/美股 Golden Sample 契约测试与三角数学自洽自愈", () => {
   // ── 1. A 股 Golden Sample 契约解析测试 ──────────────────────────────
   const aService = new AShareService();
   // 模拟标准 50 字段腾讯 A 股报文（以茅台为例）
@@ -2101,7 +2101,58 @@ test("Tencent行情解析 - A股/港股/美股 Golden Sample 契约测试与三�
   assert.strictEqual(usHealed[0].changePercent, 2.44);
 });
 
-test("escapeHtml - Webview 预警矩阵与 HTML 转义防御校验 (CWE-79)", () => {
+void test("P2-9 回归 - 腾讯短报文（35~37 字段）成交额保持 undefined，禁止被 || 0 伪装成 0", () => {
+  // 三个腾讯服务的字段不足守卫都是 `if (f.length < 35)`，而 `F.TURNOVER` 是**下标 37**，
+  // 落在守卫覆盖范围之外：报文长度 35~37 时 `f[37]` 取到的是 `undefined`。
+  // §6.13 口径要求「上游未供数」如实保持 `undefined`（卡片渲染为 `--`），
+  // 不得用 `parseFloat(...) || 0` 把它伪装成「成交额为 0」——不抛错、不告警，是最难发现的一类静默失真。
+  // `noUncheckedIndexedAccess` 未开启（附录 B 第 17 条），typecheck 不会提醒这类越界，故由本用例守住。
+  const build = (code: string, overrides: Record<number, string>, length: number): string => {
+    const fields = new Array<string>(length).fill("0");
+    for (const [index, value] of Object.entries(overrides)) fields[Number(index)] = value;
+    return `v_${code}="${fields.join("~")}";`;
+  };
+
+  const aShareBase: Record<number, string> = {
+    0: "1", 1: "贵州茅台", 2: "600519", 3: "1800.00", 4: "1780.00", 5: "1790.00", 6: "25000",
+    31: "20.00", 32: "1.12", 33: "1815.00", 34: "1785.00",
+  };
+  const hkBase: Record<number, string> = {
+    0: "100", 1: "腾讯控股", 2: "00700", 3: "378.20", 4: "376.00", 5: "377.00", 6: "12000000",
+    31: "2.20", 32: "0.58", 33: "380.00", 34: "375.00",
+  };
+  const usBase: Record<number, string> = {
+    0: "200", 1: "苹果", 2: "AAPL.OQ", 3: "185.92", 4: "185.00", 5: "186.00", 6: "52000000",
+    31: "0.92", 32: "0.50", 33: "187.00", 34: "184.50",
+  };
+
+  const cases = [
+    // A 股成交额单位为「万元」，解析层要 ×10000 归一到「元」；港美股已是元/美元，直通
+    { label: "A股", service: new AShareService(), code: "sh600519", base: aShareBase, raw: "45000", expect: 450000000, expectPrice: 1800, expectVolume: 2500000 },
+    { label: "港股", service: new HKStockService(), code: "hk00700", base: hkBase, raw: "5779040000", expect: 5779040000, expectPrice: 378.2, expectVolume: 12000000 },
+    { label: "美股", service: new USStockService(), code: "usAAPL", base: usBase, raw: "10372500000", expect: 10372500000, expectPrice: 185.92, expectVolume: 52000000 },
+  ];
+
+  for (const c of cases) {
+    // ① 短报文（恰好通过 `length < 35` 守卫、但读不到下标 37）→ 必须 undefined，不是 0
+    const shortItems = c.service.parseResponse(build(c.code, c.base, 35));
+    assert.strictEqual(shortItems.length, 1, `${c.label} 35 字段报文应通过守卫并产出 1 条`);
+    assert.strictEqual(shortItems[0].turnover, undefined, `${c.label} 守卫外下标越界时成交额必须保持 undefined`);
+    // 越界只允许影响「守卫外的位」，守卫内的价格与成交量不得被波及
+    assert.strictEqual(shortItems[0].price, c.expectPrice, `${c.label} 短报文价格仍应正常解析`);
+    assert.strictEqual(shortItems[0].volume, c.expectVolume, `${c.label} 短报文成交量仍应正常解析`);
+
+    // ② 报文补齐下标 37 → 正常按单位换算出数值
+    const fullItems = c.service.parseResponse(build(c.code, { ...c.base, 37: c.raw }, 38));
+    assert.strictEqual(fullItems[0].turnover, c.expect, `${c.label} 有供数时成交额应按单位换算解析`);
+
+    // ③ "-1" 是腾讯的「无数据」占位，同样必须落 undefined，而不是 -1 或 0
+    const dashItems = c.service.parseResponse(build(c.code, { ...c.base, 37: "-1" }, 38));
+    assert.strictEqual(dashItems[0].turnover, undefined, `${c.label} "-1" 占位不得当成数值输出`);
+  }
+});
+
+void test("escapeHtml - Webview 预警矩阵与 HTML 转义防御校验 (CWE-79)", () => {
   // 基础特殊字符转义
   assert.strictEqual(escapeHtml('<script>alert("xss")</script>'), "&lt;script&gt;alert(&quot;xss&quot;)&lt;/script&gt;");
   assert.strictEqual(escapeHtml("Tom & Jerry's \"Token\""), "Tom &amp; Jerry&#39;s &quot;Token&quot;");
@@ -2123,7 +2174,7 @@ test("escapeHtml - Webview 预警矩阵与 HTML 转义防御校验 (CWE-79)", ()
   assert.strictEqual(escapedImg, "&lt;img src=&quot;https://attacker.com/x&quot; onerror=&quot;alert(1)&quot;&gt;");
 });
 
-test("BinanceService - 币安代码归一化、展示名格式化、报文解析与失效抑制黑名单", () => {
+void test("BinanceService - 币安代码归一化、展示名格式化、报文解析与失效抑制黑名单", () => {
   const service = new BinanceService();
 
   // 1. 代码归一化与前缀处理
@@ -2166,7 +2217,7 @@ test("BinanceService - 币安代码归一化、展示名格式化、报文解析
   assert.strictEqual(parsed.change, 1250.50);
   assert.strictEqual(parsed.volume, 12345.678);
   assert.strictEqual(parsed.turnover, 807800000.50);
-  assert.strictEqual(parsed.currency, "USD");
+  assert.strictEqual(parsed.currency, "USDT");
 
   // 4. 失效抑制黑名单与复位
   assert.strictEqual(service.isSymbolSuppressed("INVALIDCOIN"), false);
@@ -2176,7 +2227,7 @@ test("BinanceService - 币安代码归一化、展示名格式化、报文解析
   assert.strictEqual(service.isSymbolSuppressed("INVALIDCOIN"), false);
 });
 
-test("shouldSkipMarketPolling - 闭市跳过轮询 5 维决策矩阵边界测试", () => {
+void test("shouldSkipMarketPolling - 闭市跳过轮询 5 维决策矩阵边界测试", () => {
   // 1. 满足全部 5 项条件：开启闭市停止 + 闭市中 + 已拉取过首轮 + 非强制刷新 + 非单组刷新 => 允许跳过
   assert.strictEqual(
     shouldSkipMarketPolling({
@@ -2246,7 +2297,7 @@ test("shouldSkipMarketPolling - 闭市跳过轮询 5 维决策矩阵边界测试
   );
 });
 
-test("Active-Set Prune 内存基准与堆内存稳定性测试", () => {
+void test("Active-Set Prune 内存基准与堆内存稳定性测试", () => {
   const quoteCache = new Map<string, any>();
   const initialHeap = process.memoryUsage().heapUsed;
 
@@ -2277,7 +2328,7 @@ test("Active-Set Prune 内存基准与堆内存稳定性测试", () => {
   assert.ok(heapDeltaMB < 10, `循环后堆内存增量过大: ${heapDeltaMB.toFixed(2)} MB`);
 });
 
-test("分组自选排序逻辑 - 涨幅/跌幅/名称/现价/默认 稳定排序规则", () => {
+void test("分组自选排序逻辑 - 涨幅/跌幅/名称/现价/默认 稳定排序规则", () => {
   const items = [
     { name: "贵州茅台", confSymbol: "sh600519", item: { price: 1800, changePercent: -1.2, name: "贵州茅台", symbol: "sh600519" } },
     { name: "比亚迪", confSymbol: "sz002594", item: { price: 260, changePercent: 5.8, name: "比亚迪", symbol: "sz002594" } },
@@ -2319,7 +2370,7 @@ test("分组自选排序逻辑 - 涨幅/跌幅/名称/现价/默认 稳定排序
   );
 });
 
-test("基金分组与场内ETF - 资产推导、输入提示与分组层级校验", () => {
+void test("基金分组与场内ETF - 资产推导、输入提示与分组层级校验", () => {
   // 1. 组名推导：基金与 ETF 组名推导为 A_SHARE
   assert.strictEqual(resolveItemAssetType({ symbol: "" }, "基金"), "A_SHARE");
   assert.strictEqual(resolveItemAssetType({ symbol: "" }, "核心ETF"), "A_SHARE");
@@ -2339,7 +2390,7 @@ test("基金分组与场内ETF - 资产推导、输入提示与分组层级校�
   assert.strictEqual(fund2.parsed?.symbol, normalizeAShareCode("159915"));
 });
 
-test("基金板块设置与状态栏轮播/分桶抓取联动", () => {
+void test("基金板块设置与状态栏轮播/分桶抓取联动", () => {
   const mockWatchlist = {
     "基金": [
       { symbol: "sh510050", name: "上证50ETF" },
@@ -2388,7 +2439,7 @@ test("基金板块设置与状态栏轮播/分桶抓取联动", () => {
   assert.deepStrictEqual(targetsWithFund.aShares, ["sh600036"]);
 });
 
-test("scheduler - 闭市全板块跳过轮询时不应清空已缓存收盘行情（防止状态栏全部归零）", () => {
+void test("scheduler - 闭市全板块跳过轮询时不应清空已缓存收盘行情（防止状态栏全部归零）", () => {
   const mockWatchlist = {
     "A股": [{ symbol: "sh600519", name: "贵州茅台", type: "A_SHARE" }],
     "美股": [{ symbol: "AAPL", name: "Apple", type: "US_STOCK" }],
@@ -2436,7 +2487,7 @@ test("scheduler - 闭市全板块跳过轮询时不应清空已缓存收盘行�
   assert.strictEqual(statusBarQuotes[1].price, 230);
 });
 
-test("scripts/sync-version - package.json 版本变更全自动同步测试", () => {
+void test("scripts/sync-version - package.json 版本变更全自动同步测试", () => {
   const req = createRequire(import.meta.url);
   const { syncVersion } = req("../scripts/sync-version.js");
 
@@ -2551,7 +2602,7 @@ test("scripts/sync-version - package.json 版本变更全自动同步测试", ()
   }
 });
 
-test("ASSET_TYPE_TO_SECTION_MAP - 资产底层类型与市场板块映射覆盖性校验", () => {
+void test("ASSET_TYPE_TO_SECTION_MAP - 资产底层类型与市场板块映射覆盖性校验", () => {
   assert.strictEqual(ASSET_TYPE_TO_SECTION_MAP["A_SHARE"], "aShare");
   assert.strictEqual(ASSET_TYPE_TO_SECTION_MAP["HK_STOCK"], "hkStock");
   assert.strictEqual(ASSET_TYPE_TO_SECTION_MAP["US_STOCK"], "usStock");
@@ -2560,7 +2611,7 @@ test("ASSET_TYPE_TO_SECTION_MAP - 资产底层类型与市场板块映射覆盖�
   assert.strictEqual(ASSET_TYPE_TO_SECTION_MAP["ALPHA_TOKEN"], "alpha");
 });
 
-test("NORMALIZE_SYMBOL_KEY_CLIENT_SCRIPT - 前端 Webview 注入脚本与后端 TS 实现 100% 同源无漂移校验", () => {
+void test("NORMALIZE_SYMBOL_KEY_CLIENT_SCRIPT - 前端 Webview 注入脚本与后端 TS 实现 100% 同源无漂移校验", () => {
   // 使用 Function 动态评估客户端脚本提取出的 getSymbolKey
   const clientEvalFn = new Function(`${NORMALIZE_SYMBOL_KEY_CLIENT_SCRIPT}; return getSymbolKey;`)() as (sym: string) => string;
 
@@ -2604,7 +2655,7 @@ test("NORMALIZE_SYMBOL_KEY_CLIENT_SCRIPT - 前端 Webview 注入脚本与后端 
   }
 });
 
-test("scripts/sync-readme-en - Markdown 语法隔离保护与专有名词映射测试", async () => {
+void test("scripts/sync-readme-en - Markdown 语法隔离保护与专有名词映射测试", async () => {
   const req = createRequire(import.meta.url);
   const { computeHash, protectMarkdown, restoreMarkdown, GLOSSARY_MAP, syncReadmeEn } = req("../scripts/sync-readme-en.js");
 
@@ -2678,7 +2729,7 @@ test("scripts/sync-readme-en - Markdown 语法隔离保护与专有名词映射�
   }
 });
 
-test("autoCollapseClosedGroups - 休市自动折叠与状态栏过滤纯算法测试", () => {
+void test("autoCollapseClosedGroups - 休市自动折叠与状态栏过滤纯算法测试", () => {
   // 1. 测试时间基准
   // 周日 10:00 UTC (北京时间 18:00 周日，A股/港股/美股全休市，加密资产全天开盘)
   const sundayClosed = new Date("2026-09-20T10:00:00.000Z");
@@ -2763,7 +2814,7 @@ test("autoCollapseClosedGroups - 休市自动折叠与状态栏过滤纯算法�
   assert.strictEqual(emptyClosedQuotes.length, 0);
 });
 
-test("buildGroupNodeId - 休市分组节点 id 随会话失效以规避 VS Code 展开记忆", () => {
+void test("buildGroupNodeId - 休市分组节点 id 随会话失效以规避 VS Code 展开记忆", () => {
   // 1. 休市 + 自动折叠开启：id 必须携带会话标识。
   //    否则 VS Code 会按同一节点句柄恢复用户上一次的手动展开，覆盖「休市默认折叠」语义
   assert.strictEqual(buildGroupNodeId("基金", true, true, "s1"), "group_基金@closed#s1");
@@ -2808,7 +2859,7 @@ test("buildGroupNodeId - 休市分组节点 id 随会话失效以规避 VS Code 
   );
 });
 
-test("backupHelper - 配置导出与导入校验契约", () => {
+void test("backupHelper - 配置导出与导入校验契约", () => {
   const sampleConfig: any = {
     autoRefresh: true,
     refreshInterval: 6000,
@@ -2928,7 +2979,7 @@ test("backupHelper - 配置导出与导入校验契约", () => {
   assert.strictEqual(dirtyWatchlist.data?.settings.alerts?.["bad2"], undefined);
 });
 
-test("sanitizeWatchlist - 容错清洗、null过滤与裸字符串规整", () => {
+void test("sanitizeWatchlist - 容错清洗、null过滤与裸字符串规整", () => {
   // 1. 根级别非法数据兜底
   assert.deepStrictEqual(sanitizeWatchlist(null), {});
   assert.deepStrictEqual(sanitizeWatchlist(undefined), {});
@@ -2992,7 +3043,7 @@ test("sanitizeWatchlist - 容错清洗、null过滤与裸字符串规整", () =>
   assert.strictEqual(dirtyItems["A股"][1].type, "A_SHARE");
 });
 
-test("batchReorderWatchlist - 脏元素（含 null/空对象）防御与同组拖拽安全性", () => {
+void test("batchReorderWatchlist - 脏元素（含 null/空对象）防御与同组拖拽安全性", () => {
   const dirtyWatchlist: Record<string, any[]> = {
     "A股": [
       null,
@@ -3013,7 +3064,7 @@ test("batchReorderWatchlist - 脏元素（含 null/空对象）防御与同组�
   assert.deepStrictEqual(symbols, ["sz000001", "sh600519"]);
 });
 
-test("network 常量与本地端口探活接口基础契约", async () => {
+void test("network 常量与本地端口探活接口基础契约", async () => {
   assert.strictEqual(DEFAULT_PROXY_PORT, 10808);
   assert.strictEqual(DEFAULT_PROXY_URL, "http://127.0.0.1:10808");
   assert.strictEqual(COMMON_PROXY_PORTS.includes(10808), true);
@@ -3022,7 +3073,7 @@ test("network 常量与本地端口探活接口基础契约", async () => {
   assert.strictEqual(deadRes, false);
 });
 
-test("smartNetworkGet - 核心网络调度、直连模式、代理回退与熔断守卫", async () => {
+void test("smartNetworkGet - 核心网络调度、直连模式、代理回退与熔断守卫", async () => {
   resetProxyCache();
   const originalGet = axios.get;
   const originalEnv = { ...process.env };
@@ -3148,7 +3199,7 @@ test("smartNetworkGet - 核心网络调度、直连模式、代理回退与熔�
   }
 });
 
-test("BinanceService - fetchQuotes 批量拉取与代理/直连模式及异常隔离", async () => {
+void test("BinanceService - fetchQuotes 批量拉取与代理/直连模式及异常隔离", async () => {
   const service = new BinanceService();
   const originalGet = axios.get;
 
@@ -3209,7 +3260,7 @@ test("BinanceService - fetchQuotes 批量拉取与代理/直连模式及异常�
   }
 });
 
-test("DexScreenerService - fetchQuotes 报文映射、多流动性池与无效地址 TTL 清理", async () => {
+void test("DexScreenerService - fetchQuotes 报文映射、多流动性池与无效地址 TTL 清理", async () => {
   const service = new DexScreenerService();
   const originalGet = axios.get;
 
@@ -3251,7 +3302,7 @@ test("DexScreenerService - fetchQuotes 报文映射、多流动性池与无效�
     assert.strictEqual(quotes[0].name, "Wrapped BNB");
     assert.strictEqual(quotes[0].price, 580.5);
     assert.strictEqual(quotes[0].changePercent, 3.5);
-    assert.strictEqual(quotes[0].currency, "USD");
+    assert.strictEqual(quotes[0].currency, "USDT");
     assert.strictEqual(quotes[0].type, "ALPHA_TOKEN");
 
     // 3. 测试清理无效地址缓存
@@ -3262,7 +3313,7 @@ test("DexScreenerService - fetchQuotes 报文映射、多流动性池与无效�
   }
 });
 
-test("scheduler - 网络持续故障退避计数与自动复位守卫", async () => {
+void test("scheduler - 网络持续故障退避计数与自动复位守卫", async () => {
   const { RefreshScheduler } = await import("../src/scheduler.ts");
   const mockMarketManager: any = {
     clearInvalidCache: () => {},
@@ -3323,7 +3374,7 @@ test("scheduler - 网络持续故障退避计数与自动复位守卫", async ()
   }
 });
 
-test("scheduler - refreshInterval 为 0 或负数时安全兜底 >= 1000ms 且 refreshGroup 并发冲突排队重试", async () => {
+void test("scheduler - refreshInterval 为 0 或负数时安全兜底 >= 1000ms 且 refreshGroup 并发冲突排队重试", async () => {
   const { RefreshScheduler } = await import("../src/scheduler.ts");
   const { GroupItem } = await import("../src/ui/watchlistProvider.ts");
   const vscode = await import("vscode");
@@ -3417,7 +3468,7 @@ test("scheduler - refreshInterval 为 0 或负数时安全兜底 >= 1000ms 且 r
   }
 });
 
-test("BinanceService & DexScreenerService - 失效黑名单 10 分钟 TTL 到期后自动解封恢复", () => {
+void test("BinanceService & DexScreenerService - 失效黑名单 10 分钟 TTL 到期后自动解封恢复", () => {
   const binance = new BinanceService();
   const dex = new DexScreenerService();
 
@@ -3449,7 +3500,7 @@ test("BinanceService & DexScreenerService - 失效黑名单 10 分钟 TTL 到期
   }
 });
 
-test("StatusBar & Extension - 网络退避 Tooltip 呈现与老板键期间 Webview 修改 maskMode 联动退出专注模式", async () => {
+void test("StatusBar & Extension - 网络退避 Tooltip 呈现与老板键期间 Webview 修改 maskMode 联动退出专注模式", async () => {
   const { StatusBar } = await import("../src/ui/statusBar.ts");
   const { activate, deactivate } = await import("../src/extension.ts");
   const { SettingsWebviewPanel } = await import("../src/ui/settingsWebview.ts");
@@ -3503,12 +3554,39 @@ test("StatusBar & Extension - 网络退避 Tooltip 呈现与老板键期间 Webv
   } finally {
     deactivate();
     for (const sub of subscriptions) {
-      try { sub.dispose(); } catch (_) {}
+      try { sub.dispose(); } catch {}
     }
   }
 });
 
-test("audit - 魔法数字常量化与休市日历年度过期护栏验证 (M3 & M4)", () => {
+void test("P1-6 时区口径回归 - 节假日覆盖护栏的年份必须与查表时区同源", () => {
+  // 同一瞬间 2027-12-31T20:00Z：纽约侧仍是 2027-12-31（覆盖内），北京侧已跨入 2028-01-01（超限）
+  const instant = new Date("2027-12-31T20:00:00Z");
+  assert.strictEqual(
+    checkHolidayCoverage(instant, newYorkDateFormatter),
+    true,
+    "美股查表键按美东取年，护栏必须同口径，否则会因宿主机时区误报超限"
+  );
+  assert.strictEqual(
+    checkHolidayCoverage(instant, beijingDateFormatter),
+    false,
+    "A股/港股查表键按北京取年，跨年边界必须判定为已超出覆盖上限"
+  );
+
+  // 默认参数保持向后兼容（北京口径，与 A股/港股调用点一致）
+  assert.strictEqual(checkHolidayCoverage(new Date("2026-06-01T04:00:00Z")), true);
+
+  // 占位预测年份护栏：2027 仍是预测数据，2026 已为官方终版
+  assert.strictEqual(FORECAST_HOLIDAY_YEARS.has(2027), true, "2027 日历尚未复核，必须留在预测集合内");
+  assert.strictEqual(FORECAST_HOLIDAY_YEARS.has(MAX_COVERED_HOLIDAY_YEAR - 1), false);
+  assert.strictEqual(
+    A_SHARE_HOLIDAYS.has("2027-02-05"),
+    true,
+    "2027 除夕为全日休市；半日市/提前收盘严禁写入日历（§6.12）"
+  );
+});
+
+void test("audit - 魔法数字常量化与休市日历年度过期护栏验证 (M3 & M4)", () => {
   // 1. 验证网络超时三元组常量、探活超时与预警冷却常量
   assert.strictEqual(DEFAULT_REQUEST_TIMEOUT_MS, 5000);
   assert.strictEqual(SYSTEM_PROXY_FALLBACK_TIMEOUT_MS, 2500);
@@ -3539,7 +3617,7 @@ test("audit - 魔法数字常量化与休市日历年度过期护栏验证 (M3 &
   assert.strictEqual(fp1, fp2, "不同前缀形式的同一标的指纹应完全相同，避免无意义全量重启");
 });
 
-test("F1 & F2: 持仓成本浮动盈亏计算、脱敏遮罩与大盘指数导入契约", async () => {
+void test("F1 & F2: 持仓成本浮动盈亏计算、脱敏遮罩与大盘指数导入契约", async () => {
   const { StockItem } = await import("../src/ui/watchlistProvider.ts");
   const { WatchlistOps } = await import("../src/watchlistOps.ts");
   const vscode = await import("vscode");
@@ -3692,7 +3770,7 @@ test("F1 & F2: 持仓成本浮动盈亏计算、脱敏遮罩与大盘指数导�
   assert.ok(html.includes("一键导入全球大盘指数"), "Webview HTML 必须包含一键导入全球大盘指数说明");
 });
 
-test("F3: 状态栏持仓盈亏独立轮播条 (方案3智能混合模式 + 模式B摸鱼伪装安全防线 + 自定义间隔)", async () => {
+void test("F3: 状态栏持仓盈亏独立轮播条 (方案3智能混合模式 + 模式B摸鱼伪装安全防线 + 自定义间隔)", async () => {
   const { StatusBar } = await import("../src/ui/statusBar.ts");
   const { readConfig } = await import("../src/utils/config.ts");
   const { getSettingsWebviewHtml } = await import("../src/ui/settingsHtml.ts");
@@ -3787,7 +3865,7 @@ test("F3: 状态栏持仓盈亏独立轮播条 (方案3智能混合模式 + 模�
   assert.ok(html.includes("持仓盈亏独立轮播条"), "设置面板必须包含持仓盈亏独立轮播条标题");
 });
 
-test("P-12 ~ P-15: 状态栏持仓总控/板块过滤、Tooltip安全基线、order去冲突与边界钳制防线", async () => {
+void test("P-12 ~ P-15: 状态栏持仓总控/板块过滤、Tooltip安全基线、order去冲突与边界钳制防线", async () => {
   const { extractHoldingQuotes } = await import("../src/utils/symbolHelper.ts");
   const { StatusBar } = await import("../src/ui/statusBar.ts");
   const fs = await import("node:fs");
@@ -3878,6 +3956,88 @@ test("P-12 ~ P-15: 状态栏持仓总控/板块过滤、Tooltip安全基线、or
   } finally {
     testBar.dispose();
   }
+});
+
+void test("计价货币单一出口 - 加密与链上标的按 U 本位（USDT）计价", async () => {
+  const { resolveQuoteCurrency } = await import("../src/utils/symbolHelper.ts");
+  const { StatusBar } = await import("../src/ui/statusBar.ts");
+
+  // 1. 类型兜底：三类虚拟资产一律 USDT，且不得被美股 USD 兜底截胡
+  assert.strictEqual(resolveQuoteCurrency({ type: "CRYPTO" }), "USDT");
+  assert.strictEqual(resolveQuoteCurrency({ type: "BSC_TOKEN" }), "USDT");
+  assert.strictEqual(resolveQuoteCurrency({ type: "ALPHA_TOKEN" }), "USDT");
+  assert.strictEqual(resolveQuoteCurrency({ type: "A_SHARE" }), "CNY");
+  assert.strictEqual(resolveQuoteCurrency({ type: "HK_STOCK" }), "HKD");
+  assert.strictEqual(resolveQuoteCurrency({ type: "US_STOCK" }), "USD");
+
+  // 2. 显式 currency 优先于类型推导（§6.13 资产类型裁决序）
+  assert.strictEqual(resolveQuoteCurrency({ currency: "USD", type: "CRYPTO" }), "USD");
+
+  // 3. 持仓看板按币种分桶：USDT 不得与美股美元混进同一桶，否则盈亏合计会串币种
+  const bar = new StatusBar({ maskMode: false, colorNeutral: false });
+  try {
+    bar.setHoldings([
+      { name: "比特币", symbol: "BTCUSDT", currency: "USDT", cost: 60000, shares: 1, price: 65000, changePercent: 1.5 },
+      { name: "苹果", symbol: "usAAPL", currency: "USD", cost: 180, shares: 10, price: 200, changePercent: 2.0 },
+    ]);
+    const buckets = (bar as any).aggregateHoldings() as Array<[string, { count: number }]>;
+    const labels = buckets.map(([cur]) => cur);
+    assert.ok(labels.includes("USDT"), "加密持仓必须独立成 U 本位桶");
+    assert.strictEqual(buckets.find(([cur]) => cur === "USDT")?.[1].count, 1);
+    assert.strictEqual(buckets.find(([cur]) => cur === "USD")?.[1].count, 1);
+  } finally {
+    bar.dispose();
+  }
+});
+
+// AGENTS.md §6.1 红线：每一组已注册键位都必须在文档中可见。
+// 旧版规约把这条写成「已有 unit.test.ts 用例」，但那个用例从未存在，附录 B 第 16 条
+// 因此只能靠人工跑 shell 探针。本用例即为该缺口的收口：读 package.json 的 keybindings，
+// 逐条（含 win / mac 变体）比对双语 README 与设置面板 About 速查段。
+void test("§6.1 键位文档化契约 - 每个已注册键位都必须在双语 README 与设置面板速查中可见", () => {
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+  const read = (rel: string) => fs.readFileSync(path.join(repoRoot, rel), "utf8");
+  const pkg = JSON.parse(read("package.json").replace(/^\uFEFF/, ""));
+  const keybindings: Array<{ command: string; key?: string; win?: string; mac?: string }> =
+    pkg.contributes?.keybindings ?? [];
+
+  assert.ok(keybindings.length > 0, "package.json 必须至少注册一组键位");
+
+  // 与 README 快捷键表、About 速查段一致的展示写法：控制键首字母大写、以 " + " 连接、字母键大写
+  const toDisplay = (raw: string) =>
+    raw
+      .split("+")
+      .map((part) => {
+        const p = part.trim().toLowerCase();
+        if (p === "ctrl") return "Ctrl";
+        if (p === "cmd") return "Cmd";
+        if (p === "alt") return "Alt";
+        if (p === "shift") return "Shift";
+        return p.length === 1 ? p.toUpperCase() : p;
+      })
+      .join(" + ");
+
+  const docs = [
+    { file: "README.md", text: read("README.md") },
+    { file: "README.en.md", text: read("README.en.md") },
+    { file: "src/ui/settingsHtml.ts", text: read("src/ui/settingsHtml.ts") },
+  ];
+
+  const missing: string[] = [];
+  for (const kb of keybindings) {
+    for (const field of ["key", "win", "mac"] as const) {
+      const raw = kb[field];
+      if (!raw) continue;
+      const display = toDisplay(raw);
+      for (const doc of docs) {
+        if (!doc.text.includes(display)) {
+          missing.push(`${kb.command} 的 ${field}="${raw}"（文档写法「${display}」）缺失于 ${doc.file}`);
+        }
+      }
+    }
+  }
+
+  assert.deepStrictEqual(missing, [], `以下已注册键位未在文档中露出（AGENTS.md §6.1）：\n${missing.join("\n")}`);
 });
 
 
