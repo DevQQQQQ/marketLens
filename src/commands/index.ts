@@ -8,7 +8,7 @@ import { SettingsWebviewPanel } from "../ui/settingsWebview.ts";
 import { readConfig } from "../utils/config.ts";
 import { logger } from "../utils/logger.ts";
 import { canEmitUserFeedback, resolveMaskToggle, shouldBlockNodeCommand } from "../utils/maskState.ts";
-import { emitStatusMessage, maskIfNeeded } from "../utils/feedback.ts";
+import { emitStatusMessage, isMasked, maskIfNeeded } from "../utils/feedback.ts";
 
 export interface CommandServices {
   scheduler: RefreshScheduler;
@@ -338,12 +338,14 @@ export function registerCommands(
 
     // 查看运行日志（OutputChannel）
     vscode.commands.registerCommand("marketlens.showLogs", () => {
-      // 老板键守卫：诊断日志中包含真实标的代码与行情数值（服务请求/预警记录），
-      // 专注模式激活期间打开等同于自曝关注范围。
+      // 脱敏守卫：诊断日志中包含真实标的代码与行情数值（服务请求/预警记录），
+      // 老板键（专注模式）或简洁展示模式任一激活期间打开都等同于自曝关注范围。
       // 与 openSettings 保持同一策略——失败安全地拒绝，而非先解除隐身
       // （后者会把侧边栏与状态栏的真实行情一并带回，隐蔽性反而更差）。
-      if (!canEmitUserFeedback(statusBar.isBossKeyActive())) {
-        logger.info("专注模式激活期间拒绝打开运行日志（老板键守卫已生效）");
+      // 判定必须走 feedback.isMasked()：与设置面板 webview 入口同一谓词，
+      // 只看老板键会让命令面板成为「简洁展示模式」下的漏网入口。
+      if (isMasked()) {
+        logger.info("脱敏模式激活期间拒绝打开运行日志（打码守卫已生效）");
         return;
       }
       logger.show();

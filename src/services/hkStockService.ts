@@ -1,6 +1,6 @@
 // src/services/hkStockService.ts
 import type { MarketItem } from "../types";
-import { logger } from "../utils/logger.ts";
+import { logger, describeForLog } from "../utils/logger.ts";
 import { TencentBaseService, MIN_TENCENT_FIELDS, parseOptionalFloat } from "./tencentBaseService.ts";
 
 /**
@@ -58,7 +58,7 @@ export class HKStockService extends TencentBaseService {
       const f = match[2].split("~");
       if (f.length < MIN_TENCENT_FIELDS) {
         logger.warn(
-          `[HKStockService] 标的 ${fullCode} 返回字段不足 (length=${f.length})，该代码可能不存在或已退市`
+          `[HKStockService] 标的 ${describeForLog(fullCode)} 返回字段不足 (length=${f.length})，该代码可能不存在或已退市`
         );
         continue;
       }
@@ -75,7 +75,7 @@ export class HKStockService extends TencentBaseService {
 
       const volume    = parseFloat(f[F.VOLUME_SHARES]) || 0;
       // ⚠ `F.TURNOVER` = 37 落在上方 `f.length < MIN_TENCENT_FIELDS` 守卫的覆盖范围之外，
-      // 必须走可选解析出口，禁止用 `|| 0` 把「上游未供数」伪装成「成交额为 0」（§6.13）。
+      // 必须走可选解析出口，禁止用 `|| 0` 把「上游未供数」伪装成「成交额为 0」（§5.5）。
       const turnover  = parseOptionalFloat(f[F.TURNOVER]);
 
       items.push({

@@ -4,7 +4,8 @@
 import * as vscode from "vscode";
 import type { MarketItem } from "../types/index.ts";
 import { getProxyStatus } from "../services/network.ts";
-import { escapeHtml, deriveTodayProfit, type HoldingItemQuote } from "../utils/symbolHelper.ts";
+import { escapeMarkdownInline, toMarkdownCodeSpan, deriveTodayProfit, type HoldingItemQuote } from "../utils/symbolHelper.ts";
+import { isDisplayMasked } from "../utils/maskState.ts";
 
 // ────────────────────────────────────────────────────────────────
 //  常量与工具函数
@@ -191,7 +192,7 @@ export class StatusBar implements vscode.Disposable {
       ? Math.min(60, Math.max(1, Math.round(intervalSeconds)))
       : 3;
 
-    if (this.holdings.length === 0 || !this.holdingEnabled || this.bossKeyActive || this.maskMode) {
+    if (this.holdings.length === 0 || !this.holdingEnabled || this.displayMasked) {
       this.holdingIndex = 0;
       this.stopHoldingCarousel();
       this.holdingBarItem.text = "";
@@ -218,7 +219,7 @@ export class StatusBar implements vscode.Disposable {
       this.barItem.text = "";
       this.barItem.hide();
     }
-    if (this.holdingEnabled && !this.bossKeyActive && !this.maskMode && this.holdings.length > 0) {
+    if (this.holdingEnabled && !this.displayMasked && this.holdings.length > 0) {
       this.restartHoldingCarousel();
       this.renderHolding();
     }
@@ -242,7 +243,7 @@ export class StatusBar implements vscode.Disposable {
       this.holdingBarItem.tooltip = undefined;
       this.holdingBarItem.hide();
     } else {
-      if (this.holdingEnabled && !this.bossKeyActive && this.holdings.length > 0) {
+      if (this.holdingEnabled && !this.displayMasked && this.holdings.length > 0) {
         this.restartHoldingCarousel();
         this.renderHolding();
       }
@@ -253,7 +254,7 @@ export class StatusBar implements vscode.Disposable {
   setColorNeutral(enabled: boolean): void {
     this.colorNeutral = enabled;
     this.render();
-    if (!this.maskMode && !this.bossKeyActive && this.holdings.length > 0) {
+    if (!this.displayMasked && this.holdings.length > 0) {
       this.renderHolding();
     }
   }
@@ -262,7 +263,7 @@ export class StatusBar implements vscode.Disposable {
   setColorScheme(scheme: "greenUpRedDown" | "redUpGreenDown"): void {
     this.colorScheme = scheme || "greenUpRedDown";
     this.render();
-    if (!this.maskMode && !this.bossKeyActive && this.holdings.length > 0) {
+    if (!this.displayMasked && this.holdings.length > 0) {
       this.renderHolding();
     }
   }
@@ -286,7 +287,7 @@ export class StatusBar implements vscode.Disposable {
       this.barItem.show();
       this.restartCarousel();
       this.render();
-      if (this.holdingEnabled && !this.maskMode && this.holdings.length > 0) {
+      if (this.holdingEnabled && !this.displayMasked && this.holdings.length > 0) {
         this.restartHoldingCarousel();
         this.renderHolding();
       }
@@ -305,6 +306,16 @@ export class StatusBar implements vscode.Disposable {
   /** 简洁展示模式（伪装摸鱼）是否处于开启状态，供脱敏状态快照来源读取 */
   isMaskModeActive(): boolean {
     return this.maskMode;
+  }
+
+  /**
+   * 当前是否处于「可见面必须脱敏」状态（老板键或简洁展示模式任一激活）。
+   *
+   * 状态栏内部的持仓轮播/渲染守卫必须走 maskState 的共享谓词：
+   * 各处手写 `bossKeyActive || maskMode` 等价条件，一旦脱敏来源增加就必然漏项（§5.4）。
+   */
+  private get displayMasked(): boolean {
+    return isDisplayMasked(this.bossKeyActive, this.maskMode);
   }
 
   /** 检查轮播定时器是否处于活跃运行状态（供单元测试和状态检查使用） */
@@ -407,7 +418,7 @@ export class StatusBar implements vscode.Disposable {
       : "";
     this.barItem.text = `$(git-branch) ${branch}${countPart}  ${parts.join("  |  ")}`;
     // 伪装态下 tooltip 必须一并收敛：文本已伪装成 git 分支，若 tooltip 仍写「MarketLens」
-    // 则鼠标悬停即自曝，伪装防线形同虚设（AGENTS.md §6.3 规则七）。
+    // 则鼠标悬停即自曝，伪装防线形同虚设（AGENTS.md §5.4）。
     this.barItem.tooltip = undefined;
     // 伪装模式下强制无色
     this.barItem.backgroundColor = undefined;
@@ -446,7 +457,7 @@ export class StatusBar implements vscode.Disposable {
    */
   flashAlert(text: string, durationMs: number = 15000): void {
     // 简洁展示模式 / 老板键激活期间：预警闪光会顶掉伪装文本并暴露真实行情，必须静默拒绝。
-    if (this.bossKeyActive || this.maskMode) {
+    if (this.displayMasked) {
       return;
     }
     if (this.flashAlertTimer !== undefined) {
@@ -468,7 +479,7 @@ export class StatusBar implements vscode.Disposable {
   // ── 持仓轮播与渲染 ──────────────────────────────────────────────
 
   /**
-   * 按币种聚合持仓（今日盈亏经 `deriveTodayProfit` 单一出口，AGENTS.md §6.9）。
+   * 按币种聚合持仓（今日盈亏经 `deriveTodayProfit` 单一出口，AGENTS.md §5.5）。
    * 持仓条第 0 帧概览与持仓看板 Tooltip 共用本方法，禁止在两处各写一份累加逻辑。
    */
   private aggregateHoldings(): Array<[string, HoldingCurrencyBucket]> {
@@ -490,7 +501,7 @@ export class StatusBar implements vscode.Disposable {
 
   private restartHoldingCarousel(): void {
     this.stopHoldingCarousel();
-    if (this.bossKeyActive || this.maskMode || !this.holdingEnabled || this.holdings.length === 0) {
+    if (this.displayMasked || !this.holdingEnabled || this.holdings.length === 0) {
       return;
     }
     const totalFrames = this.holdings.length + 1;
@@ -510,7 +521,7 @@ export class StatusBar implements vscode.Disposable {
   }
 
   private renderHolding(): void {
-    if (this.bossKeyActive || this.maskMode || !this.holdingEnabled || this.holdings.length === 0) {
+    if (this.displayMasked || !this.holdingEnabled || this.holdings.length === 0) {
       this.holdingBarItem.text = "";
       this.holdingBarItem.tooltip = undefined;
       this.holdingBarItem.hide();
@@ -619,7 +630,7 @@ export class StatusBar implements vscode.Disposable {
       const pFmt = formatHoldingProfit(profit);
       const rFmt = Math.abs(profitRate).toFixed(2);
       const currentIndicator = this.holdingIndex === i + 1 ? " 👈" : "";
-      md.appendMarkdown(`- **${escapeHtml(h.name)}** (\`${h.symbol}\`): 成本 ${s}${toDisplayPrice(h.cost)} ｜ 现价 ${s}${toDisplayPrice(h.price)} ｜ 浮盈: **${pSign}${s}${pFmt} (${rSign}${rFmt}%)**${currentIndicator}\n`);
+      md.appendMarkdown(`- **${escapeMarkdownInline(h.name)}** (${toMarkdownCodeSpan(h.symbol)}): 成本 ${s}${toDisplayPrice(h.cost)} ｜ 现价 ${s}${toDisplayPrice(h.price)} ｜ 浮盈: **${pSign}${s}${pFmt} (${rSign}${rFmt}%)**${currentIndicator}\n`);
     }
 
     md.appendMarkdown(`\n_点击打开「通用与全局设置」调整持仓轮播开关与间隔 (当前 ${this.holdingInterval}s)_`);

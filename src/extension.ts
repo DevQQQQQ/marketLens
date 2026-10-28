@@ -6,7 +6,7 @@ import { StatusBar } from "./ui/statusBar.ts";
 import { logger } from "./utils/logger.ts";
 import { shouldAutoExitBossKey } from "./utils/maskState.ts";
 import { setMaskSnapshotSource } from "./utils/feedback.ts";
-import { resetProxyCache, DEFAULT_PROXY_PORT, DEFAULT_PROXY_URL } from "./services/network.ts";
+import { resetProxyCache, validateAndNormalizeProxyUrl, DEFAULT_PROXY_PORT, DEFAULT_PROXY_URL } from "./services/network.ts";
 import {
   readConfig,
   getWatchlistFingerprint,
@@ -26,6 +26,18 @@ import { SettingsWebviewPanel } from "./ui/settingsWebview.ts";
 let _scheduler: RefreshScheduler | undefined;
 let _statusBar: StatusBar | undefined;
 let _configDebounceTimer: NodeJS.Timeout | undefined;
+
+/**
+ * 收敛「不需要等待结果、但绝不能漏掉 rejection」的持久化调用。
+ *
+ * `void thenable` 只是丢弃返回值；globalState/cfg.update 在宿主关闭或磁盘写入失败时
+ * 仍会 reject，未处理 Promise 会污染扩展宿主日志（AGENTS.md §5.6 异步与生命周期）。
+ */
+function fireAndForgetPersist(label: string, task: PromiseLike<unknown>): void {
+  void Promise.resolve(task).catch((err) => {
+    logger.warn(`${label}落盘失败`, err);
+  });
+}
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   logger.init(context);
@@ -137,7 +149,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       scheduler.alertManager.resetCooldown();
       treeProvider.setAlerts({});
       treeProvider.setAllGroupSortModes({});
-      void context.globalState.update("marketlens.groupSortModes", {});
+      fireAndForgetPersist("分组排序复位", context.globalState.update("marketlens.groupSortModes", {}));
       scheduler.updateStatusBar(config);
       scheduler.rebuildTree(undefined, config);
       SettingsWebviewPanel.syncSettings();
@@ -222,14 +234,21 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         parsed.port = String(port);
         pUrl = parsed.toString().replace(/\/$/, "");
       } catch (err) {
-        logger.info(`解析当前代理 URL 失败，已回退默认格式: ${String(err)}`);
+        logger.warn("解析当前代理 URL 失败，已回退默认格式", err);
       }
       applyProxyToAllSections(config, pUrl, port);
       resetProxyCache();
+      scheduler.clearProxySuspensions();
     } else if (key === "proxyUrl") {
-      const pUrl = String(value || DEFAULT_PROXY_URL);
+      // 内存镜像与磁盘写入必须同一形态，否则「内存已纠偏、磁盘仍是 socks5:// 原样」
+      // 会让下一次 readConfig 覆盖回异形值（规范化出口见 services/network.ts）
+      const pUrl =
+        typeof value === "string" && value.trim() !== ""
+          ? validateAndNormalizeProxyUrl(value)
+          : DEFAULT_PROXY_URL;
       applyProxyToAllSections(config, pUrl);
       resetProxyCache();
+      scheduler.clearProxySuspensions();
     } else if (key === "alertNotificationMode") {
       config.alertNotificationMode =
         value === "statusBarOnly" || value === "both" ? value : "notification";
@@ -244,7 +263,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         const targetSection = config[section];
         const field = key.slice(dotIndex + 1);
         if (targetSection && typeof targetSection === "object" && field in targetSection) {
-          (targetSection as Record<string, unknown>)[field] = value;
+          // 板块级代理地址与全局代理走同一规范化出口；留空仍是「继承全局代理」语义，原样保留
+          (targetSection as Record<string, unknown>)[field] =
+            field === "proxyUrl" && typeof value === "string" && value.trim() !== ""
+              ? validateAndNormalizeProxyUrl(value)
+              : value;
+          if (field === "proxyUrl" || field === "networkMode") {
+            resetProxyCache();
+            scheduler.clearProxySuspensions();
+          }
           if (field === "statusBar") {
             recomputeStatusBarEnabled(config);
           }
@@ -282,7 +309,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (hadColorSchemeChange && !hadColorNeutralChange) {
         const cfg = vscode.workspace.getConfiguration("marketlens");
         if (cfg.get<boolean>("colorNeutral")) {
-          void cfg.update("colorNeutral", false, vscode.ConfigurationTarget.Global);
+          fireAndForgetPersist("配色中性化复位", cfg.update("colorNeutral", false, vscode.ConfigurationTarget.Global));
           config.colorNeutral = false;
         }
       }
@@ -357,8 +384,11 @@ export function deactivate(): void {
     _configDebounceTimer = undefined;
   }
 
+  // 三个静态注入位必须全部复位：activate 会重新注入，遗留旧实例会让 deactivate 之后的
+  // 任何 webview 回调继续持有上一轮的 statusBar/config/quoteCache 引用。
   SettingsWebviewPanel.onDidUpdateSetting = undefined;
   SettingsWebviewPanel.getQuoteCache = undefined;
+  SettingsWebviewPanel.globalState = undefined;
 
   _scheduler?.dispose();
   _scheduler = undefined;

@@ -1,7 +1,7 @@
 // src/services/dexScreenerService.ts
 import type { MarketItem } from "../types";
 import { cryptoGet, DEFAULT_PROXY_URL, type CryptoNetworkOptions } from "./network.ts";
-import { logger } from "../utils/logger.ts";
+import { logger, describeForLog } from "../utils/logger.ts";
 
 interface DexPair {
   chainId: string;
@@ -94,7 +94,7 @@ export class DexScreenerService {
     const key = addr.toLowerCase();
     this.invalidAddresses.set(key, Date.now() + this.INVALID_CACHE_TTL);
     logger.warn(
-      `[DexScreenerService] 合约地址 "${addr}" 未检索到流动性池或已下架，已加入临时抑制黑名单(10分钟)`
+      `[DexScreenerService] 合约 ${describeForLog(addr)} 未检索到流动性池或已下架，已加入临时抑制黑名单(10分钟)`
     );
   }
 
@@ -113,7 +113,7 @@ export class DexScreenerService {
         .filter((a) => {
           if (!isValidContractAddress(a)) {
             logger.warn(
-              `[DexScreenerService] 跳过无效地址 "${a}"` +
+              `[DexScreenerService] 跳过无效地址 ${describeForLog(a)}` +
               " — Alpha 代币请使用 EVM (0x...) 或 Solana Mint 合约地址。"
             );
             return false;
@@ -262,7 +262,7 @@ export class DexScreenerService {
       // 有 err.response 说明是 HTTP 业务错误（如 404 合约不存在），不算网络故障
       const axiosErr = err as { response?: unknown; message?: string } | null | undefined;
       const isNetworkError = !axiosErr?.response;
-      logger.error(`[DexScreenerService] 批量拉取代币行情失败: ${axiosErr?.message || String(err)}`, err);
+      logger.error("[DexScreenerService] 批量拉取代币行情失败", err);
       return { items: [], networkError: isNetworkError };
     }
   }

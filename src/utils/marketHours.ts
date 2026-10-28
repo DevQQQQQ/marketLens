@@ -161,7 +161,7 @@ export const MAX_COVERED_HOLIDAY_YEAR = 2027;
 
 /**
  * 仍为「提前占位预测数据」的年份：日历条目已写入，但尚未对照交易所官方终版公告复核。
- * 官方终版通常在 2026 年 11 月下旬 ~ 12 月中旬发布，复核校准后必须把该年份从本集合移除（AGENTS.md §6.12）。
+ * 官方终版通常在 2026 年 11 月下旬 ~ 12 月中旬发布，复核校准后必须把该年份从本集合移除（AGENTS.md §5.5）。
  */
 export const FORECAST_HOLIDAY_YEARS: ReadonlySet<number> = new Set([2027]);
 
@@ -175,7 +175,7 @@ const warnedForecastYears = new Set<number>();
  *
  * 年份口径必须与调用方查日历键所用的**同一个** Intl 格式化器同源：
  * 用 `date.getFullYear()`（宿主机本地时区）会在跨年边界（12-31 / 01-01）与查表时区错位，
- * 造成超限年份漏告警或未超限年份误告警（AGENTS.md §6.12）。
+ * 造成超限年份漏告警或未超限年份误告警（AGENTS.md §5.5）。
  */
 export function checkHolidayCoverage(
   date: Date = new Date(),
@@ -372,7 +372,7 @@ export interface MarketPollingSkipOptions {
   /**
    * 是否指定刷新单一分组名称。
    * 调用方（scheduler）传入的是配置里的可空分组名，因此 `undefined` 是合法入参而非「未提供键」，
-   * `exactOptionalPropertyTypes` 下必须如实允许（§6.10 三条休市链路的粒度判定依赖此默认值语义）。
+   * `exactOptionalPropertyTypes` 下必须如实允许（§5.5 三条休市链路的粒度判定依赖此默认值语义）。
    */
   specificGroupName?: string | undefined;
 }

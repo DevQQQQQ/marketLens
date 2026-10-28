@@ -19,7 +19,57 @@ import { WatchlistOps } from "../src/watchlistOps.ts";
 import { setMaskSnapshotSource } from "../src/utils/feedback.ts";
 import { MASKED_TOOLTIP_TEXT } from "../src/utils/maskState.ts";
 import { applyAlertRuleDelta, sanitizeAlerts } from "../src/utils/symbolHelper.ts";
+import { logger } from "../src/utils/logger.ts";
 import type { MarketItem } from "../src/types/index.ts";
+
+/**
+ * 捕获 logger sink 落到宿主 console 的行。
+ * mock 的 `OutputChannel.appendLine` 是空实现，日志取证只能走 console 侧；
+ * sink 刻意让 OutputChannel 与 console 共用同一行已清洗文本。
+ */
+async function withCapturedConsole(run: () => void | Promise<void>): Promise<string[]> {
+  const original = console.log;
+  const lines: string[] = [];
+  console.log = (...args: unknown[]) => {
+    lines.push(args.map((a) => String(a)).join(" "));
+  };
+  try {
+    await run();
+  } finally {
+    console.log = original;
+  }
+  return lines;
+}
+
+/**
+ * 设置面板消息总线夹具：接管 createWebviewPanel 并收集 onDidReceiveMessage 监听器，
+ * 让用例能真实走完「webview 报文 → 后端处理器」链路（P1-1、P1-2 的守卫都在这条链上）。
+ */
+function installWebviewMessageHarness() {
+  const listeners: Array<(msg: any) => any> = [];
+  const originalPanel = vscode.window.createWebviewPanel;
+  (vscode.window as any).createWebviewPanel = (...args: any[]) => {
+    const panel = (originalPanel as any).apply(vscode.window, args);
+    const origOn = panel.webview.onDidReceiveMessage.bind(panel.webview);
+    panel.webview.onDidReceiveMessage = (listener: any) => {
+      listeners.push(listener);
+      return origOn(listener);
+    };
+    return panel;
+  };
+
+  return {
+    listenerCount: () => listeners.length,
+    fire: async (msg: any) => {
+      for (const listener of listeners) {
+        await listener(msg);
+      }
+    },
+    uninstall: () => {
+      (vscode.window as any).createWebviewPanel = originalPanel;
+    },
+  };
+}
 
 void test("config - readConfig 端到端读取与默认值回退", async () => {
   (vscode as any).__resetMock();
@@ -377,15 +427,56 @@ void test("extension 与 commands - 扩展完整生命周期与命令分发集�
   await vscode.commands.executeCommand("marketlens.addItem");
   await vscode.commands.executeCommand("marketlens.sortGroup");
 
+  // 3.1 P1-1 回归：命令面板入口的 showLogs 必须与设置面板入口共用同一脱敏判定。
+  //     此刻老板键已连按两次回到未激活，唯一生效的是 toggleMask 置起的 maskMode；
+  //     旧实现只看老板键，命令面板就成了「简洁展示模式」下的漏网入口。
+  //     测试宿主的 onDidChangeConfiguration 不会随 cfg.update 派发，状态栏内存态收不到
+  //     这次落盘，故按 feedback.ts 的既有测试缝注入脱敏快照（与 P0-4 用例同一手法）。
+  let logPanelOpened = 0;
+  const originalLoggerShow = logger.show;
+  (logger as any).show = () => {
+    logPanelOpened++;
+  };
+  try {
+    setMaskSnapshotSource(() => ({ bossKeyActive: false, maskMode: true }));
+    const refused = await withCapturedConsole(async () => {
+      await vscode.commands.executeCommand("marketlens.showLogs");
+    });
+    assert.strictEqual(logPanelOpened, 0, "简洁展示模式下命令面板入口不得打开运行日志");
+    assert.ok(
+      refused.join("\n").includes("拒绝打开运行日志"),
+      `拒绝必须留痕，而不是静默吞掉命令: ${refused.join("\n")}`
+    );
+
+    // 3.2 对照组：解除脱敏后同一命令必须恢复放行，守卫不能把功能封死
+    setMaskSnapshotSource(() => ({ bossKeyActive: false, maskMode: false }));
+    await vscode.commands.executeCommand("marketlens.showLogs");
+    assert.strictEqual(logPanelOpened, 1, "常态下命令面板入口必须打开运行日志");
+  } finally {
+    (logger as any).show = originalLoggerShow;
+    setMaskSnapshotSource(() => ({ bossKeyActive: false, maskMode: false }));
+  }
+
   // 4. 测试复制标的代码 / 合约地址命令
   await vscode.commands.executeCommand("marketlens.copyCode", "600519");
   await vscode.commands.executeCommand("marketlens.copyCode", "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c");
 
   // 5. 测试生命周期注销
+  //    P2-4 回归：三个静态注入位都要复位。遗留引用会让 deactivate 之后仍存活的 webview
+  //    回调继续持有上一轮的 scheduler / globalState（内存泄漏 + 跨轮脏写）。
+  const { SettingsWebviewPanel } = await import("../src/ui/settingsWebview.ts");
+  assert.ok(typeof SettingsWebviewPanel.onDidUpdateSetting === "function", "激活期间必须注入内存更新回调");
+  assert.ok(typeof SettingsWebviewPanel.getQuoteCache === "function", "激活期间必须注入行情缓存取值器");
+  assert.ok(SettingsWebviewPanel.globalState, "激活期间必须注入 globalState 句柄");
+
   deactivate();
+
+  assert.strictEqual(SettingsWebviewPanel.onDidUpdateSetting, undefined, "deactivate 必须复位配置回调注入");
+  assert.strictEqual(SettingsWebviewPanel.getQuoteCache, undefined, "deactivate 必须复位行情缓存注入");
+  assert.strictEqual(SettingsWebviewPanel.globalState, undefined, "deactivate 必须复位 globalState 注入");
 });
 
-// ── AGENTS.md §6.5 / §6.3 / §6.11 / §6.2 回归 ─────────────────────────
+// ── AGENTS.md §5.2 / §5.4 / §5.5 回归 ─────────────────────────
 
 /** 构造一个带完整上下文的树节点（confSymbol 与 item.symbol 可分列，用于验证符号身份匹配） */
 function makeStockNode(symbol: string, groupName: string, name: string): StockItem {
@@ -432,7 +523,7 @@ void test("P1-6 回归 - 板块开关与条目过滤同源：基金分组不得�
   assert.strictEqual(fundGroup.groupName, "基金");
 
   const children = await provider.getChildren(fundGroup);
-  assert.strictEqual(children?.length, 1, "基金条目被 aShare 开关过滤 = §6.8 两套判定源漂移");
+  assert.strictEqual(children?.length, 1, "基金条目被 aShare 开关过滤 = §5.3 两套判定源漂移");
 
   // 反向：关闭基金板块时分组与条目一起收起，不得出现「组在、条目空」
   provider.buildTree(
@@ -470,7 +561,7 @@ void test("P1-7 回归 - 今日盈亏公式单一出口，Tooltip 关闭 HTML �
   const groups = await provider.getChildren();
   const stockNode = (await provider.getChildren(groups![0]))![0] as StockItem;
   const tip = stockNode.tooltip as vscode.MarkdownString;
-  assert.strictEqual(tip.supportHtml, false, "§6.15：树节点 Tooltip 必须关闭 HTML 渲染");
+  assert.strictEqual(tip.supportHtml, false, "§5.4：树节点 Tooltip 必须关闭 HTML 渲染");
   assert.strictEqual(tip.value.includes("<img src=x"), false, "外部报文的标的名不得原样进入富文本");
   assert.ok(tip.value.includes("&lt;img"), "特殊 HTML 字符必须转义");
   assert.deepStrictEqual((tip as any).isTrusted?.enabledCommands, ["marketlens.copyCode"], "命令授权仍须收敛到白名单");
@@ -509,7 +600,7 @@ void test("P0-1 回归 - 删除自选只按符号身份匹配，同名跨市场�
 
   const cfg = readConfig();
   assert.strictEqual(cfg.watchlist["港股"]?.length, 0, "目标分组内的标的应被删除");
-  assert.strictEqual(cfg.watchlist["A股"]?.length, 2, "同名不同代码的标的被连带删除 = §6.5 P0 红线破坏");
+  assert.strictEqual(cfg.watchlist["A股"]?.length, 2, "同名不同代码的标的被连带删除 = §5.5 P0 红线破坏");
   assert.ok(cfg.watchlist["A股"]?.some((it) => it.symbol === "sh600519"));
   assert.ok(cfg.watchlist["A股"]?.some((it) => it.symbol === "sh601398"));
 });
@@ -598,7 +689,7 @@ void test("P0-3 回归 - 伪装态状态栏 tooltip 不得自曝插件名与模�
     bar?.dispose();
   }
 
-  // 共享遮罩文案本身也不得含插件名/模式名（§6.3 规则七）
+  // 共享遮罩文案本身也不得含插件名/模式名（§5.4）
   assert.ok(!/MarketLens|简洁展示|专注|老板键|Alt\+/i.test(MASKED_TOOLTIP_TEXT));
 });
 
@@ -829,3 +920,252 @@ void test("P0-4 回归 - 老板键激活时导出/导入/恢复默认/清空自�
     setMaskSnapshotSource(() => ({ bossKeyActive: false, maskMode: false }));
   }
 });
+
+void test("P1-1 回归 - 设置面板 showLogs 入口与命令面板共用同一脱敏谓词", async () => {
+  (vscode as any).__resetMock();
+  setMaskSnapshotSource(() => ({ bossKeyActive: false, maskMode: false }));
+
+  const { SettingsWebviewPanel } = await import("../src/ui/settingsWebview.ts");
+  const harness = installWebviewMessageHarness();
+  let showCalls = 0;
+  const originalLoggerShow = logger.show;
+  (logger as any).show = () => {
+    showCalls++;
+  };
+
+  try {
+    SettingsWebviewPanel.createOrShow(vscode.Uri.file("/mock/extension"));
+    assert.ok(harness.listenerCount() > 0, "面板必须注册消息接收器");
+
+    // 1. 对照组：常态下 webview 入口必须放行，守卫不能把功能整个封死
+    await harness.fire({ command: "showLogs" });
+    assert.strictEqual(showCalls, 1, "常态下设置面板必须能打开运行日志");
+
+    // 2. 仅 maskMode（无老板键）：旧实现只看老板键，这里就是漏网入口
+    setMaskSnapshotSource(() => ({ bossKeyActive: false, maskMode: true }));
+    const refused = await withCapturedConsole(async () => {
+      await harness.fire({ command: "showLogs" });
+    });
+    assert.strictEqual(showCalls, 1, "简洁展示模式下 webview 入口不得打开运行日志");
+    assert.ok(refused.join("\n").includes("拒绝打开运行日志"), refused.join("\n"));
+
+    // 3. 仅老板键：与命令面板入口同为一票否决
+    setMaskSnapshotSource(() => ({ bossKeyActive: true, maskMode: false }));
+    await harness.fire({ command: "showLogs" });
+    assert.strictEqual(showCalls, 1, "老板键激活期间 webview 入口不得打开运行日志");
+
+    // 4. 两个脱敏来源同时解除后必须恢复可用
+    setMaskSnapshotSource(() => ({ bossKeyActive: false, maskMode: false }));
+    await harness.fire({ command: "showLogs" });
+    assert.strictEqual(showCalls, 2, "解除脱敏后必须恢复放行");
+  } finally {
+    (logger as any).show = originalLoggerShow;
+    harness.uninstall();
+    SettingsWebviewPanel.currentPanel?.dispose();
+    setMaskSnapshotSource(() => ({ bossKeyActive: false, maskMode: false }));
+  }
+});
+
+void test("P1-2 回归 - 设置面板拦截分支的日志只落不可逆标签，处理器 reject 一律收敛", async () => {
+  (vscode as any).__resetMock();
+  setMaskSnapshotSource(() => ({ bossKeyActive: false, maskMode: false }));
+
+  const { SettingsWebviewPanel } = await import("../src/ui/settingsWebview.ts");
+  const harness = installWebviewMessageHarness();
+
+  const rejections: unknown[] = [];
+  const onRejection = (reason: unknown) => {
+    rejections.push(reason);
+  };
+  process.on("unhandledRejection", onRejection);
+
+  try {
+    SettingsWebviewPanel.createOrShow(vscode.Uri.file("/mock/extension"));
+    assert.ok(harness.listenerCount() > 0, "面板必须注册消息接收器");
+
+    // 1. 被拒的预警键即标的身份，属于「自选内容不得写入日志」范围：只留 sha1 短标签
+    const alertKeyLines = await withCapturedConsole(async () => {
+      await harness.fire({ command: "updateAlertRule", key: "__proto__", rule: { symbol: "sh600519", above: 1900 } });
+    });
+    const alertKeyLog = alertKeyLines.join("\n");
+    assert.ok(alertKeyLog.includes("拒绝非法预警标的键"), alertKeyLog);
+    assert.ok(
+      !alertKeyLog.includes("__proto__") && !alertKeyLog.includes("sh600519"),
+      `拦截日志不得回显键名与标的代码: ${alertKeyLog}`
+    );
+    assert.match(alertKeyLog, /拒绝非法预警标的键: #[0-9a-f]{6}/, alertKeyLog);
+
+    // 2. 非 HTTP(S) 外链：URL 本体同样只留标签
+    const urlLines = await withCapturedConsole(async () => {
+      await harness.fire({ command: "openExternal", url: "vscode://file/C:/Users/me/settings.json" });
+    });
+    const urlLog = urlLines.join("\n");
+    assert.ok(urlLog.includes("拦截到非 HTTP/HTTPS 外部链接请求"), urlLog);
+    assert.ok(!urlLog.includes("settings.json") && !urlLog.includes("vscode://"), `日志不得回显原始 URL: ${urlLog}`);
+
+    // 3. 处理器内部抛错必须被 guardMessageHandler 接住：既不冒未处理拒绝，也不炸掉面板
+    const thrownLines = await withCapturedConsole(async () => {
+      await harness.fire({
+        get command() {
+          throw new Error("宿主报文解析异常");
+        },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    });
+    assert.ok(
+      thrownLines.join("\n").includes("设置面板消息处理异常"),
+      `异常必须收敛为日志: ${thrownLines.join("\n")}`
+    );
+  } finally {
+    process.off("unhandledRejection", onRejection);
+    harness.uninstall();
+    SettingsWebviewPanel.currentPanel?.dispose();
+    setMaskSnapshotSource(() => ({ bossKeyActive: false, maskMode: false }));
+  }
+
+  assert.deepStrictEqual(rejections, [], `存在未被接住的 Promise 拒绝（AGENTS.md §5.6）: ${String(rejections[0])}`);
+});
+
+void test("P1-3 回归 - 设置面板与备份导入的代理地址全部走同一规范化出口", async () => {
+  (vscode as any).__resetMock();
+  setMaskSnapshotSource(() => ({ bossKeyActive: false, maskMode: false }));
+
+  const { SettingsWebviewPanel } = await import("../src/ui/settingsWebview.ts");
+  const harness = installWebviewMessageHarness();
+
+  try {
+    SettingsWebviewPanel.createOrShow(vscode.Uri.file("/mock/extension"));
+
+    // 1. 全局代理：socks5:// 形态必须在落盘前被纠偏，否则内存段与磁盘段是两种形态
+    await harness.fire({ command: "updateSetting", key: "proxyUrl", value: " socks5://127.0.0.1:10808/ " });
+    const afterGlobal = readConfig();
+    assert.strictEqual(afterGlobal.proxyUrl, "http://127.0.0.1:10808", afterGlobal.proxyUrl);
+    assert.strictEqual(
+      afterGlobal.fund.proxyUrl,
+      "http://127.0.0.1:10808",
+      "批量下发到各板块的值同样必须是规范形态"
+    );
+
+    // 2. 板块级代理：留空 = 继承全局，必须原样保留；非空必须规范化
+    await harness.fire({ command: "updateSetting", key: "binance.proxyUrl", value: "https://proxy.corp.example:3128/" });
+    assert.strictEqual(readConfig().binance.proxyUrl, "http://proxy.corp.example:3128", readConfig().binance.proxyUrl);
+    await harness.fire({ command: "updateSetting", key: "alpha.proxyUrl", value: "   " });
+    assert.strictEqual(readConfig().alpha.proxyUrl, "   ", "空白输入表示继承，不得被写成规范化后的默认地址");
+
+    // 3. 备份链路：异形代理经导出→导入这一整条外部 JSON 往返后，必须被规范化落盘
+    const vcfg = vscode.workspace.getConfiguration("marketlens");
+    await vcfg.update("proxyUrl", "socks5://127.0.0.1:7890", vscode.ConfigurationTarget.Global);
+    await vcfg.update("aShare.proxyUrl", "https://proxy.corp.example:3128/", vscode.ConfigurationTarget.Global);
+    await vcfg.update("usStock.proxyUrl", "8888", vscode.ConfigurationTarget.Global);
+    assert.strictEqual(await exportSettingsToFile(readConfig()), true, "对照组：导出必须成功");
+
+    await vcfg.update("proxyUrl", "http://127.0.0.1:10808", vscode.ConfigurationTarget.Global);
+    await vcfg.update("aShare.proxyUrl", "http://127.0.0.1:10808", vscode.ConfigurationTarget.Global);
+    await vcfg.update("usStock.proxyUrl", "http://127.0.0.1:10808", vscode.ConfigurationTarget.Global);
+    const imported = await importSettingsFromFile({});
+    assert.strictEqual(imported, true, "导入必须成功（测试宿主默认返回备份文件）");
+    const cfg = readConfig();
+    assert.strictEqual(cfg.proxyUrl, "http://127.0.0.1:7890", cfg.proxyUrl);
+    assert.strictEqual(cfg.aShare.proxyUrl, "http://proxy.corp.example:3128", cfg.aShare.proxyUrl);
+    assert.strictEqual(cfg.usStock.proxyUrl, "http://127.0.0.1:8888", cfg.usStock.proxyUrl);
+  } finally {
+    harness.uninstall();
+    SettingsWebviewPanel.onDidUpdateSetting = undefined;
+    SettingsWebviewPanel.currentPanel?.dispose();
+    setMaskSnapshotSource(() => ({ bossKeyActive: false, maskMode: false }));
+  }
+});
+
+void test("P2-6 回归 - WatchlistOps 向导 happy path：输入校验 → 选组 → 命名 → 落盘", async () => {
+  (vscode as any).__resetMock();
+  setMaskSnapshotSource(() => ({ bossKeyActive: false, maskMode: false }));
+
+  await vscode.workspace.getConfiguration("marketlens").update(
+    "watchlist",
+    { "A股": [{ symbol: "sh600519", type: "A_SHARE", name: "贵州茅台" }] },
+    vscode.ConfigurationTarget.Global
+  );
+
+  const quoteCache = new Map<string, MarketItem>();
+  quoteCache.set("sh600519", {
+    id: "sh600519",
+    symbol: "sh600519",
+    name: "贵州茅台",
+    type: "A_SHARE",
+    price: 1800,
+    changePercent: 1.5,
+  });
+
+  let lastRebuilt: any = null;
+  const ops = new WatchlistOps({
+    quoteCache,
+    rebuildTree: (customWatchlist) => {
+      lastRebuilt = customWatchlist;
+    },
+  });
+
+  const originalInput = vscode.window.showInputBox;
+  const originalPick = vscode.window.showQuickPick;
+  const originalWarn = vscode.window.showWarningMessage;
+  const warnings: string[] = [];
+  (vscode.window as any).showWarningMessage = async (message: string) => {
+    warnings.push(message);
+    return undefined;
+  };
+
+  try {
+    // 1. addItem：代码 → 自动识别分组 → 显示名 → 落盘
+    (vscode.window as any).showInputBox = async (options: any) => {
+      if (options?.prompt === "输入股票代码 / 币对 / 合约地址") {
+        assert.strictEqual(options.validateInput?.("601318"), undefined, "合法 A 股代码不得被即时校验拦下");
+        assert.ok(options.validateInput?.("not-a-code"), "非法输入必须被即时校验拦下");
+        return "601318";
+      }
+      return "中国平安";
+    };
+    (vscode.window as any).showQuickPick = async (items: any[]) => {
+      assert.ok(Array.isArray(items) && items.length > 0, "选组 QuickPick 必须带候选分组");
+      return items[0]; // 自动识别出的默认分组
+    };
+
+    await ops.addItem();
+
+    const added = readConfig().watchlist["A股"] ?? [];
+    assert.strictEqual(added.length, 2, "向导必须把新标的落到自动识别的分组");
+    const newItem = added[1];
+    assert.ok(newItem && /601318$/.test(newItem.symbol), `标的代码需带交易所前缀: ${newItem?.symbol}`);
+    assert.strictEqual(newItem?.name, "中国平安", "显示名必须采纳用户输入而非裸代码");
+    assert.strictEqual(newItem?.type, "A_SHARE");
+    assert.ok(lastRebuilt, "写入配置后必须主动重建树视图，与 pinToTop/removeItem 行为一致");
+
+    // 2. 重复添加：只提示不重复写入
+    await ops.addItem();
+    assert.strictEqual(warnings.length, 1, `重复添加必须给出提示: ${warnings.join(" / ")}`);
+    assert.strictEqual((readConfig().watchlist["A股"] ?? []).length, 2, "重复添加不得写入第二条");
+
+    // 3. 取消第一步输入：向导必须整条退出，不留任何副作用
+    (vscode.window as any).showInputBox = async () => undefined;
+    await ops.addItem();
+    assert.strictEqual((readConfig().watchlist["A股"] ?? []).length, 2, "取消添加不得改动配置");
+
+    // 4. setHolding 无 node 入口：从全量自选 QuickPick 里选中后写成本/数量
+    (vscode.window as any).showInputBox = async (options: any) => {
+      if (String(options?.prompt ?? "").startsWith("请输入买入成本单价")) return "1600";
+      if (String(options?.prompt ?? "").startsWith("请输入持仓数量")) return "100";
+      return undefined;
+    };
+    (vscode.window as any).showQuickPick = async (items: any[]) => items[0];
+    await ops.setHolding();
+
+    const held = readConfig().watchlist["A股"]?.[0];
+    assert.strictEqual(held?.symbol, "sh600519");
+    assert.strictEqual(held?.cost, 1600, "无 node 入口的持仓向导必须把成本落盘");
+    assert.strictEqual(held?.shares, 100, "无 node 入口的持仓向导必须把数量落盘");
+  } finally {
+    (vscode.window as any).showInputBox = originalInput;
+    (vscode.window as any).showQuickPick = originalPick;
+    (vscode.window as any).showWarningMessage = originalWarn;
+    setMaskSnapshotSource(() => ({ bossKeyActive: false, maskMode: false }));
+  }
+});
+

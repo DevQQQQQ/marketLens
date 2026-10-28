@@ -346,7 +346,7 @@ export class WatchlistOps {
     if (confirm !== "删除") { return; }
 
     // 匹配只认符号身份（isSameSymbol 与节点 id/symbol），严禁以显示名称相等作为删除判据：
-    // 跨市场同名标的（不同代码、同中文名）会因名称命中而被连带误删（AGENTS.md §6.5）。
+    // 跨市场同名标的（不同代码、同中文名）会因名称命中而被连带误删（AGENTS.md §5.5）。
     // targetName 仅用于展示与确认文案，不进入匹配谓词。
     const matchItem = (it?: { symbol?: string } | null): boolean => {
       if (!it || !it.symbol || !targetSymbol) return false;

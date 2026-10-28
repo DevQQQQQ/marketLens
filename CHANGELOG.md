@@ -5,28 +5,110 @@ All notable changes to the "MarketLens" extension will be documented in this fil
 
 ## [Unreleased]
 
+## [1.3.3] - 2026-10-28
+
+<details>
+<summary><b>🌐 代理不可达自适应挂起与树视图轻量呈现 (Proxy Fault Isolation & UX)</b></summary>
+
+- **代理故障局部自适应挂起**
+  - 背景：国内网络环境下，Binance 与 Alpha 链上代币高度依赖本地代理客户端。代理未开时，后台反复探测全部候选端口并超时，浪费系统与网络资源，且可能拖长全局调度。
+  - 改动：`RefreshScheduler` 实时追踪加密货币连续拉取状态。当代理模式下连续 2 次无法拉取到有效行情时，自动将对应板块标记为代理挂起；常规轮询周期自动跳过这两类标的（`skipBinance` / `skipAlpha`），不再发起底层网络请求与端口探测。
+  - 效果：A 股、港股、美股、基金直连毫秒级刷新完全不受影响，彻底消除无代理时的无谓轮询与超时开销。
+- **树视图轻量状态呈现与内联重试**
+  - 改动：挂起状态下，分组标题描述自动追加 `(N · 代理离线已暂停)`，图标转为醒目的黄色断开图标 `$(debug-disconnect)`，悬停 Tooltip 呈现当前代理配置与操作指引卡片。
+  - 恢复机制：用户启动代理软件后，点击分组行右侧的 🔄 刷新按钮即可立即触发单次轻量探活；代理恢复时自动解除挂起，若仍不通且未处于老板键状态时友好提示；修改网络设置或触发全局刷新时同步 0 延迟复位挂起。
+</details>
+
+<details>
+<summary><b>🔒 脱敏防线与运行日志隐私收口 (Privacy & Log Redaction)</b></summary>
+
+- **运行日志入口的脱敏判定收口**
+  - 命令面板 `marketlens.showLogs` 原先只看老板键，简洁展示模式（`maskMode`）下仍能打开含真实标的代码与行情数值的诊断日志；而设置面板与 README 都把「打开运行日志」当作官方反馈渠道，贴到 issue 即等于外发关注范围。
+  - 现与设置面板 webview 入口共用 `feedback.isMasked()` 同一谓词（脱敏态一票否决），拒绝时只留一条中文日志、不弹窗不提示；两个入口行为一致。
+- **日志标识改为不可逆短标签**
+  - `logger.ts` 新增 `describeForLog`（sha1 前 6 位 `#xxxxxx`）、`describeListForLog`（一批标识折叠成「N 项 [前 3 个标签 …]」）、`scrubForLog`（整段 URL 与 ≥16 字符长标识替换）、`describeErrorForLog` / `describeErrorNameForLog` / `formatDetailForLog`，并把 debug/info/warn/error 四条写入路径合并为唯一 `emit()` 出口——OutputChannel 与 dev console 现在拿到的是同一行已清洗文本，不存在「一处打码一处明文」。
+  - 接入点覆盖调度器的分组名、币安 / DexScreener 的符号与合约地址、设置面板拒绝的预警标的键、树视图拖拽报文解析失败的错误。可观察变化：日志里不再出现明文代码 / 中文名 / 请求 URL，但同一标的在任何机器上仍是同一标签，跨行关联能力保留；`ECONNREFUSED`、`timeout` 这类短诊断词刻意不被哈希，故障可读性不变。
+- **状态栏脱敏判定收口到共享谓词**
+  - 持仓轮播重启、悬停 Tooltip、预警闪条等处手写的 `bossKeyActive || maskMode` 等价条件全部改走 `displayMasked`（内部调用 `maskState.isDisplayMasked`），并补一条源码级守卫用例：状态栏再出现手写等价条件即测试红。
+  - 可观察变化：只开 `maskMode`（未按老板键）时，持仓轮播条与其 Tooltip 一并隐藏、闪条静默，不再需要额外触发老板键。
+- **预警标记与阈值输入同等遮挡**
+  - 侧边栏节点上的 🔔 在脱敏态改为与价格一致的 `****`，Tooltip 不再向旁观者交代「哪个标的设了预警」；
+  - 设置面板简洁展示模式下，到价预警的 above / below / 涨跌幅三个阈值输入与成本、数量保持同一处理：显示 `***` 且输入框 `disabled`；回推落盘时经新增的 `readThresholdCell` 取磁盘真值，因此脱敏态的一次面板刷新不会把用户既有阈值写成空值（启用开关路径同样受保护）。
+</details>
+
+<details>
+<summary><b>🧾 配置、备份与回显文本的一致性 (Config / Backup / Echo)</b></summary>
+
+- **备份导入与设置保存共用代理规范化出口**
+  - 问题：备份 JSON 与 webview 消息里的代理地址原先直接落盘，`socks5://…`、`https://…`、裸端口会绕过 `network.ts` 的格式约定；更糟的是设置面板「内存已纠偏、磁盘仍是异形值」，下一次 `readConfig()` 会把异形值覆盖回内存。
+  - 现全局 `proxyUrl`、各板块 `<section>.proxyUrl`、备份导入三条链路统一走 `validateAndNormalizeProxyUrl`：`socks5://127.0.0.1:10808` → `http://127.0.0.1:10808`、`https://proxy.corp.example:3128/` → `http://proxy.corp.example:3128`、`7890` → `http://127.0.0.1:7890`；板块级留空（继承全局代理的语义）保持原样不动。
+  - 备份其余字段同批接入校验：`groupSortModes` 只接受白名单内的排序模式（陌生值整键丢弃），`colorScheme` 非法值降级为「不写入」。
+- **设置面板拦截分支只记不可逆标签**
+  - 被拒绝的预警标的键（如原型污染键）只落 `#xxxxxx`，不回显键名与该标的的阈值；被拦截的非 HTTP(S) `openExternal` 请求只记录「已拦截」，不把目标 URI 写进日志。
+- **Tooltip 富文本消毒**
+  - 新增 `escapeMarkdownInline` / `toMarkdownCodeSpan`：树节点 Tooltip 继续关闭 HTML 渲染（`supportHtml = false`），标的名、公链名、代币符号、合约地址在写入前转义方括号与反引号、折叠换行，合约地址整段包进惰性 code span。
+  - 效果：一段被上游控制的报文无法在 Tooltip 里自行拼出 `[文案](command:...)` 或外链，也无法提前闭合 code span 把余文变成可点击文本。
+</details>
+
+<details>
+<summary><b>🩹 异步与生命周期收口 (Stability & Lifecycle)</b></summary>
+
+- **未处理 Promise 一律收敛为日志**
+  - `extension.ts` 新增 `fireAndForgetPersist`，`globalState.update` / `cfg.update` 这类「不等结果但可能 reject」的持久化（分组排序复位、配色中性化复位）由 `void` 改为带 `.catch()`，宿主关闭或写盘失败不再往扩展宿主日志里冒未处理拒绝。
+  - 设置面板消息处理器分支异常、预警浮窗交互（含「静音 15 分钟」按钮之后的浮窗被关闭）、树视图分组排序落盘回调抛错，全部改为记日志并继续；静音动作与内存中的排序态不因一次写盘失败而回滚。
+- **停用生命周期补全**
+  - `deactivate()` 原先只复位 `SettingsWebviewPanel.onDidUpdateSetting` 与 `getQuoteCache`，第三个静态注入位 `globalState` 遗留旧实例；现在三个注入位全部复位并由用例锁定。
+</details>
+
+<details>
+<summary><b>🧪 测试与工程门禁 (Tests & Tooling)</b></summary>
+
+- **红线模块测试缺口补口**
+  - 新增 12 个回归用例（`test/**` 的 `void test` 声明数 100 → 112，本轮运行器口径 **117 通过 / 0 失败**），覆盖日志红线（标识不可逆、外部文本清洗、拖拽解析失败只落错误名）、Tooltip 消毒、预警铃铛与阈值遮值、状态栏脱敏谓词收口、备份/面板代理规范化同源、设置面板 `showLogs` 与命令面板共用谓词、未处理拒绝收敛、`WatchlistOps` 添加自选与设置持仓的 happy path（此前该模块只覆盖到脱敏拦截分支，`setHolding` 无任何用例）。
+  - 用例通过 `setMaskSnapshotSource` 注入脱敏快照、通过覆盖 `showInputBox` / `showQuickPick` 走通向导；测试环境自带的 vscode mock 不会派发 `onDidChangeConfiguration`，因此状态栏脱敏态必须由该接缝提供，不能用 sleep 等 debounce。
+- **CI 运行时与本地同源**
+  - `ci.yml` 与 `release.yml` 的 Node 由 `22` 改为精确钉住本地门禁版本 `24.22.1`（自带 npm 11.19.1）。此前「本地 24.x、CI 22」是潜在的本地绿远端红分叉面；两处取值必须保持同值，本地升补丁版时同步修改。
+- **规约锚点重映射**
+  - 源码 / 测试 / 脚本 / 工作流中 52 行仍指向旧版规约编号的注释（`§6.x`、`§9.2`、`§9.3`、「附录 B 第 N 条」）全部改写到现行 `AGENTS.md` 的 §3 / §4 / §5.1–§5.6 / §8；发布通道口径的引用改指 `RELEASE.md` 第 4 节。历史 CHANGELOG 条目按发版当时的编号保留，不做追溯改写。
+- **本次门禁**：`npm run lint`、`npm run typecheck`（含 `tsconfig.test.json`）、`npm test`、`npm run build` 全部实际执行且通过。
+</details>
+
 ## [1.3.2] - 2026-10-22
 
-- **🚀 发布链通道口径校准（修复 v1.3.1 CI 判红）**：v1.3.1 的 tag 在 `release.yml` 第 4 道 Guard 处 10 秒即红、什么都没发布——根因是本轮把「`VSCE_PAT` 缺失」写成了 `exit 1`，而该守卫位于 `npm ci` **之前**，连带把 GitHub Release 制品一起拦掉。实际产品口径是 **Open VSX 由 CI 自动分发、VS Code Marketplace 由维护者本人手动发布**，因此只配一个 secret 属常态而非误配。现改为：`VSCE_PAT` / `OVSX_PAT` 各自缺失只 `::warning::`，**两者皆缺才判红**；「Publish to VS Code Marketplace」步骤补上 `if: env.VSCE_PAT != ''` 自动跳过，Open VSX 步骤保持 `if: env.OVSX_PAT != ''`。四象限逻辑已逐一实测（只配 OVSX / 只配 VSCE / 两者皆有 → 均不中断；两者皆空 → exit 1）。同步落档：`AGENTS.md` §9.2「发布通道口径（用户拍板，不得再改）」并**删除**原先「严禁本地 `vsce` 手工发布」这条与实况相反的规约，新增**附录 B 第 20 条**探针防止回归；`RELEASE.md` §4 按平台标注「手动发布 / CI 自动发布」，`ovsx` 命令对齐 CI 里的固定版本写法。
-- **ℹ️ 版本说明**：`v1.3.1` tag 存在但因上述 Guard 未发布到任何注册表，故 **v1.3.2 是 1.3.0 之后实际推送注册表的第一个版本**；`package-lock.json` 根包 `version` 已补齐为 `1.3.2`。
+<details>
+<summary><b>🚀 发布通道口径校准与双平台分发治理 (Release Pipeline Hardening)</b></summary>
+
+- **发布链通道守卫校准（修复 v1.3.1 CI 判红）**
+  - **问题根因**：v1.3.1 的 tag 在 `release.yml` 凭据守卫处 10 秒即红、未发布任何制品；原因为守卫将 `VSCE_PAT` 缺失硬编码为 `exit 1`，而该守卫执行在构建之前，连带阻断了 GitHub Release 制品打包与 Open VSX 发布。
+  - **口径对齐**：对齐实际分发口径（Open VSX 由 CI 自动化推送，VS Code Marketplace 由维护者手动发布）；将双 Token 缺失判定改为仅当两者皆空时才中断流水线。
+  - **实现改动**：Publish to VS Code Marketplace 步骤补齐 `if: env.VSCE_PAT != ''` 条件跳过，Open VSX 步骤保持按需发布，覆盖四象限发布场景且均通过验证。
+- **发布文档与工程规约同步**
+  - 同步更新 `RELEASE.md` 与 `AGENTS.md`，如实标注各平台发布机制，纠正与实际操作脱节的限制描述，并补充防回归探针。
+- **版本说明**
+  - 确认 v1.3.1 虽打 tag 但未外发注册表，v1.3.2 为 v1.3.0 之后实际推送至注册表的首个稳定版；同步补齐 `package-lock.json` 版本号为 `1.3.2`。
+</details>
 
 ## [1.3.1] - 2026-10-22
 
-- **🔒 隐私与脱敏收口**：新增 `src/utils/feedback.ts` 作为面向用户回显的唯一出口（状态栏闪条、信息弹窗、向导文案数值打码、对话框入口判定），收口原先散落在命令模块/自选操作/预警模块的直接 `setStatusBarMessage` 调用；`watchlistOps.ts` 每个命令入口前置 `canOpenPrompt` / `shouldBlockNodeCommand`，补齐「守卫下沉」。
-- **🩹 数据链路修正**：自选删除改为**只按符号身份**（`isSameSymbol` / `normalizeSymbolKey`）匹配并限定目标分组，消除同名标的跨市场误删；`alerts` 走 `sanitizeAlerts` 消毒 + `applyAlertRuleDelta` 按标的增量回写（拒绝原型污染键、回收历史别名键）；预警冷却表改存**绝对到期时刻**并到期自清理。
-- **🧩 派生单一真相源**：休市板块子集收口进 `MARKET_CLOSING_SECTIONS`，板块级状态栏开关键收口进 `SECTION_STATUS_BAR_KEYS`；板块开关与条目过滤统一走 `resolveItemSection`；今日盈亏公式、按币种聚合与持仓取数不再有第二份副本。
-- **💱 计价货币单一出口（加密标的 U 本位）**：新增 `resolveQuoteCurrency(item)`，`A_SHARE→CNY / HK_STOCK→HKD / CRYPTO·BSC·ALPHA→USDT`，显式 `currency` 优先于类型推导；币安与 DexScreener 取数源、侧边栏卡片与 Tooltip、状态栏持仓看板全部改从该出口取计价单位，`USDT` 独立成币种桶，禁止展示位硬编码 `"USD"` 兜底。
-- **📅 休市日历护栏**：`checkHolidayCoverage` 的年份口径改为与查表同一个 Intl 时区（避免跨年边界误告警），2027 作为**预测年**显式挂牌在 `FORECAST_HOLIDAY_YEARS` 并按年去重告警。
-- **📅 休市日历维护口径（产品决策）**：`AGENTS.md` §6.12 由「每年 11~12 月强制追补次年日历」改判为**「未来年份不预置、不追补、不登记为待办；每年 1 月由维护者本人专项检查并授权补录」**，补录动作收敛成「写日期 → 抬上限 → 移出预测年 → 补数量断言」四件套（附录 B 新增第 18 条探针，实测 2028+ 键 0 个）。实测依据：剔除全部 2027 键后 2026-10-22~12-31 逐日休市判定差异 **0 天 / 0 告警**（查表键为 `YYYY-MM-DD` 全等匹配），故体检报告的「2027 A股日历待官方公告」条目已删除；`RELEASE.md` §6 的核验时间窗同步从 11~12 月改为 1 月。
-- **📦 依赖与供应链收口（生产链 + 开发链双清零）**：`npm audit --omit=dev` 由 1 high（`follow-redirects@1.16.0` 两条凭据泄露通告）降为 **0**，`follow-redirects` → 1.16.1、`axios` → 1.20.0；开发链以 `npm audit fix --force` 升 `esbuild@0.28.2` / `@typescript-eslint/*@8.72.0` / `@vscode/vsce@4.0.0`，全量 `npm audit` 亦为 **0**（产物字节与升级前仅差 1 字节，属压缩器差异）；`package-lock.json` 的 295 条 `resolved` 全量归一到 `https://registry.npmjs.org`（镜像 0 条），`npm ci --dry-run` 验过可解析；lock 根包 `version` 同步为 `1.3.0`。
-- **🛡️ 静态守卫补齐（工程护栏层，不改用户可见行为）**：`tsconfig.json` 开启 `exactOptionalPropertyTypes` / `noUnusedLocals` / `noImplicitOverride`，为此把「代码实际会存入 `undefined`」的可选契约如实加宽（`MarketItem`、`PriceAlertItem`、`TodayProfitSource`、`HoldingItemQuote`、`ProxyStatus`、`MarketPollingSkipOptions`、`TargetExtractionOptions`、`MarketLensBackupData.settings`），宿主不可改写的 `QuickPickItem.detail` 与 `currentPrice` 改为条件展开省略键；`.eslintrc.json` 升为 **type-aware** 并启用 `no-floating-promises` / `no-misused-promises`，测试文件顶层 `test(...)` 显式改为 `void test(...)`（现 100 处）。唯一未开启项 `noUncheckedIndexedAccess` 已按规约登记为能力缺口，**未用断言或 disable 刷绿**（逐处取证与裁决见「🔬 解析层守卫外下标收口」条目）。
-- **🔬 解析层守卫外下标收口（行情正确性）**：三个腾讯行情服务（A股/港股/美股）原先都用 `parseFloat(f[F.TURNOVER]) || 0` 读**下标 37**，而字段不足守卫只保证 `f.length >= 35`——37 落在守卫之外，报文偏短时常量越界得到 `undefined`，被 `|| 0` 伪装成「成交额为 0」，不抛错也不告警。现把 `parseOptionalFloat`（空串 / `-` / `-1` / 非有限值 → `undefined`）与守卫长度 `MIN_TENCENT_FIELDS` 一并提到 `tencentBaseService.ts` 作为**单一出口**（此前只有 A股 有一份私有实现、港美股完全没有），三处成交额改走可选语义，三份内联字面量 `35` 全部换成共享常量；`undefined` 直传到 `watchlistProvider.formatLargeNumber` 仍渲染为 `--`，**观感不变而语义诚实**。同步纠正 `AGENTS.md` §6.13 的失实引用（可选解析符号 `parseNonZeroFloat` 在仓库里不存在；港股 `F` 表最大下标为 37，不读 `[38]` 换手率），新增**附录 B 第 19 条**可机械校验探针（「下标 ≥ `MIN_TENCENT_FIELDS` 只能走 `parseOptionalFloat`」）与回归用例「P2-9 回归 - 腾讯短报文（35~37 字段）成交额保持 undefined」；变异验证：任一服务改回 `|| 0` 即该用例红，既有 Golden Sample 仍绿（全字段报文看不见这个缺口）。**全局 `noUncheckedIndexedAccess` 维持不开**：临时打开的报错由 99 降至 **96** 处，其余属「TS 看不见的前置不变量」（正则捕获组、早退后下标、等长数组），刷绿只能靠 §2.4 禁止的断言或假兜底，已按裁决登记为能力缺口，留待 `symbolHelper` 拆分时一并评估。
-- **🧩 板块枚举与默认分组名收敛为单一真相源**：`MARKET_SECTIONS` / `MARKET_CLOSING_SECTIONS` 迁移到 `src/types/index.ts` 并由 `(typeof …)[number]` 下标派生类型，`utils/config.ts` 改为再导出，消除「类型与值列表两处各写一份、漏改其一 typecheck 不红」的双写风险；新增 `SECTION_DEFAULT_GROUP_NAMES`（`Record<MarketSection, string>`）与派生的 `DEFAULT_GROUP_NAMES`，设置面板「清空自选」不再手写六个分组名字面量（新增板块时漏补会让该板块分组消失）。
-- **🚀 发布链 Guard 落地**：`release.yml` 增加 `concurrency`、tag 版本 == `package.json.version`、tag 提交必须已在 `main`（`git merge-base --is-ancestor`）、`npm run sync-version:check` 资产同步只校验不代做、注册表凭据缺失守卫（**该守卫把 `VSCE_PAT` 缺失写成硬失败，与实际发布通道不符，已在 v1.3.2 校准**）；两个 publish 步骤改为发布同一个 `--packagePath` 产物（不再在 CI 里重新打包），`ovsx` 固定为 `npx --yes ovsx@1.3.0`。`scripts/sync-version.js` 补上 `--fail-on-drift` 的非零退出码，新增 `npm run sync-version:check` 只读门禁脚本。
-- **🎹 键位文档化契约自动化**：新增 `unit.test.ts`「§6.1 键位文档化契约」用例，读 `package.json` 的 `contributes.keybindings` 逐条断言每个已注册键位在 `README.md` / `README.en.md` / 设置面板 About 速查三处均可见（已做变异验证：改掉 `Alt + L` 即红并精确报出 3 处缺失）。
-- **📡 请求防御纵深**：`network.ts` 单一漏斗显式设置 `MAX_REDIRECTS = 3`，收窄代理凭据在多跳重定向中的外抛面（行情接口实测零跳转）。
-- **🧪 测试**：新增回显出口、符号身份匹配、冷却自清理、板块同源、U 本位计价、键位文档契约、腾讯短报文成交额可选语义等回归，用例 102 → **105**，全绿。
-- **📚 规约纠偏与同步**：`AGENTS.md` 升为 v3.2，把本轮已落地的护栏从「⚠ 纠正 / 未落地」改写为现状陈述（§2.4 静态守卫、§5.2 板块真相源、§5.5 依赖供应链、§6.1 键位用例、§9.2/§9.3 发布链、附录 B 第 5/10/16/17 条），未落地项继续如实登记。
+<details>
+<summary><b>🔒 隐私脱敏收口、数据链路修正与单一真相源治理 (Security & Core Integrity)</b></summary>
+
+- **用户回显统一出口与脱敏守卫下沉**
+  - **回显出口收敛**：新增 `src/utils/feedback.ts` 作为面向用户回显的唯一出口，统一收拢状态栏闪条（`emitStatusMessage`）、信息弹窗（`showInfoMessage`）与向导文案打码逻辑，杜绝外部模块直接调用原生 API 导致在老板键激活时信息泄漏。
+  - **向导守卫下沉**：在 `watchlistOps.ts` 命令入口全量前置 `canOpenPrompt` 与 `shouldBlockNodeCommand` 守卫，确保专注模式下命令面板与上下文菜单均严格受控。
+- **自选与预警数据链路可靠性修正**
+  - **标的删除精准限定**：自选删除由仅比对名称改为**只按标准化标的身份**（`isSameSymbol` / `normalizeSymbolKey`）精准匹配，且严格限定目标分组，彻底根除跨板块同名标的连带误删风险。
+  - **预警规则增量回写**：预警配置落盘全量经 `sanitizeAlerts` 消毒与 `applyAlertRuleDelta` 增量回写，拒绝原型污染键并自动清理历史别名键。
+  - **预警冷却自愈回收**：预警冷却表由相对时长改为存储绝对到期时间戳，冷却到期后自动回收，防止内存泄漏。
+- **架构单一真相源收拢 (Single Source of Truth)**
+  - **板块与分组派生**：`MARKET_SECTIONS` 与 `MARKET_CLOSING_SECTIONS` 收拢至 `types/index.ts` 并自动派生联合类型；板块默认分组名由 `SECTION_DEFAULT_GROUP_NAMES` 派生，消除跨文件重复定义。
+  - **计价货币单一出口**：新增 `resolveQuoteCurrency(item)` 统一出口；主流加密货币与链上 Alpha 代币统一按 U 本位（`USDT`）计价，杜绝展示层硬编码 `"USD"` 兜底。
+  - **腾讯短报文越界防护**：提取 `parseOptionalFloat` 与 `MIN_TENCENT_FIELDS` 共享出口；读取守卫范围之外的可选成交额字段（下标 37）时正确返回 `undefined`，消除伪装的零值。
+- **工程构建、依赖与测试护栏**
+  - **依赖供应链审计双清零**：修复生产链漏洞，全量依赖升级并实现生产链与开发链 `npm audit` 均为 0。
+  - **静态类型与代码规约加固**：TypeScript 开启 `exactOptionalPropertyTypes` 等严格检查；ESLint 启用 Promise 异步安全规则，测试文件顶层声明规范化为 `void test`。
+  - **发布链自动化与键位文档契约**：`release.yml` 增加版本匹配与 ancestor 提交守卫；新增单元测试自动化断言所有注册快捷键与双语 README 及设置面板说明三方一致。
+</details>
 
 ## [1.3.0] - 2026-10-14
 

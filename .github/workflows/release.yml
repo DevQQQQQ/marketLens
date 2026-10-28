@@ -48,12 +48,12 @@ jobs:
         run: |
           git fetch origin main --no-tags
           if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
-            echo "::error::tag $GITHUB_REF_NAME 指向的提交不在 main 基线上，请先按 §4.1 把 dev 合入 main 再打 tag"
+            echo "::error::tag $GITHUB_REF_NAME 指向的提交不在 main 基线上，请先按 AGENTS.md §3 把 dev 合入 main 再打 tag"
             exit 1
           fi
 
       # ── Guard 3：发版资产同步只校验、不代做 ─────────────────────────────────────
-      # 与 §9.3 的口径一致：漂移直接判红，而不是像 prepackage 那样顺手改写并删包。
+      # 与 AGENTS.md §8 的口径一致：漂移直接判红，而不是像 prepackage 那样顺手改写并删包。
       - name: Guard - release assets must already be in sync
         run: npm run sync-version:check
 
@@ -66,7 +66,7 @@ jobs:
       - name: Guard - publishing credentials must be present
         run: |
           if [ -z "$VSCE_PAT" ]; then
-            echo "::warning::VSCE_PAT 未配置：跳过 Marketplace 发布（该平台按 §9.2 由维护者手动发布）"
+            echo "::warning::VSCE_PAT 未配置：跳过 Marketplace 发布（该平台按 RELEASE.md 第 4 节由维护者手动发布）"
           fi
           if [ -z "$OVSX_PAT" ]; then
             echo "::warning::OVSX_PAT 未配置：跳过 Open VSX 发布"
@@ -76,10 +76,11 @@ jobs:
             exit 1
           fi
 
-      - name: Setup Node.js 22
+      # 与本地门禁运行时严格同源（24.22.1 自带 npm 11.19.1），须与 ci.yml 保持同值。
+      - name: Setup Node.js 24.22.1
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24.22.1
           cache: 'npm'
 
       - name: Install dependencies

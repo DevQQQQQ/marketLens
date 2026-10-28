@@ -1,9 +1,9 @@
 import * as vscode from "vscode";
 import type { MarketItem, WatchlistConfig, WatchConfigItem, PriceAlertItem, AlertsConfig, GroupSortMode, MarketSection } from "../types/index.ts";
-import { normalizeSymbolKey, stripMarketPrefix, resolveItemAssetType, resolveItemDisplayName, resolveTrendColors, type ColorScheme, isFundGroupName, resolveItemSection, deriveTodayProfit, escapeHtml, isGroupMarketClosed, buildGroupNodeId, isItemMarketClosed, resolveQuoteCurrency } from "../utils/symbolHelper.ts";
+import { normalizeSymbolKey, stripMarketPrefix, resolveItemAssetType, resolveItemDisplayName, resolveTrendColors, type ColorScheme, isFundGroupName, resolveItemSection, resolveGroupSection, deriveTodayProfit, escapeMarkdownInline, toMarkdownCodeSpan, isGroupMarketClosed, buildGroupNodeId, isItemMarketClosed, resolveQuoteCurrency } from "../utils/symbolHelper.ts";
 import { isDisplayMasked, resolveStockTooltip } from "../utils/maskState.ts";
 import { DEFAULT_PROXY_PORT, getProxyStatus } from "../services/network.ts";
-import { logger } from "../utils/logger.ts";
+import { logger, describeErrorNameForLog } from "../utils/logger.ts";
 
 /**
  * 智能格式化价格
@@ -76,6 +76,8 @@ export class GroupItem extends vscode.TreeItem {
   public sortMode: GroupSortMode;
   public isClosed: boolean;
   public autoCollapse: boolean;
+  public isProxySuspended: boolean;
+  public proxyUrlHint?: string | undefined;
 
   constructor(
     groupName: string,
@@ -84,7 +86,9 @@ export class GroupItem extends vscode.TreeItem {
     isClosed: boolean = false,
     autoCollapse: boolean = false,
     collapseSessionTag: string = "",
-    forceExpanded: boolean = false
+    forceExpanded: boolean = false,
+    isProxySuspended: boolean = false,
+    proxyUrlHint?: string
   ) {
     super(groupName, vscode.TreeItemCollapsibleState.Expanded);
     this.groupName = groupName;
@@ -92,10 +96,12 @@ export class GroupItem extends vscode.TreeItem {
     this.sortMode = sortMode;
     this.isClosed = isClosed;
     this.autoCollapse = autoCollapse;
+    this.isProxySuspended = isProxySuspended;
+    this.proxyUrlHint = proxyUrlHint;
     this.contextValue = "groupItem";
-    this.iconPath = new vscode.ThemeIcon("folder");
     this.applyCollapseState(autoCollapse, collapseSessionTag, forceExpanded);
     this.updateDescription();
+    this.updateAppearance();
   }
 
   /**
@@ -141,7 +147,39 @@ export class GroupItem extends vscode.TreeItem {
         ? " · 现价"
         : "";
     const closedSuffix = this.autoCollapse && this.isClosed ? " · 已休市" : "";
-    this.description = `(${this.children.length}${sortSuffix}${closedSuffix})`;
+    const proxySuffix = this.isProxySuspended ? " · 代理离线已暂停" : "";
+    this.description = `(${this.children.length}${sortSuffix}${closedSuffix}${proxySuffix})`;
+  }
+
+  public updateAppearance(): void {
+    if (this.isProxySuspended) {
+      this.iconPath = new vscode.ThemeIcon("debug-disconnect", new vscode.ThemeColor("charts.yellow"));
+      const proxyStr = this.proxyUrlHint || `127.0.0.1:${DEFAULT_PROXY_PORT}`;
+      const md = new vscode.MarkdownString(
+        `### ${escapeMarkdownInline(this.groupName)}\n\n` +
+        `- **状态**：⚠️ 代理连接不可达，已自动暂停轮询\n` +
+        `- **当前配置**：\`${escapeMarkdownInline(proxyStr)}\`\n\n` +
+        `---\n\n` +
+        `💡 **操作指引**：\n` +
+        `1. 请确保本地代理客户端（如 Clash / v2rayN 等）已开启；\n` +
+        `2. 启动后，点击本分组右侧的 **🔄 (刷新)** 按钮即可立即重连；\n` +
+        `3. 如使用了其他端口，可在插件设置中调整代理地址。`
+      );
+      md.supportHtml = false;
+      this.tooltip = md;
+    } else {
+      this.iconPath = new vscode.ThemeIcon("folder");
+      this.tooltip = undefined;
+    }
+  }
+
+  public setProxySuspended(suspended: boolean, proxyUrlHint?: string): void {
+    this.isProxySuspended = !!suspended;
+    if (proxyUrlHint !== undefined) {
+      this.proxyUrlHint = proxyUrlHint;
+    }
+    this.updateDescription();
+    this.updateAppearance();
   }
 }
 
@@ -259,7 +297,9 @@ export class StockItem extends vscode.TreeItem {
       }
     }
 
-    const alertSuffix = hasAlert ? " 🔔" : "";
+    // 预警铃铛本身就是一个可见的「该标的设有到价预警」信号，脱敏态下与价格同等对待：
+    // 只遮价格却留着 🔔，等同于向旁观者交代了关注范围与预警存在（§5.4 只在 UI 上遮挡不算完整防护）。
+    const alertSuffix = hasAlert && !maskMode ? " 🔔" : "";
     const displayName = resolveItemDisplayName(this.confName, this.confSymbol, item);
     this.label = displayName;
     this.description = maskMode
@@ -275,8 +315,8 @@ export class StockItem extends vscode.TreeItem {
         // 链上 Alpha 专属卡片（计价口径与 resolveQuoteCurrency 同源，加密标的为 U 本位）
         const alphaCur = resolveQuoteCurrency(item);
         const alphaSym = alphaCur === "CNY" ? "¥" : alphaCur === "HKD" ? "HK$" : "$";
-        const chainBadge = item.chain ? `\`${item.chain}\`` : "`DEX`";
-        const dexBadge = item.dex ? `\`${item.dex}\`` : "`DEX`";
+        const chainBadge = item.chain ? toMarkdownCodeSpan(item.chain) : "`DEX`";
+        const dexBadge = item.dex ? toMarkdownCodeSpan(item.dex) : "`DEX`";
         const liqStr = formatLargeNumber(item.liquidity, false, alphaCur);
         const turnoverStr = formatLargeNumber(item.turnover, false, alphaCur);
         const openStr = item.open ? formatPrice(item.open, alphaCur) : "--";
@@ -294,7 +334,7 @@ export class StockItem extends vscode.TreeItem {
         const holdingSection = this._buildHoldingTooltipSection(item, alphaCur, alphaSym);
 
         mdText =
-          `### ${escapeHtml(item.name)} (\`${item.symbol}\`) [📋 复制](${copyTokenUri})\n` +
+          `### ${escapeMarkdownInline(item.name)} (${toMarkdownCodeSpan(item.symbol)}) [📋 复制](${copyTokenUri})\n` +
           `公链网络：${chainBadge} &nbsp;|&nbsp; 交易池：${dexBadge}\n\n` +
           `| 核心指标 | 实时行情 |\n` +
           `| :--- | :--- |\n` +
@@ -304,7 +344,7 @@ export class StockItem extends vscode.TreeItem {
           `| **开盘参考价** | ${openStr} |\n` +
           `| **流动性池 (Liquidity)** | **${liqStr}** |\n` +
           `| **24h 成交额** | **${turnoverStr}** |\n` +
-          `| **合约地址** | \`${item.id}\` &nbsp;[📋 复制合约](${copyContractUri}) |\n` +
+          `| **合约地址** | ${toMarkdownCodeSpan(item.id)} &nbsp;[📋 复制合约](${copyContractUri}) |\n` +
           holdingSection +
           `\n_数据源: DexScreener · ${new Date().toLocaleTimeString()}_`;
       } else {
@@ -376,7 +416,7 @@ export class StockItem extends vscode.TreeItem {
         const holdingSection = this._buildHoldingTooltipSection(item, currency, currSym);
 
         mdText =
-          `### ${escapeHtml(item.name)} (\`${item.symbol}\`) [📋 复制](${copyCmdUri})\n` +
+          `### ${escapeMarkdownInline(item.name)} (${toMarkdownCodeSpan(item.symbol)}) [📋 复制](${copyCmdUri})\n` +
           `计价货币：**${currencyLabel}**\n\n` +
           `| 核心指标 | 实时行情 |\n` +
           `| :--- | :--- |\n` +
@@ -410,7 +450,7 @@ export class StockItem extends vscode.TreeItem {
       }
 
       const md = new vscode.MarkdownString(mdText);
-      // AGENTS.md §6.15：树节点 Tooltip 一律关闭 HTML 渲染——卡片里的标的名、公链名、
+      // AGENTS.md §5.4：树节点 Tooltip 一律关闭 HTML 渲染——卡片里的标的名、公链名、
       // 合约地址都来自行情接口，开启 supportHtml 等于把报文直灌进富文本渲染器（CWE-79）。
       md.supportHtml = false;
       // 精准白名单授权：仅允许执行安全无害的 copyCode 命令，一票拦截任意未知系统命令
@@ -461,7 +501,7 @@ export class StockItem extends vscode.TreeItem {
     const marketValStr = formatLargeNumber(marketVal, false, currency);
     const costValStr = formatLargeNumber(costVal, false, currency);
 
-    // 1. 今日盈亏计算（公式收口于 deriveTodayProfit，§6.9）
+    // 1. 今日盈亏计算（公式收口于 deriveTodayProfit，§5.5）
     const todayProfit = deriveTodayProfit(item, this.shares);
     const todayRate = item.changePercent ?? 0;
 
@@ -641,6 +681,22 @@ export class WatchlistProvider
     return this.groupSortModes.get(groupName) || "default";
   }
 
+  /**
+   * 通知后端分组排序方式已变更，并收敛回调的 rejection。
+   *
+   * 注入的回调是 async 写 VS Code 配置，磁盘/权限失败会 reject；
+   * 直接 `void callback()` 只丢弃返回值，rejected Promise 仍会冒成未处理异常（§5.6 异步与生命周期）。
+   */
+  private fireGroupSortModeCallback(groupName: string, mode: GroupSortMode): void {
+    const callback = this.onGroupSortModeChangeCallback;
+    if (!callback) {
+      return;
+    }
+    void Promise.resolve(callback(groupName, mode)).catch((err) => {
+      logger.warn("[WatchlistProvider] 分组排序落盘回调失败", err);
+    });
+  }
+
   public setGroupSortMode(groupName: string, mode: GroupSortMode): void {
     this.groupSortModes.set(groupName, mode);
     const group = this.getGroup(groupName);
@@ -652,9 +708,7 @@ export class WatchlistProvider
       group.updateDescription();
     }
     this._onDidChangeTreeData.fire();
-    if (this.onGroupSortModeChangeCallback) {
-      void this.onGroupSortModeChangeCallback(groupName, mode);
-    }
+    this.fireGroupSortModeCallback(groupName, mode);
   }
 
   public setAllGroupSortModes(modes?: Record<string, GroupSortMode>): void {
@@ -809,14 +863,15 @@ export class WatchlistProvider
       try {
         rawList = JSON.parse(transferItem.value) as WatchlistDragPayload[];
       } catch (err) {
-        logger.warn(`拖拽数据 JSON 解析失败 (value): ${String(err)}`);
+        // 刻意不带 err 明细：JSON 解析错误会把被拖拽的整幅自选清单原文回显进日志
+        logger.warn(`拖拽数据 JSON 解析失败 (value) ${describeErrorNameForLog(err)}`);
       }
     } else {
       try {
         const str = await transferItem.asString();
         rawList = JSON.parse(str) as WatchlistDragPayload[];
       } catch (err) {
-        logger.warn(`拖拽数据 JSON 解析失败 (asString): ${String(err)}`);
+        logger.warn(`拖拽数据 JSON 解析失败 (asString) ${describeErrorNameForLog(err)}`);
       }
     }
 
@@ -878,9 +933,7 @@ export class WatchlistProvider
         group.sortMode = "default";
         group.updateDescription();
       }
-      if (this.onGroupSortModeChangeCallback) {
-        void this.onGroupSortModeChangeCallback(targetGroup, "default");
-      }
+      this.fireGroupSortModeCallback(targetGroup, "default");
     }
 
     // 使用原子化批量重排（单次落盘与重绘）
@@ -920,7 +973,9 @@ export class WatchlistProvider
       binance: true,
       alpha: true,
     },
-    autoCollapseClosedGroups?: boolean
+    autoCollapseClosedGroups?: boolean,
+    suspendedSections?: Set<string>,
+    proxyUrlHints?: Partial<Record<string, string>>
   ): void {
     if (autoCollapseClosedGroups !== undefined) {
       this.autoCollapseClosedGroups = autoCollapseClosedGroups;
@@ -935,7 +990,7 @@ export class WatchlistProvider
 
     const isGroupEnabled = (groupName: string, items?: WatchConfigItem[]): boolean => {
       // 基金板块没有独立 AssetType，只能由分组名门控；条目级过滤走 resolveItemSection 同一判定源，
-      // 避免「分组因基金开关展示、条目却按 aShare 开关被全部过滤」的分支漂移（AGENTS.md §6.8）。
+      // 避免「分组因基金开关展示、条目却按 aShare 开关被全部过滤」的分支漂移（AGENTS.md §5.3）。
       if (isFundGroupName(groupName)) {
         return enabledSections.fund !== false;
       }
@@ -1033,6 +1088,13 @@ export class WatchlistProvider
       const sortMode = this.getGroupSortMode(groupName);
       const sortedChildren = this.sortStockItems(children, sortMode);
       const isClosed = isGroupMarketClosed(groupName, items, new Date());
+      const groupSection = resolveGroupSection(groupName, items);
+      const isSuspended =
+        !!groupSection &&
+        !!suspendedSections &&
+        (suspendedSections.has(groupSection) || suspendedSections.has(groupName.toLowerCase()));
+      const proxyHint = groupSection && proxyUrlHints ? proxyUrlHints[groupSection] : undefined;
+
       return new GroupItem(
         groupName,
         sortedChildren,
@@ -1040,7 +1102,9 @@ export class WatchlistProvider
         isClosed,
         this.autoCollapseClosedGroups,
         this.collapseSessionTag,
-        this.forceExpandAll
+        this.forceExpandAll,
+        isSuspended,
+        proxyHint
       );
     });
 

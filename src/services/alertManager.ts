@@ -4,6 +4,7 @@ import type { MarketItem, MarketLensConfig, PriceAlertItem } from "../types/inde
 import { normalizeSymbolKey, stripMarketPrefix } from "../utils/symbolHelper.ts";
 import { isDisplayMasked } from "../utils/maskState.ts";
 import { emitStatusMessage } from "../utils/feedback.ts";
+import { logger } from "../utils/logger.ts";
 import type { StatusBar } from "../ui/statusBar.ts";
 import { readConfig } from "../utils/config.ts";
 
@@ -44,7 +45,7 @@ export class AlertManager {
    * 手动对指定标的加设静音冷却。
    *
    * 存储口径唯一：值恒为**绝对到期时刻**。读取端一律用 `now >= expiry` 判定，
-   * 不得改回「上次触发时刻」语义——两套口径混用会让静音实际时长变成配置值的两倍（§6.11）。
+   * 不得改回「上次触发时刻」语义——两套口径混用会让静音实际时长变成配置值的两倍（§5.5）。
    */
   public mute(symbolKey: string, minutes: number = DEFAULT_ALERT_COOLDOWN_MINUTES): void {
     const normKey = normalizeSymbolKey(symbolKey) || symbolKey.toLowerCase();
@@ -167,7 +168,7 @@ export class AlertManager {
       }
     }
 
-    // 冷却表到期即删：无人回收会让已删除自选的键永久滞留内存（AGENTS.md §6.6）
+    // 冷却表到期即删：无人回收会让已删除自选的键永久滞留内存（AGENTS.md §5.6）
     for (const [expiredKey, expiry] of this.cooldownMap) {
       if (now >= expiry) {
         this.cooldownMap.delete(expiredKey);
@@ -227,16 +228,23 @@ export class AlertManager {
         : vscode.window?.showInformationMessage;
 
       if (typeof notifyFn === "function") {
-        void notifyFn(alertMessage, muteAction, settingsAction).then((action?: string) => {
-          if (action === muteAction) {
-            this.mute(evt.symbolKey, config.alertCooldownMinutes || 15);
-            if (!masked) {
-              emitStatusMessage(`$(bell-slash) 已静音 ${displayName} 预警 ${config.alertCooldownMinutes || 15} 分钟`, 3000);
+        // 通知浮窗是「尽力而为」的旁路：宿主在关闭窗口时可能 reject，而 `.then` 链不接住就会
+        // 冒成未处理 Promise（§5.6 异步与生命周期）。预警本身已经落库，这里只需静默收敛。
+        // VS Code 的 Thenable 没有 `.catch`，因此先转成原生 Promise 再挂收敛。
+        void Promise.resolve(notifyFn(alertMessage, muteAction, settingsAction))
+          .then((action?: string) => {
+            if (action === muteAction) {
+              this.mute(evt.symbolKey, config.alertCooldownMinutes || 15);
+              if (!masked) {
+                emitStatusMessage(`$(bell-slash) 已静音 ${displayName} 预警 ${config.alertCooldownMinutes || 15} 分钟`, 3000);
+              }
+            } else if (action === settingsAction) {
+              void vscode.commands?.executeCommand("marketlens.openSettings");
             }
-          } else if (action === settingsAction) {
-            void vscode.commands?.executeCommand("marketlens.openSettings");
-          }
-        });
+          })
+          .catch((err) => {
+            logger.warn("[AlertManager] 预警浮窗交互未完成（宿主关闭或通知 API 异常）", err);
+          });
       }
     }
   }

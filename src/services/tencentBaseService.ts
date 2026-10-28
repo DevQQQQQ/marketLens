@@ -1,7 +1,7 @@
 // src/services/tencentBaseService.ts
 import type { MarketItem } from "../types";
 import { smartNetworkGet } from "./network.ts";
-import { logger } from "../utils/logger.ts";
+import { logger, describeForLog } from "../utils/logger.ts";
 import { chunkArray, decodeGbk } from "../utils/symbolHelper.ts";
 
 /**
@@ -10,13 +10,13 @@ import { chunkArray, decodeGbk } from "../utils/symbolHelper.ts";
  * 它同时是「守卫内下标」与「守卫外下标」的分界线：各服务 `F` 字段表里任何
  * **≥ 本值**的下标（A股的 37/38/39/43/44/45/46/47/48/49/51，港美股的 37），
  * 上游少发字段时取到的是 `undefined`，读取**必须**走 `parseOptionalFloat`，
- * 禁止 `parseFloat(...) || 0` 把「未供数」伪装成「数值为 0」（AGENTS.md §6.13）。
+ * 禁止 `parseFloat(...) || 0` 把「未供数」伪装成「数值为 0」（AGENTS.md §5.5）。
  * 三个服务原本各写一份内联字面量，正是这类脱节长期无人发现的原因。
  */
 export const MIN_TENCENT_FIELDS = 35;
 
 /**
- * 腾讯报文可选浮点字段的**唯一**解析出口（AGENTS.md §6.13）。
+ * 腾讯报文可选浮点字段的**唯一**解析出口（AGENTS.md §5.5）。
  *
  * 空串、`"-"`、`"-1"` 占位、非有限数值以及**下标越界拿到的 `undefined`** 一律返回 `undefined`。
  * 产品口径是「上游未供数」与「数值为 0」是两件事：用 `parseFloat(...) || 0` 兜底会让卡片把
@@ -129,7 +129,7 @@ export abstract class TencentBaseService {
       if (isAmtBroken || isPctBroken) {
         if (changeAmt !== 0 || changePct !== 0) {
           logger.warn(
-            `[${this.serviceName}] 标的 ${fullCode} 字段疑似位移或数据不自洽 (现价:${price}, 昨收:${prevClose}, 报文涨跌额:${changeAmt}), 已自动使用价格自愈`
+            `[${this.serviceName}] 标的 ${describeForLog(fullCode)} 报文涨跌字段与价格不自洽，已按价格自愈重算`
           );
         }
         return {

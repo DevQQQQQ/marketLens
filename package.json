@@ -2,7 +2,7 @@
 	"name": "marketlens",
 	"displayName": "%displayName%",
 	"description": "%description%",
-	"version": "1.3.2",
+	"version": "1.3.3",
 	"publisher": "devqqqqq",
 	"repository": {
 		"type": "git",

@@ -1114,7 +1114,7 @@ export function getSettingsWebviewHtml(
       var alertSaveTimer = null;
 
       // 本地镜像只用于渲染：存在尚未发送出去的编辑时，禁止用后端快照整体替换 currentAlerts，
-      // 否则用户正在输入的阈值会被一次回推抹掉（AGENTS.md §6.2）。
+      // 否则用户正在输入的阈值会被一次回推抹掉（AGENTS.md §5.2）。
       var dirtyAlertKeys = {};
       function markAlertDirty(key) { if (key) dirtyAlertKeys[key] = true; }
       function clearAlertDirty(key) { if (key) delete dirtyAlertKeys[key]; }
@@ -1184,9 +1184,9 @@ export function getSettingsWebviewHtml(
                 + '</td>'
                 + '<td><input type="number" step="any" min="0" class="alert-input alert-cost" placeholder="成本" value="' + (isMasked && costVal !== '' ? '***' : escapeHtml(costVal)) + '" ' + (isMasked ? 'disabled' : '') + '></td>'
                 + '<td><input type="number" step="any" min="0" class="alert-input alert-shares" placeholder="数量" value="' + (isMasked && sharesVal !== '' ? '***' : escapeHtml(sharesVal)) + '" ' + (isMasked ? 'disabled' : '') + '></td>'
-                + '<td><input type="number" step="any" class="alert-input alert-above" placeholder="未设置" value="' + escapeHtml(aboveVal) + '"></td>'
-                + '<td><input type="number" step="any" class="alert-input alert-below" placeholder="未设置" value="' + escapeHtml(belowVal) + '"></td>'
-                + '<td><input type="number" step="any" class="alert-input alert-pct" placeholder="未设置" value="' + escapeHtml(pctVal) + '"></td>'
+                + '<td><input type="number" step="any" class="alert-input alert-above" placeholder="未设置" value="' + (isMasked && aboveVal !== '' ? '***' : escapeHtml(aboveVal)) + '" ' + (isMasked ? 'disabled' : '') + '></td>'
+                + '<td><input type="number" step="any" class="alert-input alert-below" placeholder="未设置" value="' + (isMasked && belowVal !== '' ? '***' : escapeHtml(belowVal)) + '" ' + (isMasked ? 'disabled' : '') + '></td>'
+                + '<td><input type="number" step="any" class="alert-input alert-pct" placeholder="未设置" value="' + (isMasked && pctVal !== '' ? '***' : escapeHtml(pctVal)) + '" ' + (isMasked ? 'disabled' : '') + '></td>'
                 + '<td style="text-align: center;"><label class="switch"><input type="checkbox" class="alert-enabled" ' + (isEnabled ? 'checked' : '') + '><span class="slider"></span></label></td>'
                 + '</tr>';
               totalCount++;
@@ -1241,6 +1241,18 @@ export function getSettingsWebviewHtml(
         }
       }
 
+      // 阈值单元格读取出口：输入框缺失或被脱敏态 disabled 时，回读后端镜像现值。
+      // 返回 undefined 表示「本轮未改动该阈值」，与「用户清空输入框」的 undefined 语义在
+      // 禁用态下必须区分开，否则遮值占位符会被解析成清空并连带删除整条规则。
+      function readThresholdCell(input, mirroredValue) {
+        var hasMirror = mirroredValue !== undefined && mirroredValue !== null;
+        if (!input || input.disabled) {
+          return hasMirror ? mirroredValue : undefined;
+        }
+        var raw = String(input.value).trim();
+        return raw === '' ? undefined : parseFloat(raw);
+      }
+
       function updateAlertRuleFromRow(tr) {
         var key = tr.getAttribute('data-key');
         var sym = tr.getAttribute('data-symbol');
@@ -1250,9 +1262,13 @@ export function getSettingsWebviewHtml(
         var pctInput = tr.querySelector('.alert-pct');
         var enabledInput = tr.querySelector('.alert-enabled');
 
-        var above = aboveInput && aboveInput.value.trim() !== '' ? parseFloat(aboveInput.value) : undefined;
-        var below = belowInput && belowInput.value.trim() !== '' ? parseFloat(belowInput.value) : undefined;
-        var pct = pctInput && pctInput.value.trim() !== '' ? parseFloat(pctInput.value) : undefined;
+        // 脱敏态下三个阈值输入框被遮值并 disabled，DOM 里的 '***' 不是「用户清空」而是「看不见」。
+        // 若照常 parseFloat→NaN→undefined，切换启用开关就会把整条规则判成空并删除（真实数据丢失）。
+        // 因此禁用态必须回读后端镜像里的现值，只有可编辑输入框才允许改写阈值。
+        var mirrored = currentAlerts[key] || {};
+        var above = readThresholdCell(aboveInput, mirrored.above);
+        var below = readThresholdCell(belowInput, mirrored.below);
+        var pct = readThresholdCell(pctInput, mirrored.changePercent);
         var enabled = enabledInput ? enabledInput.checked : true;
 
         if (above !== undefined && isNaN(above)) above = undefined;

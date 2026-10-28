@@ -5,12 +5,13 @@ import { WatchlistProvider, GroupItem, StockItem } from "./ui/watchlistProvider.
 import { StatusBar } from "./ui/statusBar.ts";
 import type { MarketLensConfig, MarketItem, WatchlistConfig } from "./types/index.ts";
 import { normalizeSymbolKey } from "./utils/symbolHelper.ts";
-import { logger } from "./utils/logger.ts";
+import { logger, describeForLog } from "./utils/logger.ts";
 import { isAShareMarketOpen, isHKMarketOpen, isUSMarketOpen, evaluateAdaptiveThrottle, shouldSkipMarketPolling } from "./utils/marketHours.ts";
 import { readConfig } from "./utils/config.ts";
 
-import { extractTargetsFromWatchlist, extractStatusBarQuotes, pruneQuoteCache, extractHoldingQuotes } from "./utils/symbolHelper.ts";
+import { extractTargetsFromWatchlist, extractStatusBarQuotes, pruneQuoteCache, extractHoldingQuotes, resolveGroupSection } from "./utils/symbolHelper.ts";
 import { AlertManager } from "./services/alertManager.ts";
+import { canEmitUserFeedback } from "./utils/maskState.ts";
 
 export interface SchedulerContext {
   marketManager: MarketManager;
@@ -45,6 +46,10 @@ export class RefreshScheduler implements vscode.Disposable {
   private consecutiveNetworkFailures = 0;
   public readonly MAX_BACKOFF_INTERVAL_MS = 60000;
 
+  // 代理不可达板块挂起管理
+  private readonly proxySuspendedSections = new Set<"binance" | "alpha">();
+  private readonly consecutiveProxyFailures: Record<"binance" | "alpha", number> = { binance: 0, alpha: 0 };
+
   public readonly quoteCache = new Map<string, MarketItem>();
   public readonly alertManager: AlertManager;
 
@@ -59,6 +64,25 @@ export class RefreshScheduler implements vscode.Disposable {
     this.statusBar = context.statusBar;
     this.treeView = context.treeView;
     this.alertManager = new AlertManager(this.statusBar);
+  }
+
+  public isProxySuspended(section: "binance" | "alpha"): boolean {
+    return this.proxySuspendedSections.has(section);
+  }
+
+  public setProxySuspended(section: "binance" | "alpha", suspended: boolean): void {
+    if (suspended) {
+      this.proxySuspendedSections.add(section);
+    } else {
+      this.proxySuspendedSections.delete(section);
+      this.consecutiveProxyFailures[section] = 0;
+    }
+  }
+
+  public clearProxySuspensions(): void {
+    this.proxySuspendedSections.clear();
+    this.consecutiveProxyFailures.binance = 0;
+    this.consecutiveProxyFailures.alpha = 0;
   }
 
   /**
@@ -97,6 +121,8 @@ export class RefreshScheduler implements vscode.Disposable {
       forceAll,
       specificGroupName,
     });
+    const skipBinance = !forceAll && !specificGroupName && this.isProxySuspended("binance");
+    const skipAlpha = !forceAll && !specificGroupName && this.isProxySuspended("alpha");
 
     return extractTargetsFromWatchlist(config.watchlist, {
       fundEnabled: config.fund?.enabled ?? true,
@@ -110,6 +136,8 @@ export class RefreshScheduler implements vscode.Disposable {
       skipAShare: skipA,
       skipHKStock: skipHK,
       skipUSStock: skipUS,
+      skipBinance,
+      skipAlpha,
     });
   }
 
@@ -150,7 +178,12 @@ export class RefreshScheduler implements vscode.Disposable {
         binance: currentCfg.binance.enabled,
         alpha: currentCfg.alpha.enabled,
       },
-      currentCfg.autoCollapseClosedGroups ?? true
+      currentCfg.autoCollapseClosedGroups ?? true,
+      this.proxySuspendedSections,
+      {
+        binance: currentCfg.binance.proxyUrl || undefined,
+        alpha: currentCfg.alpha.proxyUrl || undefined,
+      }
     );
   }
 
@@ -233,6 +266,7 @@ export class RefreshScheduler implements vscode.Disposable {
       // 当网络连续全失败 >= 3 次时，非显式强制刷新下不再强制 forceAll，允许休市市场跳过
       const forceAll = forceRefreshAll || (!this.hasLoadedInitialQuotes && this.consecutiveNetworkFailures < 3);
       if (forceRefreshAll) {
+        this.clearProxySuspensions();
         this.marketManager.clearInvalidCache();
       }
       const targets = this.extractTargets(config, undefined, forceAll);
@@ -248,6 +282,42 @@ export class RefreshScheduler implements vscode.Disposable {
 
       if (this.disposed) {
         return;
+      }
+
+      // 评估 Binance 与 Alpha 代理健康与挂起状态
+      let proxySuspensionChanged = false;
+      if (targets.cryptos.length > 0) {
+        const hasCrypto = quotes.some((q) => q.type === "CRYPTO");
+        if (hasCrypto) {
+          this.consecutiveProxyFailures.binance = 0;
+          if (this.proxySuspendedSections.delete("binance")) {
+            proxySuspensionChanged = true;
+          }
+        } else if (config.binance.networkMode !== "direct") {
+          this.consecutiveProxyFailures.binance++;
+          if (this.consecutiveProxyFailures.binance >= 2 && !this.proxySuspendedSections.has("binance")) {
+            this.proxySuspendedSections.add("binance");
+            proxySuspensionChanged = true;
+            logger.warn("[RefreshScheduler] Binance 代理连续 2 次连接不可达，已进入挂起暂停状态");
+          }
+        }
+      }
+
+      if (targets.bscTokens.length > 0) {
+        const hasAlpha = quotes.some((q) => q.type === "ALPHA_TOKEN" || q.type === "BSC_TOKEN");
+        if (hasAlpha) {
+          this.consecutiveProxyFailures.alpha = 0;
+          if (this.proxySuspendedSections.delete("alpha")) {
+            proxySuspensionChanged = true;
+          }
+        } else if (config.alpha.networkMode !== "direct") {
+          this.consecutiveProxyFailures.alpha++;
+          if (this.consecutiveProxyFailures.alpha >= 2 && !this.proxySuspendedSections.has("alpha")) {
+            this.proxySuspendedSections.add("alpha");
+            proxySuspensionChanged = true;
+            logger.warn("[RefreshScheduler] Alpha 代理连续 2 次连接不可达，已进入挂起暂停状态");
+          }
+        }
       }
 
       const hasAnyTargets =
@@ -318,7 +388,7 @@ export class RefreshScheduler implements vscode.Disposable {
         this.hasLoadedInitialQuotes = true;
       }
 
-      if (this.treeProvider.isEmpty() || wasFirstLoad || forceRefreshAll) {
+      if (this.treeProvider.isEmpty() || wasFirstLoad || forceRefreshAll || proxySuspensionChanged) {
         this.rebuildTree();
       } else {
         this.treeProvider.applyQuotes(quotes);
@@ -347,13 +417,13 @@ export class RefreshScheduler implements vscode.Disposable {
       // 若当前已有刷新在执行，复用 retryTimer 延迟 300ms 排队重试，避免静默丢弃用户操作
       if (!this.retryTimer && this.retryCount < this.MAX_RETRY_COUNT) {
         this.retryCount++;
-        logger.info(`分组 '${group.groupName}' 刷新遇到并发冲突，已加入重试队列 (第 ${this.retryCount} 次)`);
+        logger.info(`分组 ${describeForLog(group.groupName)} 刷新遇到并发冲突，已加入重试队列 (第 ${this.retryCount} 次)`);
         this.retryTimer = setTimeout(() => {
           this.retryTimer = undefined;
           void this.refreshGroup(group);
         }, this.RETRY_DELAY_MS);
       } else {
-        logger.info(`分组 '${group.groupName}' 刷新跳过：当前已有刷新与重试队列在执行中`);
+        logger.info(`分组 ${describeForLog(group.groupName)} 刷新跳过：当前已有刷新与重试队列在执行中`);
       }
       return;
     }
@@ -361,7 +431,19 @@ export class RefreshScheduler implements vscode.Disposable {
     this.isRefreshing = true;
     try {
       const config = readConfig();
-      const targets = this.extractTargets(config, group.groupName);
+      const groupSection = resolveGroupSection(
+        group.groupName,
+        group.children.map((c) => ({ symbol: c.confSymbol, type: c.item?.type }))
+      );
+      const isProxySec = groupSection === "binance" || groupSection === "alpha";
+      const wasSuspended = isProxySec && this.isProxySuspended(groupSection);
+
+      if (wasSuspended) {
+        // 用户主动点击挂起分组的刷新重试，先解除挂起并重置失败计数以重新探活
+        this.setProxySuspended(groupSection, false);
+      }
+
+      const targets = this.extractTargets(config, group.groupName, true);
       const quotes  = await this.marketManager.pollAll(
         targets,
         { mode: config.aShare.networkMode, proxyUrl: config.aShare.proxyUrl },
@@ -376,6 +458,33 @@ export class RefreshScheduler implements vscode.Disposable {
         return;
       }
 
+      let restoredFromSuspension = false;
+      if (isProxySec) {
+        const expectedCount = groupSection === "binance" ? targets.cryptos.length : targets.bscTokens.length;
+        const matchedQuotes = quotes.filter((q) =>
+          groupSection === "binance"
+            ? q.type === "CRYPTO"
+            : (q.type === "ALPHA_TOKEN" || q.type === "BSC_TOKEN")
+        );
+
+        if (expectedCount > 0 && matchedQuotes.length === 0) {
+          const secMode = groupSection === "binance" ? config.binance.networkMode : config.alpha.networkMode;
+          if (secMode !== "direct") {
+            this.setProxySuspended(groupSection, true);
+            this.rebuildTree();
+            const proxyTarget =
+              (groupSection === "binance" ? config.binance.proxyUrl : config.alpha.proxyUrl) || "127.0.0.1:10808";
+            if (canEmitUserFeedback(this.statusBar.isBossKeyActive())) {
+              void vscode.window.showWarningMessage(
+                `[MarketLens] ${group.groupName} 代理仍不可达（当前配置: ${proxyTarget}），已继续暂停自动轮询。请确认代理软件已启动。`
+              );
+            }
+          }
+        } else if (wasSuspended && matchedQuotes.length > 0) {
+          restoredFromSuspension = true;
+        }
+      }
+
       for (const q of quotes) {
         this.saveToQuoteCache(q);
       }
@@ -384,10 +493,14 @@ export class RefreshScheduler implements vscode.Disposable {
       // 评估价格预警与剧烈波动
       this.alertManager.checkQuotes(quotes, config);
 
-      this.treeProvider.applyQuotes(quotes);
+      if (restoredFromSuspension) {
+        this.rebuildTree();
+      } else {
+        this.treeProvider.applyQuotes(quotes);
+      }
       this.updateStatusBar(config);
     } catch (err) {
-      logger.error(`分组 '${group.groupName}' 刷新失败`, err);
+      logger.error(`分组 ${describeForLog(group.groupName)} 刷新失败`, err);
     } finally {
       this.isRefreshing = false;
     }
@@ -441,6 +554,7 @@ export class RefreshScheduler implements vscode.Disposable {
     this.consecutiveUnchangedCount = 0;
     this.isThrottled = false;
     this.consecutiveNetworkFailures = 0;
+    this.clearProxySuspensions();
     // 首次启动时无条件强制刷新一次，确保即使处于闭市/休市/周末也能看到最新收盘数据
     void this.refresh(true);
   }
@@ -458,6 +572,7 @@ export class RefreshScheduler implements vscode.Disposable {
     this.isThrottled = false;
     this.consecutiveUnchangedCount = 0;
     this.consecutiveNetworkFailures = 0;
+    this.clearProxySuspensions();
     this.statusBar.setNetworkBackoff?.(0, 0);
   }
 

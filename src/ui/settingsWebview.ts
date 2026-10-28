@@ -1,8 +1,8 @@
 import * as crypto from "node:crypto";
 import * as vscode from "vscode";
-import { detectAvailablePort, getCachedWorkingPort, resetProxyCache, DEFAULT_PROXY_PORT, DEFAULT_PROXY_URL } from "../services/network.ts";
+import { detectAvailablePort, getCachedWorkingPort, resetProxyCache, validateAndNormalizeProxyUrl, DEFAULT_PROXY_PORT, DEFAULT_PROXY_URL } from "../services/network.ts";
 import { getSettingsWebviewHtml } from "./settingsHtml.ts";
-import { logger } from "../utils/logger.ts";
+import { logger, describeForLog } from "../utils/logger.ts";
 import type { MarketItem, WatchlistConfig, GroupSortMode } from "../types/index.ts";
 import { normalizeSymbolKey, stripMarketPrefix, resolveItemDisplayName, sanitizeAlerts, applyAlertRuleDelta } from "../utils/symbolHelper.ts";
 import {
@@ -15,7 +15,7 @@ import {
   DEFAULT_GROUP_NAMES,
 } from "../utils/config.ts";
 import { exportSettingsToFile, importSettingsFromFile } from "../utils/backupHelper.ts";
-import { isBossKeyActive, maskIfNeeded, showInfoMessage } from "../utils/feedback.ts";
+import { isBossKeyActive, isMasked, maskIfNeeded, showInfoMessage } from "../utils/feedback.ts";
 
 const GLOBAL_CONFIG_KEYS = [
   "proxyPort",
@@ -44,7 +44,7 @@ const COMMON_SECTION_PROPERTIES = [
  * 允许由 Webview 设置面板前端发起变更的配置项白名单，严格从 MARKET_SECTIONS 唯一真相源派生。
  *
  * 注意：`alerts` **不得**进入本白名单。预警规则只能由 `updateAlertRule` 按标的增量写入，
- * 整幅镜像回写会让后端快照在防抖窗口内覆盖用户未落盘的编辑（AGENTS.md §6.2）。
+ * 整幅镜像回写会让后端快照在防抖窗口内覆盖用户未落盘的编辑（AGENTS.md §5.2）。
  */
 export const ALLOWED_CONFIG_KEYS = new Set<string>([
   ...GLOBAL_CONFIG_KEYS,
@@ -57,7 +57,7 @@ export const ALLOWED_CONFIG_KEYS = new Set<string>([
 /**
  * 板块级状态栏开关键集合（同样由 MARKET_SECTIONS 派生）。
  * 消息分发处必须用本集合做成员判定，禁止把各板块的 statusBar 键逐个写进 || 链式条件
- * ——新增板块时链式判定必然漏项（AGENTS.md §5.2）。
+ * ——新增板块时链式判定必然漏项（AGENTS.md §5.3）。
  */
 export const SECTION_STATUS_BAR_KEYS = new Set<string>(
   MARKET_SECTIONS.map((sec) => `${sec}.statusBar`)
@@ -72,9 +72,47 @@ function isAllowedUrl(urlString: string): boolean {
   }
 }
 
+/**
+ * 代理地址写入前的规范化：与请求侧 `parseProxy`、备份导入共用 `network.ts` 的同一出口。
+ *
+ * 空值/非字符串刻意原样返回：板块级 `*.proxyUrl` 留空表示「继承全局代理」，
+ * 强行补默认端口会把继承语义变成显式代理。
+ */
+function normalizeProxyInput(raw: unknown): unknown {
+  return typeof raw === "string" && raw.trim() !== "" ? validateAndNormalizeProxyUrl(raw) : raw;
+}
+
+/**
+ * 设置面板 webview 消息体。
+ *
+ * 取自宿主签名：`Webview.onDidReceiveMessage` 是 `Event<any>`，其监听器入参本身就是宽类型，
+ * 消息字段由前端脚本自由拼装。这里跟随宿主而不是自造一个「字段都受控」的形状——那会给下游
+ * 错误的安全暗示；真正的约束在各分支内逐项校验（`ALLOWED_CONFIG_KEYS`、`isAllowedUrl`、
+ * `normalizeProxyInput`、`sanitizeAlerts` 等）之后才生效。
+ */
+type MessageListener = Parameters<vscode.Webview["onDidReceiveMessage"]>[0];
+type WebviewMessage = Parameters<MessageListener>[0];
+
+/**
+ * 收敛设置面板消息处理器的 rejection。
+ *
+ * 存在理由：`onDidReceiveMessage` 忽略回调返回值，处理器里 `readConfig()`、`openExternal`
+ * 以及各分支外的异常会变成未处理 Promise（AGENTS.md §5.6 异步与生命周期）。
+ * 各分支内部原有的 try/catch 只覆盖磁盘写入等局部环节，不能替代这层兜底。
+ */
+function guardMessageHandler(
+  handler: (message: WebviewMessage) => Promise<void>
+): (message: WebviewMessage) => void {
+  return (message) => {
+    handler(message).catch((err) => {
+      logger.error("[SettingsWebview] 设置面板消息处理异常，已收敛为日志", err);
+    });
+  };
+}
+
 export class SettingsWebviewPanel {
   public static currentPanel: SettingsWebviewPanel | undefined;
-  // 三个静态注入位由 activate() 写入、deactivate() 显式复位为 undefined（§7.5 面板与订阅生命周期）。
+  // 三个静态注入位由 activate() 写入、deactivate() 显式复位为 undefined（AGENTS.md §5.6 异步与生命周期）。
   // `exactOptionalPropertyTypes` 下必须声明成「必需但可为 undefined」，否则复位语句判红。
   public static onDidUpdateSetting: ((key: string, value: unknown) => void) | undefined;
   public static getQuoteCache: (() => Map<string, MarketItem>) | undefined;
@@ -123,7 +161,7 @@ export class SettingsWebviewPanel {
 
     // 1. 先注册消息接收器，避免 webview 加载时发出的 getSettings 信号丢失
     this._panel.webview.onDidReceiveMessage(
-      async (message) => {
+      guardMessageHandler(async (message) => {
         switch (message.command) {
           case "getSettings":
             this.sendCurrentSettings();
@@ -158,7 +196,13 @@ export class SettingsWebviewPanel {
                   }
                 } else if (message.key === "proxyUrl") {
                   resetProxyCache();
-                  const pUrl = message.value || DEFAULT_PROXY_URL;
+                  // 与请求侧 parseProxy、备份导入共用同一规范化出口：
+                  // socks5://、纯端口、https:// 等异形输入必须先规整，否则内存段与磁盘段会写成两种形态。
+                  const normalizedProxyUrl = normalizeProxyInput(message.value);
+                  const pUrl =
+                    typeof normalizedProxyUrl === "string" && normalizedProxyUrl !== ""
+                      ? normalizedProxyUrl
+                      : DEFAULT_PROXY_URL;
                   let port = DEFAULT_PROXY_PORT;
                   try {
                     const u = new URL(pUrl);
@@ -181,6 +225,13 @@ export class SettingsWebviewPanel {
                     cfg.update("colorNeutral", false, vscode.ConfigurationTarget.Global),
                   ]);
                   this.sendCurrentSettings();
+                } else if (message.key.endsWith(".proxyUrl")) {
+                  // 板块级代理地址与全局代理共用规范化出口，避免「同一次导入后各板块代理形态不一致」
+                  await cfg.update(
+                    message.key,
+                    normalizeProxyInput(message.value),
+                    vscode.ConfigurationTarget.Global
+                  );
                 } else {
                   await cfg.update(message.key, message.value, vscode.ConfigurationTarget.Global);
                 }
@@ -222,7 +273,9 @@ export class SettingsWebviewPanel {
             await SettingsWebviewPanel.restoreDefaults();
             break;
           case "showLogs":
-            if (readConfig().maskMode) {
+            // 与命令面板入口共用同一脱敏判定：老板键与「简洁展示模式」任一激活都必须拒绝，
+            // 只看 readConfig().maskMode 会让老板键态下的日志入口成为漏网之鱼（§5.4 脱敏守卫覆盖面）。
+            if (isMasked()) {
               logger.info("简洁展示模式激活期间拒绝打开运行日志（打码守卫已生效）");
               break;
             }
@@ -244,12 +297,13 @@ export class SettingsWebviewPanel {
           case "updateAlertRule": {
             // alerts 只能按标的增量写入：以**磁盘现值**为基准合并单个标的，
             // 绝不接受前端整幅镜像回写——那会让后端快照在防抖窗口内覆盖用户未落盘的编辑，
-            // 并让同一标的的历史别名键永久并存（AGENTS.md §6.2 / §6.11）。
+            // 并让同一标的的历史别名键永久并存（AGENTS.md §5.2 配置与状态流）。
             const cfg = vscode.workspace.getConfiguration("marketlens");
             const diskAlerts = sanitizeAlerts(cfg.get("alerts", {}));
             const merged = applyAlertRuleDelta(diskAlerts, message.key, message.rule);
             if (!merged) {
-              logger.warn(`[SettingsWebview] 拒绝非法预警标的键: ${String(message.key)}`);
+              // 预警键即标的身份，属于 §5.4「自选内容不得写入日志」范围：只记不可逆标签
+              logger.warn(`[SettingsWebview] 拒绝非法预警标的键: ${describeForLog(String(message.key))}`);
               break;
             }
             try {
@@ -285,7 +339,7 @@ export class SettingsWebviewPanel {
             if (message.url && isAllowedUrl(message.url)) {
               await vscode.env.openExternal(vscode.Uri.parse(message.url));
             } else {
-              logger.warn(`拦截到非 HTTP/HTTPS 外部链接请求: ${message.url}`);
+              logger.warn(`拦截到非 HTTP/HTTPS 外部链接请求: ${describeForLog(String(message.url))}`);
             }
             break;
           case "updateHolding": {
@@ -325,7 +379,7 @@ export class SettingsWebviewPanel {
             }
             break;
         }
-      },
+      }),
       null,
       this._disposables
     );
@@ -349,7 +403,7 @@ export class SettingsWebviewPanel {
   }
 
   public static async restoreDefaults(): Promise<boolean> {
-    // 守卫下沉（AGENTS.md §6.3 规则六）：本方法可由命令面板直达，老板键激活时
+    // 守卫下沉（AGENTS.md §5.4）：本方法可由命令面板直达，老板键激活时
     // 既不能弹出 modal 确认框（文案自曝插件名），也不能执行破坏性重置。
     if (isBossKeyActive()) {
       return false;
@@ -414,7 +468,7 @@ export class SettingsWebviewPanel {
     for (const group of Object.keys(currentWatchlist)) {
       emptyWatchlist[group] = [];
     }
-    // 保留板块分类：六个默认分组名由 MARKET_SECTIONS 派生，禁止在此手写平行列表（§5.2 / §6.7）。
+    // 保留板块分类：六个默认分组名由 MARKET_SECTIONS 派生，禁止在此手写平行列表（§5.3）。
     // 新增板块时只改 config.ts 的 SECTION_DEFAULT_GROUP_NAMES，这里自动跟上。
     for (const group of DEFAULT_GROUP_NAMES) {
       if (!emptyWatchlist[group]) emptyWatchlist[group] = [];

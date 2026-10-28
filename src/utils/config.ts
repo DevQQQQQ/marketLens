@@ -46,7 +46,7 @@ function readSectionBase(
  * 带休市概念的板块读取：`stopOnMarketClosed` 只可能出现在这里。
  *
  * 参数类型限定为 `MarketClosingSection`，给 7×24 板块合成该字段会直接 typecheck 红
- * ——这是 AGENTS.md §6.10 约束的类型系统强制形态，不要退回「任何板块都能写」的宽签名。
+ * ——这是 AGENTS.md §5.3 约束的类型系统强制形态，不要退回「任何板块都能写」的宽签名。
  */
 function readClosingSection(
   cfg: vscode.WorkspaceConfiguration,
@@ -148,12 +148,12 @@ export {
  * 保持 `from "../utils/config.ts"` 的导入路径不变。
  *
  * 旧版在 types 与 config 两处各写一份六项枚举，新增板块时漏改其一不会 typecheck 红，
- * 只会让运行时集合漏项（AGENTS.md §5.2 / 体检报告 P3-19）。现收敛为单处声明。
+ * 只会让运行时集合漏项（AGENTS.md §5.3 / 体检报告 P3-19）。现收敛为单处声明。
  */
-export { MARKET_SECTIONS, MARKET_CLOSING_SECTIONS } from "../types/index.ts";
+export { MARKET_SECTIONS, MARKET_CLOSING_SECTIONS, GROUP_SORT_MODES } from "../types/index.ts";
 export type { MarketSection, MarketClosingSection } from "../types/index.ts";
 
-/** 默认分组名：与 `MARKET_SECTIONS` 同源的展示分组（AGENTS.md §5.2 / §6.7） */
+/** 默认分组名：与 `MARKET_SECTIONS` 同源的展示分组（AGENTS.md §5.3） */
 export const SECTION_DEFAULT_GROUP_NAMES: Record<MarketSection, string> = {
   fund: "基金",
   aShare: "A股",
@@ -168,7 +168,7 @@ export const DEFAULT_GROUP_NAMES: readonly string[] = MARKET_SECTIONS.map((sec) 
 
 /**
  * 板块键类型守卫：由 `MARKET_SECTIONS` 派生，调用方据此把磁盘/消息里的自由字符串收窄为板块。
- * 禁止在调用处再手写 `"fund" | "aShare" | …` 的内联联合类型（§5.2 单一真相源）。
+ * 禁止在调用处再手写 `"fund" | "aShare" | …` 的内联联合类型（§5.3 单一真相源）。
  */
 export function isMarketSection(value: string): value is MarketSection {
   return (MARKET_SECTIONS as readonly string[]).includes(value);
@@ -180,7 +180,7 @@ export function isMarketSection(value: string): value is MarketSection {
  *
  * Binance / Alpha 为 7×24 市场，不存在休市跳过与 `stopOnMarketClosed` 配置项。
  * 其他文件不得再复制一份该子集：休市键的白名单组装、导入落盘守卫、休市判定读取
- * 全部必须回到这里取（AGENTS.md §5.2 / §6.10）。
+ * 全部必须回到这里取（AGENTS.md §5.3）。
  */
 /** 判定任意板块名是否属于「有休市概念」子集（写入 stopOnMarketClosed 前的强制守卫） */
 export function isClosingSection(sec: string): sec is MarketClosingSection {

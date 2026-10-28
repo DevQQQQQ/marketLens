@@ -1,7 +1,7 @@
 // src/services/binanceService.ts
 import type { MarketItem } from "../types";
 import { cryptoGet, DEFAULT_PROXY_URL, type CryptoNetworkOptions } from "./network.ts";
-import { logger } from "../utils/logger.ts";
+import { logger, describeForLog, describeListForLog } from "../utils/logger.ts";
 import { chunkArray } from "../utils/symbolHelper.ts";
 
 export interface BinanceTicker24hr {
@@ -52,7 +52,7 @@ export class BinanceService {
 
   private markSymbolInvalid(s: string): void {
     this.invalidSymbols.set(s, Date.now() + this.INVALID_CACHE_TTL);
-    logger.warn(`[BinanceService] 标的 "${s}" 在币安不可用或已下架，已加入临时抑制黑名单(10分钟)`);
+    logger.warn(`[BinanceService] 标的 ${describeForLog(s)} 在币安不可用或已下架，已加入临时抑制黑名单(10分钟)`);
   }
 
   public normalizeSymbol(raw: string): string {
@@ -150,7 +150,7 @@ export class BinanceService {
     // 仅在批量接口明确返回 400（确认某个币对非法/已下架，导致整个批量接口报错）时，才降级为单币并发以挽救其余正常币
     // 若属于网络连接失败、超时或代理未通等网络级故障，直接返回，绝不放大并发重放 N 次单币请求
     if (!is400Error) {
-      logger.error("[BinanceService] All endpoints failed (network or proxy error) for: " + activeSymbols.join(", "));
+      logger.error("[BinanceService] All endpoints failed (network or proxy error) for: " + describeListForLog(activeSymbols));
       return [];
     }
 
@@ -186,7 +186,7 @@ export class BinanceService {
       return successfulItems;
     }
 
-    logger.error("[BinanceService] All endpoints and individual fallbacks failed for: " + activeSymbols.join(", "));
+    logger.error("[BinanceService] All endpoints and individual fallbacks failed for: " + describeListForLog(activeSymbols));
     return [];
   }
 }

@@ -15,10 +15,12 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js 22
+      # 与本地门禁运行时严格同源（24.22.1 自带 npm 11.19.1）。
+      # 本地升 Node 补丁版时必须同步 ci.yml 与 release.yml 两处，否则「本地绿、远端红」的分叉面重新打开。
+      - name: Setup Node.js 24.22.1
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24.22.1
           cache: 'npm'
 
       - name: Install dependencies

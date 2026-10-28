@@ -3,7 +3,7 @@
 export type AssetType = "A_SHARE" | "HK_STOCK" | "US_STOCK" | "CRYPTO" | "BSC_TOKEN" | "ALPHA_TOKEN";
 
 /**
- * 板块六项枚举的**唯一真相源**（AGENTS.md §5.2）。
+ * 板块六项枚举的**唯一真相源**（AGENTS.md §5.3）。
  *
  * 类型 `MarketSection` 直接由这份值列表下标派生，杜绝旧版在 `types` 与 `utils/config`
  * 各写一份导致的「新增板块漏改其一，typecheck 不红但运行时集合漏项」双写风险。
@@ -15,7 +15,7 @@ export type MarketType = MarketSection;
 
 /**
  * 「有休市概念的板块子集」的唯一定义点。Binance / Alpha 为 7×24 市场，
- * 不得为其合成 `stopOnMarketClosed`（§6.10）；休市键白名单与导入落盘守卫一律取自此。
+ * 不得为其合成 `stopOnMarketClosed`（§5.3）；休市键白名单与导入落盘守卫一律取自此。
  */
 export const MARKET_CLOSING_SECTIONS = ["fund", "aShare", "hkStock", "usStock"] as const;
 export type MarketClosingSection = (typeof MARKET_CLOSING_SECTIONS)[number];
@@ -23,7 +23,7 @@ export type MarketClosingSection = (typeof MARKET_CLOSING_SECTIONS)[number];
 /**
  * 统一行情数据结构。
  *
- * 可选数值位一律显式允许 `undefined`：解析层（§6.13）对「上游未供数」的语义就是产出
+ * 可选数值位一律显式允许 `undefined`：解析层（§5.5）对「上游未供数」的语义就是产出
  * `undefined`（如恒发 `"0"` 的换手率、指数的 `-1` 占位），而不是省略键。
  * 在 `exactOptionalPropertyTypes` 下，省略键与存 `undefined` 是两种类型，
  * 契约必须如实描述后者，否则各抓取服务只能靠类型断言绕过。
@@ -44,7 +44,7 @@ export interface MarketItem {
   change?: number | undefined;     // 涨跌额
   volume?: number | undefined;     // 成交量
   turnover?: number | undefined;   // 成交额 (USD / CNY / HKD)
-  currency?: "CNY" | "USD" | "HKD" | "USDT" | undefined; // 计价货币（加密标的统一 U 本位，见 AGENTS.md §6.9）
+  currency?: "CNY" | "USD" | "HKD" | "USDT" | undefined; // 计价货币（加密标的统一 U 本位，见 AGENTS.md §5.5）
 
   // ── 深度量价与估值指标（A股等板块） ──
   turnoverRate?: number | undefined;           // 换手率 %
@@ -93,13 +93,20 @@ export type AlertsConfig = Record<string, PriceAlertItem>;
 
 export type ColorScheme = "greenUpRedDown" | "redUpGreenDown";
 
+/**
+ * 分组排序模式候选值：运行时白名单与类型的唯一来源（与 `MARKET_SECTIONS` 同源思路）。
+ * 外部输入（备份 JSON、globalState 残留）必须按本列表校验，禁止 `as GroupSortMode` 盲转。
+ */
+export const GROUP_SORT_MODES = [
+  "default",     // 默认顺序（手动排列）
+  "changeDesc",  // 按涨幅排序（涨跌幅从高到低）
+  "changeAsc",   // 按跌幅排序（涨跌幅从低到高）
+  "nameAsc",     // 按名称排序（按股票名称拼音排序）
+  "priceDesc",   // 按现价排序（按当前价格从高到低）
+] as const;
+
 /** 分组排序模式 */
-export type GroupSortMode =
-  | "default"     // 默认顺序（手动排列）
-  | "changeDesc"  // 按涨幅排序（涨跌幅从高到低）
-  | "changeAsc"   // 按跌幅排序（涨跌幅从低到高）
-  | "nameAsc"     // 按名称排序（按股票名称拼音排序）
-  | "priceDesc";  // 按现价排序（按当前价格从高到低）
+export type GroupSortMode = (typeof GROUP_SORT_MODES)[number];
 
 export interface MarketLensConfig {
   // ── 全局设置 ──

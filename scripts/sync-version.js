@@ -149,7 +149,7 @@ if (require.main === module) {
 		const cleanAll = process.argv.includes('--clean-all');
 		const dryRun = process.argv.includes('--dry-run');
 		// --fail-on-drift：只做检查不写盘，一旦发现宣发资产与 package.json 版本不同步，
-		// 立即以非零码退出，使其可以当作发版门禁使用（AGENTS.md §9.3 / 附录 B 第 10 条）。
+		// 立即以非零码退出，使其可以当作发版门禁使用（AGENTS.md §8 发布前检查清单）。
 		// 不加这个开关时，脚本从不因「有漂移」而失败，只会打印 modifiedFiles，极易被误读成门禁已通过。
 		const failOnDrift = process.argv.includes('--fail-on-drift');
 		const result = syncVersion(undefined, cleanAll, dryRun);

@@ -7,8 +7,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { isSameSymbol, normalizeSymbolKey, stripMarketPrefix, normalizeUSCode, inferAShareExchange, normalizeAShareCode, resolveItemAssetType, resolveItemDisplayName, getWatchlistFingerprint, reorderWatchlist, batchReorderWatchlist, pruneQuoteCache, extractTargetsFromWatchlist, extractStatusBarQuotes, computeStatusBarEnabled, resolveTrendColors, chunkArray, decodeGbk, escapeHtml, ASSET_TYPE_TO_SECTION_MAP, NORMALIZE_SYMBOL_KEY_CLIENT_SCRIPT, isItemMarketClosed, isGroupMarketClosed, buildGroupNodeId, sanitizeWatchlist } from "../src/utils/symbolHelper.ts";
-import type { MarketItem, WatchlistConfig, WatchConfigItem } from "../src/types/index.ts";
+import { isSameSymbol, normalizeSymbolKey, stripMarketPrefix, normalizeUSCode, inferAShareExchange, normalizeAShareCode, resolveItemAssetType, resolveItemDisplayName, getWatchlistFingerprint, reorderWatchlist, batchReorderWatchlist, pruneQuoteCache, extractTargetsFromWatchlist, extractStatusBarQuotes, computeStatusBarEnabled, resolveTrendColors, chunkArray, decodeGbk, escapeHtml, escapeMarkdownInline, toMarkdownCodeSpan, ASSET_TYPE_TO_SECTION_MAP, NORMALIZE_SYMBOL_KEY_CLIENT_SCRIPT, isItemMarketClosed, isGroupMarketClosed, buildGroupNodeId, sanitizeWatchlist } from "../src/utils/symbolHelper.ts";
+import type { MarketItem, WatchlistConfig, WatchConfigItem, PriceAlertItem } from "../src/types/index.ts";
+import { describeForLog, describeListForLog, scrubForLog, describeErrorForLog, describeErrorNameForLog, formatDetailForLog, logger } from "../src/utils/logger.ts";
 import { validateAndParseInput, isContractAddress, extractContractAddressFromUrl } from "../src/utils/inputValidator.ts";
 import { isAShareMarketOpen, isHKMarketOpen, isUSMarketOpen, isAShareHoliday, isHKHoliday, isUSHoliday, evaluateAdaptiveThrottle, getZonedTimeParts, beijingFormatter, newYorkFormatter, beijingDateFormatter, newYorkDateFormatter, shouldSkipMarketPolling, MAX_COVERED_HOLIDAY_YEAR, FORECAST_HOLIDAY_YEARS, checkHolidayCoverage, US_HOLIDAYS, HK_HOLIDAYS, A_SHARE_HOLIDAYS } from "../src/utils/marketHours.ts";
 import { validateAndNormalizeProxyUrl, parseProxy, resetProxyCache, getSystemProxyUrl, smartNetworkGet, getCachedWorkingPort, testLocalPort, DEFAULT_PROXY_PORT, DEFAULT_PROXY_URL, COMMON_PROXY_PORTS, DEFAULT_REQUEST_TIMEOUT_MS, SYSTEM_PROXY_FALLBACK_TIMEOUT_MS, QUICK_PROXY_PROBE_TIMEOUT_MS, PORT_PROBE_TIMEOUT_MS } from "../src/services/network.ts";
@@ -981,6 +982,17 @@ void test("extractTargetsFromWatchlist - 标的分桶过滤与闭市跳过测试
   assert.deepStrictEqual(groupSpecificTargets.usStocks, ["TSLA", "NVDA"]);
   assert.deepStrictEqual(groupSpecificTargets.aShares, []);
   assert.deepStrictEqual(groupSpecificTargets.cryptos, []);
+
+  // 5. 代理离线挂起跳过测试：skipBinance / skipAlpha
+  const proxySuspendedTargets = extractTargetsFromWatchlist(mockWatchlist, {
+    skipBinance: true,
+    skipAlpha: true,
+  });
+  assert.deepStrictEqual(proxySuspendedTargets.cryptos, []);
+  assert.deepStrictEqual(proxySuspendedTargets.bscTokens, []);
+  assert.deepStrictEqual(proxySuspendedTargets.aShares, ["sh600519"]);
+  assert.deepStrictEqual(proxySuspendedTargets.hkStocks, ["00700"]);
+  assert.deepStrictEqual(proxySuspendedTargets.usStocks, ["AAPL", "TSLA", "NVDA"]);
 });
 
 void test("extractStatusBarQuotes - 底部状态栏49标的全量轮播与分板块开关即时过滤测试", () => {
@@ -2104,9 +2116,9 @@ void test("Tencent行情解析 - A股/港股/美股 Golden Sample 契约测试�
 void test("P2-9 回归 - 腾讯短报文（35~37 字段）成交额保持 undefined，禁止被 || 0 伪装成 0", () => {
   // 三个腾讯服务的字段不足守卫都是 `if (f.length < 35)`，而 `F.TURNOVER` 是**下标 37**，
   // 落在守卫覆盖范围之外：报文长度 35~37 时 `f[37]` 取到的是 `undefined`。
-  // §6.13 口径要求「上游未供数」如实保持 `undefined`（卡片渲染为 `--`），
+  // §5.5 口径要求「上游未供数」如实保持 `undefined`（卡片渲染为 `--`），
   // 不得用 `parseFloat(...) || 0` 把它伪装成「成交额为 0」——不抛错、不告警，是最难发现的一类静默失真。
-  // `noUncheckedIndexedAccess` 未开启（附录 B 第 17 条），typecheck 不会提醒这类越界，故由本用例守住。
+  // `noUncheckedIndexedAccess` 未开启（AGENTS.md §4），typecheck 不会提醒这类越界，故由本用例守住。
   const build = (code: string, overrides: Record<number, string>, length: number): string => {
     const fields = new Array<string>(length).fill("0");
     for (const [index, value] of Object.entries(overrides)) fields[Number(index)] = value;
@@ -3329,6 +3341,7 @@ void test("scheduler - 网络持续故障退避计数与自动复位守卫", asy
     setQuotes: () => {},
     show: () => {},
     hide: () => {},
+    isBossKeyActive: () => false,
   };
   const mockTreeView: any = { visible: true };
 
@@ -3582,7 +3595,7 @@ void test("P1-6 时区口径回归 - 节假日覆盖护栏的年份必须与查�
   assert.strictEqual(
     A_SHARE_HOLIDAYS.has("2027-02-05"),
     true,
-    "2027 除夕为全日休市；半日市/提前收盘严禁写入日历（§6.12）"
+    "2027 除夕为全日休市；半日市/提前收盘严禁写入日历（§5.5）"
   );
 });
 
@@ -3970,7 +3983,7 @@ void test("计价货币单一出口 - 加密与链上标的按 U 本位（USDT�
   assert.strictEqual(resolveQuoteCurrency({ type: "HK_STOCK" }), "HKD");
   assert.strictEqual(resolveQuoteCurrency({ type: "US_STOCK" }), "USD");
 
-  // 2. 显式 currency 优先于类型推导（§6.13 资产类型裁决序）
+  // 2. 显式 currency 优先于类型推导（§5.5 资产类型裁决序）
   assert.strictEqual(resolveQuoteCurrency({ currency: "USD", type: "CRYPTO" }), "USD");
 
   // 3. 持仓看板按币种分桶：USDT 不得与美股美元混进同一桶，否则盈亏合计会串币种
@@ -3990,11 +4003,11 @@ void test("计价货币单一出口 - 加密与链上标的按 U 本位（USDT�
   }
 });
 
-// AGENTS.md §6.1 红线：每一组已注册键位都必须在文档中可见。
-// 旧版规约把这条写成「已有 unit.test.ts 用例」，但那个用例从未存在，附录 B 第 16 条
-// 因此只能靠人工跑 shell 探针。本用例即为该缺口的收口：读 package.json 的 keybindings，
-// 逐条（含 win / mac 变体）比对双语 README 与设置面板 About 速查段。
-void test("§6.1 键位文档化契约 - 每个已注册键位都必须在双语 README 与设置面板速查中可见", () => {
+// AGENTS.md §5.1 红线：每一组已注册键位都必须在文档中可见。
+// 旧版规约把这条写成「已有 unit.test.ts 用例」，但那个用例从未存在，只能靠人工跑 shell 探针。
+// 本用例即为该缺口的收口：读 package.json 的 keybindings，逐条（含 win / mac 变体）
+// 比对双语 README 与设置面板 About 速查段。
+void test("§5.1 键位文档化契约 - 每个已注册键位都必须在双语 README 与设置面板速查中可见", () => {
   const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
   const read = (rel: string) => fs.readFileSync(path.join(repoRoot, rel), "utf8");
   const pkg = JSON.parse(read("package.json").replace(/^\uFEFF/, ""));
@@ -4037,8 +4050,529 @@ void test("§6.1 键位文档化契约 - 每个已注册键位都必须在双语
     }
   }
 
-  assert.deepStrictEqual(missing, [], `以下已注册键位未在文档中露出（AGENTS.md §6.1）：\n${missing.join("\n")}`);
+  assert.deepStrictEqual(missing, [], `以下已注册键位未在文档中露出（AGENTS.md §5.1）：\n${missing.join("\n")}`);
 });
+
+// ── AGENTS.md §5.4 脱敏红线 / §5.6 异步与生命周期 回归补口（体检报告 P1-2、P2-1、P2-2、P2-3、P2-5）──
+
+/**
+ * 捕获 logger sink 落到宿主 console 的行。
+ * mock 的 `OutputChannel.appendLine` 是空实现，日志取证只能走 console 侧；
+ * 而 sink 刻意让两个通道共用同一行已清洗文本，所以这里取到的就是通道里的那一行。
+ */
+async function withCapturedConsole(run: () => void | Promise<void>): Promise<string[]> {
+  const original = console.log;
+  const lines: string[] = [];
+  console.log = (...args: unknown[]) => {
+    lines.push(args.map((a) => String(a)).join(" "));
+  };
+  try {
+    await run();
+  } finally {
+    console.log = original;
+  }
+  return lines;
+}
+
+/** 让未被接住的 Promise 拒绝在本轮测试里显性失败，而不是悄悄冒成进程级 unhandledRejection */
+async function assertNoUnhandledRejection(run: () => void | Promise<void>): Promise<void> {
+  const seen: unknown[] = [];
+  const onRejection = (reason: unknown) => {
+    seen.push(reason);
+  };
+  process.on("unhandledRejection", onRejection);
+  try {
+    await run();
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await new Promise((resolve) => setImmediate(resolve));
+  } finally {
+    process.off("unhandledRejection", onRejection);
+  }
+  assert.deepStrictEqual(seen, [], "存在未被接住的 Promise 拒绝（AGENTS.md §5.6）");
+}
+
+void test("P1-2 回归 - 日志红线：标识只落不可逆标签，外部文本进 sink 前统一清洗", async () => {
+  // 1. describeForLog：定长十六进制标签、跨调用可复现，且不保留原文可辨识片段
+  const tag = describeForLog("sh600519");
+  assert.match(tag, /^#[0-9a-f]{6}$/, "标签必须是 sha1 前 6 位十六进制");
+  assert.strictEqual(tag, describeForLog("sh600519"), "同一标的在任何进程必须得到同一标签（跨行关联用）");
+  assert.ok(!tag.includes("600519"), "标签不得回显标的代码");
+  assert.notStrictEqual(describeForLog("sh600519"), describeForLog("sz000001"), "不同标的不得撞标签");
+  assert.strictEqual(describeForLog(""), "#<empty>");
+  assert.strictEqual(describeForLog(undefined), "#<empty>");
+
+  // 2. describeListForLog：整幅自选清单折叠成「数量 + 最多 3 个标签」
+  const symbols = ["sh600519", "sz000001", "hk00700", "usTSLA", "BTCUSDT", "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c"];
+  const collapsed = describeListForLog(symbols);
+  assert.ok(collapsed.startsWith("6 项 ["), `应保留数量: ${collapsed}`);
+  assert.strictEqual((collapsed.match(/#/g) ?? []).length, 3, "最多只允许 3 个标签");
+  for (const sym of symbols) {
+    assert.ok(!collapsed.includes(sym), `折叠结果不得回显 ${sym}`);
+  }
+
+  // 3. scrubForLog：URL（常把整批代码带在查询串）与长标识串被替换，短错误词保持可读
+  const dirty = "getaddrinfo ECONNREFUSED https://qt.gtimg.cn/q=sh600519,sz000001 timeout of 15000ms";
+  const cleaned = scrubForLog(dirty);
+  assert.ok(!cleaned.includes("sh600519") && !cleaned.includes("sz000001"), cleaned);
+  assert.ok(!cleaned.includes("qt.gtimg.cn"), `URL 本体也必须消失: ${cleaned}`);
+  assert.ok(cleaned.includes("ECONNREFUSED") && cleaned.includes("timeout"), "可读诊断词不得被顺手哈希掉");
+  const addr = "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c";
+  assert.ok(!scrubForLog(`token ${addr} failed`).includes(addr), "合约地址必须收敛为标签");
+
+  // 4. 错误对象：只留错误名 + 清洗后的消息
+  const axiosLike = Object.assign(new Error("请求 https://qt.gtimg.cn/q=sh600519 失败"), { name: "AxiosError" });
+  const described = describeErrorForLog(axiosLike);
+  assert.ok(described.startsWith("AxiosError: "), described);
+  assert.ok(!described.includes("sh600519") && !described.includes("qt.gtimg.cn"), described);
+
+  // 5. describeErrorNameForLog：JSON.parse 这类「消息内嵌被解析内容」的错误只留错误名
+  assert.strictEqual(describeErrorNameForLog(new SyntaxError('Unexpected token } in JSON at position 42 "sh600519"')), "SyntaxError");
+  assert.strictEqual(describeErrorNameForLog(undefined), "unknown");
+  assert.strictEqual(describeErrorNameForLog("纯字符串错误"), "unknown");
+
+  // 6. formatDetailForLog：字符串、Error.stack、普通对象三条分支都要清洗
+  assert.ok(!formatDetailForLog("见 https://api.binance.com/api/v3/ticker?symbols=BTCUSDT").includes("BTCUSDT"));
+  assert.ok(!formatDetailForLog(Object.assign(new Error("https://dexscreener.com/bsc/0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c"))).includes("dexscreener.com"));
+  assert.strictEqual(formatDetailForLog(null), "");
+  assert.strictEqual(formatDetailForLog(undefined), "");
+
+  // 7. sink 级取证：真实调用 logger 公共入口，两条通道必须共用同一行已清洗文本
+  const sinkLines = await withCapturedConsole(async () => {
+    logger.warn("行情请求失败", new Error("request to https://qt.gtimg.cn/q=sh600519,sz000001 failed: 503"));
+    logger.info(`失效标的已抑制 ${describeForLog("sh600519")} 冷却 5 分钟`);
+  });
+  const joined = sinkLines.join("\n");
+  assert.ok(joined.includes("[MarketLens] 行情请求失败"), joined);
+  assert.ok(!joined.includes("sh600519") && !joined.includes("sz000001"), `日志行不得含标的代码: ${joined}`);
+  assert.ok(!joined.includes("qt.gtimg.cn"), `日志行不得含完整 URL: ${joined}`);
+  assert.match(joined, /失效标的已抑制 #?[0-9a-f]{6}/, "标签形态必须是 #xxxxxx");
+});
+
+void test("P2-2 回归 - Tooltip 富文本消毒：报文不得拼出 Markdown 链接或顶破表格行", async () => {
+  const { StockItem } = await import("../src/ui/watchlistProvider.ts");
+  // 1. 行内消毒：方括号被反斜杠顶住，`[文案](url)` 与 `command:` 链接语法失效
+  const linkPayload = escapeMarkdownInline("[取关](command:marketlens.clearWatchlist)");
+  assert.ok(linkPayload.includes("\\[取关\\]"), linkPayload);
+  const bareBrackets = linkPayload.replace(/\\[[\]`]/g, "");
+  assert.ok(!bareBrackets.includes("[") && !bareBrackets.includes("]"), `方括号必须全部带反斜杠: ${linkPayload}`);
+
+  // 2. 换行必须折叠，否则报文能顶破标题行与表格行注入新条目
+  const newlinePayload = escapeMarkdownInline("茅台\n| 列A | 列B |\n|---|---|");
+  assert.ok(!newlinePayload.includes("\n"), "行内文本不得保留换行");
+  assert.ok(/茅台 .*\|/.test(newlinePayload), newlinePayload);
+
+  // 3. HTML 实体继续被转义（supportHtml=false 之外的第二层防线）
+  assert.strictEqual(escapeMarkdownInline(`<img src=x onerror="alert(1)">`), "&lt;img src=x onerror=&quot;alert(1)&quot;&gt;");
+  assert.strictEqual(escapeMarkdownInline(null), "");
+  assert.strictEqual(escapeMarkdownInline(undefined), "");
+
+  // 4. 代码段：反引号在代码段内无法用反斜杠转义，只能删除，防止报文提前闭合
+  const codeSpan = toMarkdownCodeSpan("0xdead`beef\n`闭合");
+  assert.ok(codeSpan.startsWith("`") && codeSpan.endsWith("`"), codeSpan);
+  assert.ok(!codeSpan.slice(1, -1).includes("`"), `代码段内部不得残留反引号: ${codeSpan}`);
+  assert.ok(!codeSpan.includes("\n"), "代码段不得跨行");
+  assert.strictEqual(toMarkdownCodeSpan(null), "``", "缺失标识只留空代码段，不得写出 \"null\" 字样");
+
+  // 5. 真实节点：标的名来自行情报文，注入链接必须被中和
+  const evilName = "[付款](command:workbench.action.openGlobalSettings)";
+  const item: MarketItem = {
+    id: "sh600519",
+    symbol: "sh600519",
+    name: evilName,
+    type: "A_SHARE",
+    price: 1800,
+    changePercent: 1.5,
+    currency: "CNY",
+  };
+  const node = new StockItem(item, "A股", "sh600519", false, false, undefined, evilName, "greenUpRedDown");
+  const tip = String((node.tooltip as any)?.value ?? "");
+  assert.ok(tip.includes("\\[付款\\]"), `Tooltip 必须携带转义后的标的名: ${tip}`);
+  assert.ok(!tip.includes(evilName), "报文原文不得原样进 Tooltip");
+
+  // 6. Alpha 卡片：标的名走行内转义、合约地址走代码段，两条路都不能拼出可点链接
+  const alphaItem: MarketItem = {
+    id: "0xdeadbeef`[x](command:evil)",
+    symbol: "PUP`",
+    name: "PUP](command:x)",
+    type: "ALPHA_TOKEN",
+    price: 0.000291,
+    changePercent: -6.59,
+    currency: "USD",
+    chain: "bsc",
+    dex: "pancakeswap",
+  };
+  const alphaNode = new StockItem(alphaItem, "Alpha", alphaItem.id!, false, false, undefined, "PUP", "greenUpRedDown");
+  const alphaTip = String((alphaNode.tooltip as any)?.value ?? "");
+  assert.ok(alphaTip.includes("PUP\\]"), `行内文本的方括号必须带反斜杠: ${alphaTip}`);
+  assert.ok(!alphaTip.includes("PUP]("), "标的名不得拼出可点击的 Markdown 链接");
+  assert.ok(!alphaTip.includes("PUP``"), `标的代码内的反引号必须被剥离: ${alphaTip}`);
+  // 反引号在代码段内无法转义，只能删除；否则报文可提前闭合代码段再拼富文本
+  assert.ok(!alphaTip.includes("0xdeadbeef`"), `合约地址内的反引号必须被剥离: ${alphaTip}`);
+  assert.ok(alphaTip.includes("`0xdeadbeef[x](command:evil)`"), "整段报文必须被完整关进一个代码段");
+});
+
+void test("P2-3 回归 - 脱敏态下预警铃铛与价格同等对待", async () => {
+  const { StockItem } = await import("../src/ui/watchlistProvider.ts");
+  const item: MarketItem = {
+    id: "sh600519",
+    symbol: "sh600519",
+    name: "贵州茅台",
+    type: "A_SHARE",
+    price: 1800,
+    changePercent: 1.5,
+    currency: "CNY",
+  };
+  const rule: PriceAlertItem = { symbol: "sh600519", name: "贵州茅台", above: 1900, enabled: true };
+
+  const visible = new StockItem(item, "A股", "sh600519", false, false, rule, "贵州茅台", "greenUpRedDown");
+  assert.ok(String(visible.description ?? "").includes("🔔"), "常态下铃铛应提示该标的设有预警");
+
+  const masked = new StockItem(item, "A股", "sh600519", true, false, rule, "贵州茅台", "greenUpRedDown");
+  const maskedDesc = String(masked.description ?? "");
+  assert.ok(!maskedDesc.includes("🔔"), "脱敏 description 不得暴露「该标的有预警」这一关注信号");
+  assert.ok(maskedDesc.includes("****"), maskedDesc);
+  // Tooltip 走共享脱敏出口：既无铃铛也不得留真实标的信息
+  assert.ok(!String(masked.tooltip ?? "").includes("贵州茅台"), "脱敏 Tooltip 必须走占位文本");
+});
+
+void test("P2-1 回归 - 状态栏脱敏判定收口到 maskState 共享谓词", async () => {
+  const { StatusBar } = await import("../src/ui/statusBar.ts");
+  const holdings: any[] = [
+    { name: "贵州茅台", symbol: "sh600519", currency: "CNY", cost: 1600, shares: 100, price: 1800, changePercent: 1.25, change: 22.5 },
+  ];
+
+  // 1. 简洁展示模式（maskMode）单独激活即必须屏蔽持仓条与预警闪光
+  const maskedBar = new StatusBar({ maskMode: true, colorNeutral: false, colorScheme: "greenUpRedDown" });
+  try {
+    maskedBar.setHoldings(holdings, true, 3);
+    const maskedItem = (maskedBar as any).holdingBarItem;
+    assert.strictEqual(maskedItem.text, "", "简洁展示模式下持仓轮播条必须为空");
+    assert.strictEqual(maskedItem.tooltip, undefined, "简洁展示模式下不得保留持仓 Tooltip");
+    assert.strictEqual(maskedBar.isHoldingCarouselRunning(), false, "简洁展示模式下不得启动持仓轮播定时器");
+    maskedBar.flashAlert("贵州茅台 突破 1900", 10);
+    assert.strictEqual((maskedBar as any).holdingBarItem.text, "", "脱敏态下预警闪光必须静默");
+    maskedBar.setColorNeutral(true);
+    maskedBar.setColorScheme("redUpGreenDown");
+    assert.strictEqual((maskedBar as any).holdingBarItem.text, "", "脱敏态下配色切换不得重新渲染持仓金额");
+
+    // 2. 同一份持仓在老板键态下必须得到完全一致的结果（共享谓词的两条入参等价）
+    const bossBar = new StatusBar({ maskMode: false, colorNeutral: false, colorScheme: "greenUpRedDown" });
+    try {
+      bossBar.setHoldings(holdings, true, 3);
+      assert.notStrictEqual((bossBar as any).holdingBarItem.text, "", "常态下持仓条应有内容（对照组）");
+      bossBar.toggleBossKey();
+      assert.strictEqual((bossBar as any).holdingBarItem.text, "", "老板键激活后持仓条必须清空");
+    } finally {
+      bossBar.dispose();
+    }
+  } finally {
+    maskedBar.dispose();
+  }
+
+  // 3. 反「平行实现」闸门：状态栏内部不得再手写 bossKeyActive || maskMode 等价条件
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+  const source = fs.readFileSync(path.join(repoRoot, "src/ui/statusBar.ts"), "utf8");
+  const handWritten = source.split("\n").filter(
+    (line) => /this\.bossKeyActive\s*\|\|\s*this\.maskMode/.test(line) || (/this\.maskMode\s*\|\|\s*this\.bossKeyActive/.test(line) && !/isDisplayMasked/.test(line))
+  );
+  assert.deepStrictEqual(handWritten, [], `状态栏存在手写等价脱敏条件，必须改走 displayMasked（AGENTS.md §5.4）:\n${handWritten.join("\n")}`);
+  assert.ok(/private get displayMasked\(\): boolean \{\s*return isDisplayMasked\(/.test(source), "displayMasked 必须直接返回共享谓词");
+});
+
+void test("P1-3 回归 - 备份校验把代理地址收敛到共享规范化出口", () => {
+  // 1. 全局代理：异形输入不得原样写回公开契约键
+  const socks = validateBackupData({ settings: { proxyUrl: "socks5://127.0.0.1:10808" } });
+  assert.strictEqual(socks.valid, true);
+  assert.strictEqual(socks.data?.settings.proxyUrl, "http://127.0.0.1:10808", "socks5:// 必须转成 Node 侧 http 代理形态");
+
+  const https = validateBackupData({ proxyUrl: "https://proxy.corp.example:3128/" });
+  assert.strictEqual(https.data?.settings.proxyUrl, "http://proxy.corp.example:3128", "https:// 与尾斜杠必须被纠偏");
+
+  const barePort = validateBackupData({ proxyUrl: "7890" });
+  assert.strictEqual(barePort.data?.settings.proxyUrl, "http://127.0.0.1:7890", "纯端口输入必须补齐 host");
+
+  const blank = validateBackupData({ proxyUrl: "   " });
+  assert.strictEqual(blank.data?.settings.proxyUrl, undefined, "空白代理不得写成空串以外的任何形态");
+
+  // 2. 分组排序模式必须按白名单收敛：非法值不得盲转类型灌进 globalState
+  const sortModes = validateBackupData({
+    groupSortModes: { "A股": "changeDesc", "港股": "DROP TABLE", "美股": 42, "Binance": "priceDesc" },
+  });
+  assert.strictEqual(sortModes.valid, true);
+  assert.deepStrictEqual(sortModes.data?.groupSortModes, { "A股": "changeDesc", "Binance": "priceDesc" });
+
+  // 3. 颜色方案同样只接受已发布枚举
+  assert.strictEqual(validateBackupData({ colorScheme: "rainbow" }).data?.settings.colorScheme, undefined);
+});
+
+void test("P2-5 回归 - 预警浮窗 reject 与分组排序回调 reject 一律收敛为日志", async () => {
+  const vscode = await import("vscode");
+  const originalInfo = vscode.window.showInformationMessage;
+  const originalWarn = vscode.window.showWarningMessage;
+  try {
+    // 1. 宿主在关闭窗口时可能 reject 通知 Promise；预警已落库，这里只须静默接住
+    (vscode.window as any).showInformationMessage = async () => {
+      throw new Error("host window closed");
+    };
+    const manager = new AlertManager();
+    const config: any = {
+      alerts: { sh600519: { symbol: "sh600519", name: "贵州茅台", above: 1800, enabled: true } },
+      alertNotificationMode: "notification",
+      alertCooldownMinutes: 15,
+    };
+    const rejectLines = await withCapturedConsole(() =>
+      assertNoUnhandledRejection(() => {
+        const events = manager.checkQuotes(
+          [{ id: "sh600519", symbol: "sh600519", name: "贵州茅台", price: 1850, changePercent: 2.5 }] as any,
+          config
+        );
+        assert.strictEqual(events.length, 1, "对照组：预警必须已触发");
+      })
+    );
+    assert.ok(
+      rejectLines.join("\n").includes("预警浮窗交互未完成"),
+      `reject 必须被接住并留痕，而不是静默吞掉: ${rejectLines.join("\n")}`
+    );
+
+    // 2. 「静音」动作同样不得把 reject 冒成未处理 Promise
+    (vscode.window as any).showInformationMessage = async () => "静音 15 分钟";
+    const mutedManager = new AlertManager();
+    await assertNoUnhandledRejection(async () => {
+      const events = mutedManager.checkQuotes(
+        [{ id: "sh600519", symbol: "sh600519", name: "贵州茅台", price: 1850, changePercent: 2.5 }] as any,
+        config
+      );
+      assert.strictEqual(events.length, 1);
+    });
+    assert.strictEqual(mutedManager.isMuted("sh600519"), true, "点击静音后该标的必须进入冷却");
+  } finally {
+    (vscode.window as any).showInformationMessage = originalInfo;
+    (vscode.window as any).showWarningMessage = originalWarn;
+  }
+
+  // 3. 分组排序落盘回调 reject：树视图入口不能因为一次写盘失败冒出未处理拒绝
+  const { WatchlistProvider } = await import("../src/ui/watchlistProvider.ts");
+  const provider = new WatchlistProvider(false, false, "greenUpRedDown");
+  provider.onGroupSortModeChangeCallback = async () => {
+    throw new Error("globalState 写入失败");
+  };
+  const providerLogLines = await withCapturedConsole(() =>
+    assertNoUnhandledRejection(() => {
+      provider.setGroupSortMode("A股", "changeDesc");
+    })
+  );
+  assert.ok(
+    providerLogLines.join("\n").includes("分组排序落盘回调失败"),
+    `写盘失败必须被接住并留痕: ${providerLogLines.join("\n")}`
+  );
+  assert.strictEqual((provider as any).groupSortModes.get("A股"), "changeDesc", "回调失败不影响内存排序态");
+});
+
+void test("P1-2 回归 - 拖拽报文解析失败只落错误名，不回显整幅自选清单", async () => {
+  const { WatchlistProvider } = await import("../src/ui/watchlistProvider.ts");
+  const provider = new WatchlistProvider(false, false, "greenUpRedDown");
+  const leaked = '[{"groupName":"A股","confSymbol":"sh600519","name":"贵州茅台"},';
+
+  const lines = await withCapturedConsole(async () => {
+    await provider.handleDrop(
+      undefined as any,
+      {
+        get: (_mimeType: string) => ({ value: leaked, asString: async () => leaked }),
+      } as any,
+      { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => {} }) } as any
+    );
+  });
+  const joined = lines.join("\n");
+  assert.ok(joined.includes("拖拽数据 JSON 解析失败"), `解析失败必须留痕: ${joined}`);
+  assert.ok(joined.includes("SyntaxError"), `只留错误名: ${joined}`);
+  assert.ok(!joined.includes("sh600519"), `日志不得回显被拖拽的标的代码: ${joined}`);
+  assert.ok(!joined.includes("贵州茅台"), `日志不得回显被拖拽的标的名: ${joined}`);
+});
+
+void test("P2-3 回归 - 简洁展示模式下预警阈值遮值且禁用，且不得连带删除规则", async () => {
+  const { getSettingsWebviewHtml } = await import("../src/ui/settingsHtml.ts");
+  const html = getSettingsWebviewHtml("nonce-mask", "1.3.2", "vscode-resource://", {
+    watchlist: { "A股": [{ symbol: "sh600519", name: "贵州茅台", type: "A_SHARE" }] },
+    alerts: { sh600519: { symbol: "sh600519", name: "贵州茅台", above: 1900, below: 1700, changePercent: 5, enabled: true } },
+    maskMode: true,
+  } as any);
+
+  // 1. 三个阈值输入框必须与成本/数量同构：脱敏态遮值 + disabled
+  for (const cls of ["alert-above", "alert-below", "alert-pct"]) {
+    const line = html.split("\n").find((l) => l.includes(`class="alert-input ${cls}"`));
+    assert.ok(line, `预警表必须渲染 ${cls} 输入框`);
+    assert.ok(line!.includes("'***'"), `${cls} 在脱敏态必须遮值`);
+    assert.ok(line!.includes("isMasked ? 'disabled'"), `${cls} 在脱敏态必须禁用`);
+  }
+
+  // 2. 客户端读取出口：disabled/'***' 是「看不见」而不是「用户清空」，必须回读后端镜像
+  const fnStart = html.indexOf("function readThresholdCell(");
+  assert.ok(fnStart >= 0, "设置面板脚本必须包含 readThresholdCell 出口");
+  let depth = 0;
+  let fnEnd = -1;
+  for (let i = html.indexOf("{", fnStart); i < html.length; i++) {
+    if (html[i] === "{") depth++;
+    else if (html[i] === "}") {
+      depth--;
+      if (depth === 0) {
+        fnEnd = i;
+        break;
+      }
+    }
+  }
+  assert.ok(fnEnd > fnStart, "readThresholdCell 函数体必须可解析");
+  const readThresholdCell = new Function(
+    `${html.slice(fnStart, fnEnd + 1)}; return readThresholdCell;`
+  )() as (input: { value: string; disabled: boolean } | null, mirrored: unknown) => number | undefined;
+
+  assert.strictEqual(readThresholdCell({ value: "1900", disabled: false }, undefined), 1900, "常态输入框照常解析");
+  assert.strictEqual(readThresholdCell({ value: "***", disabled: true }, 1900), 1900, "遮值禁用态必须回读镜像现值，否则开关一切换整条规则就被删");
+  assert.strictEqual(readThresholdCell(null, 280), 280, "输入框缺失同样回读镜像");
+  assert.strictEqual(readThresholdCell({ value: "***", disabled: true }, undefined), undefined, "镜像无值时保持未设置");
+  assert.strictEqual(readThresholdCell({ value: "   ", disabled: false }, 1900), undefined, "用户主动清空仍须表达为删除该阈值");
+});
+
+void test("GroupItem - 代理挂起与离线状态呈现契约（方案 1）", async () => {
+  const { GroupItem } = await import("../src/ui/watchlistProvider.ts");
+  const vscode = await import("vscode");
+
+  // 1. 正常状态 GroupItem
+  const normalGroup = new GroupItem("Binance", [], "default", false, false, "", false, false);
+  assert.strictEqual(normalGroup.description, "(0)");
+  assert.strictEqual((normalGroup.iconPath as any)?.id, "folder");
+  assert.strictEqual(normalGroup.tooltip, undefined);
+
+  // 2. 挂起状态 GroupItem (带代理端口提示)
+  const suspendedGroup = new GroupItem(
+    "Binance",
+    [],
+    "default",
+    false,
+    false,
+    "",
+    false,
+    true,
+    "http://127.0.0.1:7890"
+  );
+  assert.ok(typeof suspendedGroup.description === "string" && suspendedGroup.description.includes("代理离线已暂停"), "挂起态描述必须包含代理离线已暂停");
+  assert.strictEqual((suspendedGroup.iconPath as any)?.id, "debug-disconnect");
+  assert.ok(suspendedGroup.tooltip instanceof (vscode as any).MarkdownString);
+  const mdValue = String((suspendedGroup.tooltip as any).value || "");
+  assert.ok(mdValue.includes("http://127.0.0.1:7890"), "Tooltip 中必须包含当前代理配置");
+  assert.ok(mdValue.includes("🔄 (刷新)"), "Tooltip 中必须包含刷新重试指引");
+
+  // 3. 动态切换挂起状态 setProxySuspended
+  normalGroup.setProxySuspended(true, "http://127.0.0.1:10809");
+  assert.ok(typeof normalGroup.description === "string" && normalGroup.description.includes("代理离线已暂停"));
+  assert.strictEqual((normalGroup.iconPath as any)?.id, "debug-disconnect");
+
+  normalGroup.setProxySuspended(false);
+  assert.strictEqual(normalGroup.description, "(0)");
+  assert.strictEqual((normalGroup.iconPath as any)?.id, "folder");
+  assert.strictEqual(normalGroup.tooltip, undefined);
+});
+
+void test("RefreshScheduler - 代理板块连续失败自动挂起、轮询跳过与手动刷新恢复测试（方案 1）", async () => {
+  const { RefreshScheduler } = await import("../src/scheduler.ts");
+  const { GroupItem } = await import("../src/ui/watchlistProvider.ts");
+  const vscode = await import("vscode");
+
+  const mockMarketManager: any = {
+    clearInvalidCache: () => {},
+    pollAll: async () => [],
+  };
+
+  let lastRebuildSuspended: Set<string> | undefined;
+  const mockTreeProvider: any = {
+    setAlerts: () => {},
+    buildTree: (_wl: any, _cache: any, _sections: any, _autoCollapse: any, suspended: Set<string>) => {
+      lastRebuildSuspended = suspended;
+    },
+    applyQuotes: () => {},
+    isEmpty: () => false,
+  };
+  const mockStatusBar: any = {
+    setQuotes: () => {},
+    show: () => {},
+    hide: () => {},
+    isBossKeyActive: () => false,
+  };
+  const mockTreeView: any = { visible: true };
+
+  const scheduler = new RefreshScheduler({
+    marketManager: mockMarketManager,
+    treeProvider: mockTreeProvider,
+    statusBar: mockStatusBar,
+    treeView: mockTreeView,
+  });
+
+  const cfg = vscode.workspace.getConfiguration("marketlens");
+  const origWatchlist = cfg.get("watchlist");
+  const origBinance = cfg.get("binance");
+
+  try {
+    await cfg.update("watchlist", {
+      "A股": [{ symbol: "sh600519", name: "贵州茅台", type: "A_SHARE" }],
+      "Binance": [{ symbol: "BTCUSDT", name: "BTC", type: "CRYPTO" }],
+    }, vscode.ConfigurationTarget.Global);
+    await cfg.update("binance", { enabled: true, networkMode: "proxy", proxyUrl: "http://127.0.0.1:10808" }, vscode.ConfigurationTarget.Global);
+
+    assert.strictEqual(scheduler.isProxySuspended("binance"), false);
+
+    // 1. 第一轮拉取失败（crypto 为 0）
+    await scheduler.refresh(false);
+    assert.strictEqual(scheduler.isProxySuspended("binance"), false, "第 1 次失败不应立刻挂起");
+
+    // 2. 第二轮拉取连续失败，达到阈值触发代理挂起
+    await scheduler.refresh(false);
+    assert.strictEqual(scheduler.isProxySuspended("binance"), true, "连续 2 次失败后必须进入挂起状态");
+    assert.ok(lastRebuildSuspended?.has("binance"), "rebuildTree 必须接收到挂起板块");
+
+    const { readConfig } = await import("../src/utils/config.ts");
+    // 3. 进入挂起状态后，下一次常规轮询（非强制）中 extractTargets 必须跳过 Binance
+    const nextTargets = scheduler.extractTargets(readConfig(), undefined, false);
+    assert.deepStrictEqual(nextTargets.cryptos, [], "挂起后常规轮询必须跳过 cryptos 提取");
+    assert.ok(nextTargets.aShares.length > 0, "A 股正常轮询绝不受影响");
+
+    // 4. 用户点击分组右侧 🔄 按钮重试（refreshGroup）：
+    // 模拟代理仍未开启场景 -> 保持挂起
+    const binanceGroupItem = new GroupItem("Binance", [], "default", false, false, "", false, true);
+    await scheduler.refreshGroup(binanceGroupItem);
+    assert.strictEqual(scheduler.isProxySuspended("binance"), true, "重试若仍失败必须继续保持挂起");
+
+    // 5. 模拟用户启动代理客户端后点击 🔄 按钮重试 -> 成功拉取到行情 -> 恢复正常！
+    mockMarketManager.pollAll = async () => [
+      { id: "BTCUSDT", symbol: "BTCUSDT", name: "BTC", type: "CRYPTO", price: 68000, changePercent: 2.1 }
+    ];
+    await scheduler.refreshGroup(binanceGroupItem);
+    assert.strictEqual(scheduler.isProxySuspended("binance"), false, "成功拉取后必须解除挂起状态");
+
+    // 恢复正常后常规轮询正常提取
+    const resumedTargets = scheduler.extractTargets(readConfig(), undefined, false);
+    assert.deepStrictEqual(resumedTargets.cryptos, ["BTCUSDT"], "解除挂起后正常恢复 cryptos 轮询");
+
+    // 6. 老板键激活状态下 refreshGroup 失败必须完全静默（AGENTS.md §5.4 守卫）
+    mockMarketManager.pollAll = async () => [];
+    let warningShowed = false;
+    const origShowWarning = (vscode.window as any).showWarningMessage;
+    (vscode.window as any).showWarningMessage = () => {
+      warningShowed = true;
+    };
+    mockStatusBar.isBossKeyActive = () => true;
+    try {
+      await scheduler.refreshGroup(binanceGroupItem);
+      assert.strictEqual(warningShowed, false, "老板键激活期间 refreshGroup 失败绝对禁止弹窗");
+    } finally {
+      (vscode.window as any).showWarningMessage = origShowWarning;
+      mockStatusBar.isBossKeyActive = () => false;
+    }
+  } finally {
+    scheduler.dispose();
+    await cfg.update("watchlist", origWatchlist, vscode.ConfigurationTarget.Global);
+    await cfg.update("binance", origBinance, vscode.ConfigurationTarget.Global);
+  }
+});
+
 
 
 

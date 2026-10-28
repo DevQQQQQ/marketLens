@@ -32,7 +32,7 @@ export const ASSET_TYPE_TO_SECTION_MAP: Record<AssetType, MarketSection> = {
  *
  * 基金没有独立 AssetType（场内 ETF 复用 A股行情通道，`resolveItemAssetType` 返回 `A_SHARE`），
  * 板块归属只能由分组名判定。本函数是该判定的**唯一实现**，禁止在各模块就地复制
- * `includes("基金") || /\betf\b/i.test(...)`——复制即漂移（AGENTS.md §6.8）。
+ * `includes("基金") || /\betf\b/i.test(...)`——复制即漂移（AGENTS.md §5.3）。
  */
 export function isFundGroupName(groupName?: string): boolean {
   if (!groupName) return false;
@@ -40,7 +40,7 @@ export function isFundGroupName(groupName?: string): boolean {
 }
 
 /**
- * 解析条目所属业务板块：板块开关判定与条目级过滤必须共用本出口（AGENTS.md §6.8）。
+ * 解析条目所属业务板块：板块开关判定与条目级过滤必须共用本出口（AGENTS.md §5.3）。
  *
  * 基金由分组名门控（`isFundGroupName`），其余板块经 `ASSET_TYPE_TO_SECTION_MAP` 映射。
  * 若只按映射表判定，基金条目会被 `aShare` 开关错误过滤——分组显示、条目全空。
@@ -53,6 +53,25 @@ export function resolveItemSection(
   if (isFundGroupName(groupName)) return "fund";
   const assetType = resolveItemAssetType(item, groupName);
   return assetType ? ASSET_TYPE_TO_SECTION_MAP[assetType] : undefined;
+}
+
+/**
+ * 解析分组所属业务板块（单一真相源）：
+ * 优先依据组内首个有效标的判定；若组为空则依据分组名推导。
+ */
+export function resolveGroupSection(
+  groupName: string,
+  items?: Array<{ symbol?: string; type?: string }>
+): MarketSection | undefined {
+  if (isFundGroupName(groupName)) return "fund";
+  if (items && items.length > 0) {
+    const firstValid = items.find((it) => it && (it.symbol || it.type));
+    if (firstValid) {
+      const sec = resolveItemSection(firstValid, groupName);
+      if (sec) return sec;
+    }
+  }
+  return resolveItemSection({ symbol: "" }, groupName);
 }
 
 export function isContractAddress(str: string): boolean {
@@ -71,7 +90,7 @@ export interface TodayProfitSource {
 }
 
 /**
- * 今日盈亏反推的**唯一实现**（AGENTS.md §6.9）。
+ * 今日盈亏反推的**唯一实现**（AGENTS.md §5.5）。
  *
  * 优先级：报文真实涨跌额 > 今开价差 > 昨收价差 > 由涨跌幅反推昨收。
  * 新增展示位需要该数值时必须调用本函数，禁止就地复制公式——
@@ -620,7 +639,7 @@ export function applyAlertRuleDelta(
     const existingCanonical = normalizeSymbolKey(existingKey) || existingKey.toLowerCase();
     // 同一标的的规范键与历史别名键全部先剔除，再按需只写回规范键那一条。
     // 别名判定同时走 isSameSymbol：`sh600519` / `SH600519` / `600519` 这类同标的多形态键
-    // 若并存，会让冷却键与静音判定按键形态分裂失效（§6.11）。
+    // 若并存，会让冷却键与静音判定按键形态分裂失效（§5.5）。
     if (existingCanonical === canonicalKey || isSameSymbol(existingKey, canonicalKey)) {
       continue;
     }
@@ -676,6 +695,8 @@ export interface TargetExtractionOptions {
   skipAShare?: boolean | undefined;
   skipHKStock?: boolean | undefined;
   skipUSStock?: boolean | undefined;
+  skipBinance?: boolean | undefined;
+  skipAlpha?: boolean | undefined;
 }
 
 export interface ExtractedTargets {
@@ -706,6 +727,8 @@ export function extractTargetsFromWatchlist(
     skipAShare = false,
     skipHKStock = false,
     skipUSStock = false,
+    skipBinance = false,
+    skipAlpha = false,
   } = options;
 
   const funds: string[] = [];
@@ -731,11 +754,11 @@ export function extractTargetsFromWatchlist(
       const resolvedType = resolveItemAssetType(item, groupName);
 
       if (resolvedType === "ALPHA_TOKEN" || resolvedType === "BSC_TOKEN") {
-        if (alphaEnabled) {
+        if (alphaEnabled && !skipAlpha) {
           bscTokens.push(sym);
         }
       } else if (resolvedType === "CRYPTO") {
-        if (binanceEnabled) {
+        if (binanceEnabled && !skipBinance) {
           cryptos.push(sym);
         }
       } else if (resolvedType === "HK_STOCK") {
@@ -1347,7 +1370,32 @@ export function escapeHtml(str: unknown): string {
 }
 
 /**
- * 推导条目的计价货币（单一出口，§6.9）
+ * Markdown 行内文本消毒（Tooltip / 卡片标题用）。
+ *
+ * 存在理由：树节点与状态栏 Tooltip 走 `MarkdownString` 渲染，`supportHtml=false` 只挡住 HTML，
+ * 挡不住 Markdown 链接语法。而 Tooltip 里的标的名来自行情接口与 DexScreener 报文（外部可控），
+ * 若不转义方括号，报文就能自行拼出 `[文案](command:...)` 或外链（AGENTS.md §5.4）。
+ * 先折叠换行（避免撑破标题行与表格行），再转义 HTML 实体与 Markdown 强调/链接字符。
+ */
+export function escapeMarkdownInline(str: unknown): string {
+  if (str === null || str === undefined) {
+    return "";
+  }
+  const flat = String(str).replace(/[\r\n]+/g, " ");
+  return escapeHtml(flat).replace(/([`[\]])/g, "\\$1");
+}
+
+/**
+ * Markdown 代码段（反引号包裹）消毒：折叠换行并剥离反引号，防止报文提前闭合代码段后注入富文本。
+ * 反引号无法在代码段内用反斜杠转义，因此只能删除。
+ */
+export function toMarkdownCodeSpan(str: unknown): string {
+  const flat = String(str ?? "").replace(/[\r\n]+/g, " ").replace(/`/g, "");
+  return `\`${flat}\``;
+}
+
+/**
+ * 推导条目的计价货币（单一出口，§5.5）
  * 加密与链上标的按 U 本位（USDT）计价：币安报价来自 USDT 等稳定币交易对，
  * DexScreener 的 priceUsd 在本产品口径下同样按 U 本位表达，不做多币种换算。
  * 侧边栏卡片与持仓看板必须共用本函数，否则同一标的会出现两套盈亏币种口径。
@@ -1380,7 +1428,7 @@ export interface HoldingItemQuote {
   shares: number;
   price: number;
   changePercent: number;
-  // 行情解析层对「上游未供数」产出 undefined（§6.13），此处的可选位同样如实允许
+  // 行情解析层对「上游未供数」产出 undefined（§5.5），此处的可选位同样如实允许
   change?: number | undefined;
   open?: number | undefined;
   prevClose?: number | undefined;

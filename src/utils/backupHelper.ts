@@ -1,9 +1,10 @@
 // src/utils/backupHelper.ts
 import * as vscode from "vscode";
 import type { MarketLensConfig, GroupSortMode, WatchConfigItem, PriceAlertItem } from "../types/index.ts";
-import { MARKET_SECTIONS, isClosingSection } from "./config.ts";
+import { GROUP_SORT_MODES, MARKET_SECTIONS, isClosingSection } from "./config.ts";
 import { logger } from "./logger.ts";
 import { sanitizeWatchlist } from "./symbolHelper.ts";
+import { validateAndNormalizeProxyUrl } from "../services/network.ts";
 import { isBossKeyActive, showInfoMessage } from "./feedback.ts";
 
 /** MarketLens 标准备份数据结构 */
@@ -175,10 +176,12 @@ export function validateBackupData(raw: unknown): ValidationResult {
   }
 
   // 校验 groupSortModes 结构
+  // 备份 JSON 是外部可控输入：排序模式必须按 GROUP_SORT_MODES 白名单收敛，
+  // 不能 `as GroupSortMode` 盲转——非法值会一路进 globalState 并让排序分支静默走空。
   const normalizedGroupSortModes: Record<string, GroupSortMode> = {};
   if (groupSortCandidate && typeof groupSortCandidate === "object" && !Array.isArray(groupSortCandidate)) {
     for (const [grp, mode] of Object.entries(groupSortCandidate)) {
-      if (typeof mode === "string") {
+      if (typeof mode === "string" && (GROUP_SORT_MODES as readonly string[]).includes(mode)) {
         normalizedGroupSortModes[grp] = mode as GroupSortMode;
       }
     }
@@ -197,7 +200,12 @@ export function validateBackupData(raw: unknown): ValidationResult {
       statusBarEnabled: typeof settingsCandidate.statusBarEnabled === "boolean" ? settingsCandidate.statusBarEnabled : undefined,
       autoCollapseClosedGroups: typeof settingsCandidate.autoCollapseClosedGroups === "boolean" ? settingsCandidate.autoCollapseClosedGroups : undefined,
       proxyPort: typeof settingsCandidate.proxyPort === "number" ? settingsCandidate.proxyPort : undefined,
-      proxyUrl: typeof settingsCandidate.proxyUrl === "string" ? settingsCandidate.proxyUrl : undefined,
+      // 备份里的代理地址与设置面板、请求侧共用同一规范化出口：
+      // socks5://、纯端口、https:// 等异形输入不能原样写回公开契约键。
+      proxyUrl:
+        typeof settingsCandidate.proxyUrl === "string" && settingsCandidate.proxyUrl.trim() !== ""
+          ? validateAndNormalizeProxyUrl(settingsCandidate.proxyUrl)
+          : undefined,
 
       fund: settingsCandidate.fund,
       aShare: settingsCandidate.aShare,
@@ -240,7 +248,7 @@ export async function exportSettingsToFile(
   groupSortModes?: Record<string, GroupSortMode>,
   version?: string
 ): Promise<boolean> {
-  // 守卫下沉（AGENTS.md §6.3 规则六）：备份文件是含真实自选、成本价与预警阈值的明文 JSON，
+  // 守卫下沉（AGENTS.md §5.4）：备份文件是含真实自选、成本价与预警阈值的明文 JSON，
   // 且 showSaveDialog 属系统对话框——老板键激活时必须完全静默，连对话框与回执都不出现。
   if (isBossKeyActive()) {
     return false;
@@ -397,7 +405,7 @@ export async function importSettingsFromFile(options: {
     // 3. 各市场板块独立配置
     //    导入文件是外部可控 JSON，写入公开契约前必须逐键验型；且 `stopOnMarketClosed`
     //    只能落在有休市概念的板块上，否则会把设置面板上永远不可见的野键写进 settings.json
-    //    （AGENTS.md §6.1 公开契约 / §6.10 休市判定）。
+    //    （AGENTS.md §5.1 公开契约 / §5.5 休市判定）。
     for (const sec of MARKET_SECTIONS) {
       const rawSecConfig = (data.settings as Record<string, unknown>)[sec];
       if (rawSecConfig && typeof rawSecConfig === "object") {
@@ -412,7 +420,12 @@ export async function importSettingsFromFile(options: {
           await cfg.update(`${sec}.networkMode`, secConfig.networkMode, target);
         }
         if (typeof secConfig.proxyUrl === "string") {
-          await cfg.update(`${sec}.proxyUrl`, secConfig.proxyUrl, target);
+          // 留空表示「继承全局代理」，必须原样保留；非空则与全局代理走同一规范化出口
+          await cfg.update(
+            `${sec}.proxyUrl`,
+            secConfig.proxyUrl.trim() === "" ? "" : validateAndNormalizeProxyUrl(secConfig.proxyUrl),
+            target
+          );
         }
         if (typeof secConfig.stopOnMarketClosed === "boolean" && isClosingSection(sec)) {
           await cfg.update(`${sec}.stopOnMarketClosed`, secConfig.stopOnMarketClosed, target);
