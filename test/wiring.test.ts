@@ -17,6 +17,7 @@ import { importSettingsFromFile, exportSettingsToFile } from "../src/utils/backu
 import { WatchlistProvider, GroupItem, StockItem } from "../src/ui/watchlistProvider.ts";
 import { WatchlistOps } from "../src/watchlistOps.ts";
 import { setMaskSnapshotSource } from "../src/utils/feedback.ts";
+import { setCachedIpoForTesting } from "../src/services/ipoService.ts";
 import { MASKED_TOOLTIP_TEXT } from "../src/utils/maskState.ts";
 import { applyAlertRuleDelta, sanitizeAlerts } from "../src/utils/symbolHelper.ts";
 import { logger } from "../src/utils/logger.ts";
@@ -343,6 +344,8 @@ void test("SettingsWebviewPanel - 白名单校验与面板生命周期", async (
   assert.ok(ALLOWED_CONFIG_KEYS.has("maskMode"));
   assert.ok(ALLOWED_CONFIG_KEYS.has("fund.enabled"));
   assert.ok(ALLOWED_CONFIG_KEYS.has("aShare.networkMode"));
+  assert.ok(ALLOWED_CONFIG_KEYS.has("ipoReminder.enabled"));
+  assert.ok(ALLOWED_CONFIG_KEYS.has("ipoReminder.includeHkShare"));
   assert.ok(!ALLOWED_CONFIG_KEYS.has("maliciousKey"));
 
   // 面板创建与同步
@@ -420,6 +423,8 @@ void test("extension 与 commands - 扩展完整生命周期与命令分发集�
   await vscode.commands.executeCommand("marketlens.openSettings");
   await vscode.commands.executeCommand("marketlens.refresh");
   await vscode.commands.executeCommand("marketlens.refreshGroup");
+  setCachedIpoForTesting([]);
+  await vscode.commands.executeCommand("marketlens.checkTodayIpo");
   await vscode.commands.executeCommand("marketlens.toggleBossKey");
   await vscode.commands.executeCommand("marketlens.toggleBossKey");
 

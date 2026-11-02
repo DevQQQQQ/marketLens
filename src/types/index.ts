@@ -135,4 +135,27 @@ export interface MarketLensConfig {
   alerts: AlertsConfig;
   alertNotificationMode: "notification" | "statusBarOnly" | "both";
   alertCooldownMinutes: number;
+
+  // ── 今日打新与申购提醒 ──
+  ipoReminder: IpoReminderConfig;
+}
+
+export type IpoType = "A_SHARE" | "CONVERTIBLE_BOND" | "HK_STOCK";
+
+export interface IpoItem {
+  type: IpoType;
+  code: string;
+  name: string;
+  applyCode?: string | undefined;
+  price?: number | string | undefined;
+  applyDate?: string | undefined;
+  limitOrLots?: string | undefined;
+  detail?: string | undefined;
+}
+
+export interface IpoReminderConfig {
+  enabled: boolean;
+  includeAShare: boolean;
+  includeConvertibleBond: boolean;
+  includeHkShare: boolean;
 }

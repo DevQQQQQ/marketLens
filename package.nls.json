@@ -67,5 +67,10 @@
 	"configuration.watchlist.description": "Watchlist configuration, organized by group.",
 	"configuration.alerts.description": "Price alert dictionary per symbol (breakout, breakdown and intraday volatility thresholds).",
 	"configuration.alertNotificationMode.description": "How price alerts are presented when a threshold is touched.",
-	"configuration.alertCooldownMinutes.description": "Mute cooldown in minutes for consecutive alerts on the same symbol."
+	"configuration.alertCooldownMinutes.description": "Mute cooldown in minutes for consecutive alerts on the same symbol.",
+	"command.checkTodayIpo": "MarketLens: Check Today's IPO & Subscription Calendar",
+	"configuration.ipoReminder.enabled.description": "Whether to enable today's IPO and convertible bond subscription reminders on trading days (active between 09:15 and 15:00).",
+	"configuration.ipoReminder.includeAShare.description": "Whether to include A-share new stock subscription reminders.",
+	"configuration.ipoReminder.includeConvertibleBond.description": "Whether to include A-share convertible bond subscription reminders.",
+	"configuration.ipoReminder.includeHkShare.description": "Whether to include Hong Kong stock IPO subscription reminders."
 }

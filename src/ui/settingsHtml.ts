@@ -42,6 +42,10 @@ export interface SettingsFormData {
 	alerts?: AlertsConfig;
 	alertNotificationMode?: string;
 	alertCooldownMinutes?: number;
+	ipoReminderEnabled?: boolean;
+	ipoReminderIncludeAShare?: boolean;
+	ipoReminderIncludeConvertibleBond?: boolean;
+	ipoReminderIncludeHkShare?: boolean;
 	watchlist?: WatchlistConfig;
 }
 
@@ -115,6 +119,13 @@ export function getSettingsWebviewHtml(
 		alerts: initialData.alerts || {},
 		alertNotificationMode: initialData.alertNotificationMode || 'notification',
 		alertCooldownMinutes: initialData.alertCooldownMinutes || 15,
+		ipoReminderEnabled: initialData.ipoReminderEnabled !== undefined ? initialData.ipoReminderEnabled : true,
+		ipoReminderIncludeAShare:
+			initialData.ipoReminderIncludeAShare !== undefined ? initialData.ipoReminderIncludeAShare : true,
+		ipoReminderIncludeConvertibleBond:
+			initialData.ipoReminderIncludeConvertibleBond !== undefined ? initialData.ipoReminderIncludeConvertibleBond : true,
+		ipoReminderIncludeHkShare:
+			initialData.ipoReminderIncludeHkShare !== undefined ? initialData.ipoReminderIncludeHkShare : true,
 		watchlist: initialData.watchlist || {},
 	};
 
@@ -658,6 +669,34 @@ export function getSettingsWebviewHtml(
             <div class="card-desc">同一标的触发预警后的冷静期（防止在关键点位来回震荡造成连续提示轰炸）。默认 15 分钟。</div>
           </div>
           <input type="number" id="alertCooldownMinutes" value="${d.alertCooldownMinutes}" min="1" max="1440" style="width: 80px; text-align: center; font-family: monospace; font-size: 13px; font-weight: 500; padding: 6px 8px; border-radius: 4px; background: var(--input-bg); color: var(--input-fg); border: 1px solid var(--border);">
+        </div>
+
+        <div class="card" style="flex-direction: column; align-items: stretch; gap: 12px;">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <div class="card-info">
+              <div class="card-title">今日新股与可转债申购提醒</div>
+              <div class="card-desc">交易日 09:15~15:00 期间自动检测当日可申购标的并弹出提醒（每日仅提醒一次，无申购时彻底静默）</div>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="ipoReminder.enabled" ${d.ipoReminderEnabled ? 'checked' : ''}>
+              <span class="slider"></span>
+            </label>
+          </div>
+          <div style="display: flex; gap: 18px; align-items: center; padding-top: 10px; border-top: 1px solid var(--border); flex-wrap: wrap;">
+            <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 13px;">
+              <input type="checkbox" id="ipoReminder.includeAShare" ${d.ipoReminderIncludeAShare ? 'checked' : ''}>
+              A 股新股
+            </label>
+            <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 13px;">
+              <input type="checkbox" id="ipoReminder.includeConvertibleBond" ${d.ipoReminderIncludeConvertibleBond ? 'checked' : ''}>
+              A 股可转债
+            </label>
+            <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 13px;">
+              <input type="checkbox" id="ipoReminder.includeHkShare" ${d.ipoReminderIncludeHkShare ? 'checked' : ''}>
+              港股 IPO
+            </label>
+            <button class="btn-primary" id="btnCheckTodayIpo" style="margin-left: auto; font-size: 12px; padding: 5px 12px;">📅 立即查看今日申购</button>
+          </div>
         </div>
 
         <div class="card" style="flex-direction: column; align-items: stretch; gap: 14px;">
@@ -1520,6 +1559,22 @@ export function getSettingsWebviewHtml(
         sendUpdate('alertCooldownMinutes', val);
         showToast('⚡ 预警冷却时间已更新为 ' + val + ' 分钟');
       });
+      on('ipoReminder.enabled', 'change', function() {
+        sendUpdate('ipoReminder.enabled', this.checked);
+        showToast(this.checked ? '🔔 已开启今日打新提醒' : '🔕 已关闭今日打新提醒');
+      });
+      on('ipoReminder.includeAShare', 'change', function() {
+        sendUpdate('ipoReminder.includeAShare', this.checked);
+      });
+      on('ipoReminder.includeConvertibleBond', 'change', function() {
+        sendUpdate('ipoReminder.includeConvertibleBond', this.checked);
+      });
+      on('ipoReminder.includeHkShare', 'change', function() {
+        sendUpdate('ipoReminder.includeHkShare', this.checked);
+      });
+      on('btnCheckTodayIpo', 'click', function() {
+        vscode.postMessage({ command: 'checkTodayIpo' });
+      });
       on('btnClearAllAlerts', 'click', function() {
         postCmd('clearAllAlerts');
       });
@@ -1725,6 +1780,10 @@ export function getSettingsWebviewHtml(
           // 到价预警
           setValue('alertNotificationMode', d.alertNotificationMode || 'notification');
           setValue('alertCooldownMinutes', d.alertCooldownMinutes !== undefined ? d.alertCooldownMinutes : 15);
+          setChecked('ipoReminder.enabled', d.ipoReminderEnabled !== false);
+          setChecked('ipoReminder.includeAShare', d.ipoReminderIncludeAShare !== false);
+          setChecked('ipoReminder.includeConvertibleBond', d.ipoReminderIncludeConvertibleBond !== false);
+          setChecked('ipoReminder.includeHkShare', d.ipoReminderIncludeHkShare !== false);
           if (d.alerts !== undefined && !hasAlertDirty()) currentAlerts = d.alerts || {};
           if (d.watchlist !== undefined) currentWatchlist = d.watchlist || {};
           renderAlertTable(currentWatchlist, currentAlerts);

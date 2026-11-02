@@ -22,6 +22,15 @@ import { AShareService } from "../src/services/aShareService.ts";
 import { HKStockService } from "../src/services/hkStockService.ts";
 import { USStockService } from "../src/services/usStockService.ts";
 import { generateBackupData, validateBackupData } from "../src/utils/backupHelper.ts";
+import {
+  parseHkIpoHtml,
+  isWithinIpoWindow,
+  resetIpoCache,
+  setCachedIpoForTesting,
+  checkAndTriggerIpoReminder,
+  showIpoDetailQuickPick,
+  GLOBAL_STATE_LAST_IPO_REMIND_KEY,
+} from "../src/services/ipoService.ts";
 import "./config.test.ts";
 
 void test("nls - package.json 占位符与语言包契约一致性", () => {
@@ -4572,6 +4581,217 @@ void test("RefreshScheduler - 代理板块连续失败自动挂起、轮询跳�
     await cfg.update("binance", origBinance, vscode.ConfigurationTarget.Global);
   }
 });
+
+// ── 今日新股与可转债申购提醒服务契约测试 ──
+
+void test("ipoService - 港股 HTML 表格解析与有效申购期判定", () => {
+  const sampleHtml = `
+  <table class="table table_striped center ">
+    <thead><tr><td>序号</td><td>股票代码</td><td>股票名称</td><td>招股价</td><td>招股数(股)</td><td>募集资金(港元)</td><td>招股日期</td><td>上市日期</td></tr></thead>
+    <tbody>
+      <tr>
+        <td><span>1</span></td>
+        <td><a target="_blank" href="http://quote.eastmoney.com/hk/02384.html">02384</a></td>
+        <td><a target="_blank" href="http://quote.eastmoney.com/hk/02384.html">东山精密</a></td>
+        <td><span>93.8</span></td>
+        <td><span>11378.32万</span></td>
+        <td><span>98.76亿</span></td>
+        <td><span>2026-10-20</span></td>
+        <td><span>2026-10-28</span></td>
+      </tr>
+      <tr>
+        <td><span>2</span></td>
+        <td><a target="_blank" href="http://quote.eastmoney.com/hk/09999.html">09999</a></td>
+        <td><a target="_blank" href="http://quote.eastmoney.com/hk/09999.html">测试科技</a></td>
+        <td><span>12.5-15.0</span></td>
+        <td><span>5000万</span></td>
+        <td><span>7.5亿</span></td>
+        <td><span>2026-11-01～2026-11-05</span></td>
+        <td><span>2026-11-10</span></td>
+      </tr>
+      <tr>
+        <td><span>3</span></td>
+        <td><a target="_blank" href="http://quote.eastmoney.com/hk/08888.html">08888</a></td>
+        <td><a target="_blank" href="http://quote.eastmoney.com/hk/08888.html">过期股份</a></td>
+        <td><span>5.0</span></td>
+        <td><span>1000万</span></td>
+        <td><span>5000万</span></td>
+        <td><span>2026-09-01</span></td>
+        <td><span>2026-09-10</span></td>
+      </tr>
+    </tbody>
+  </table>
+  `;
+
+  // 1. 测试在 2026-11-02 处于区间 2026-11-01～2026-11-05 内的标的能被精准命中
+  const res1 = parseHkIpoHtml(sampleHtml, "2026-11-02");
+  assert.strictEqual(res1.length, 1, "只应命中处于招股区间内的测试科技");
+  assert.strictEqual(res1[0]?.code, "09999");
+  assert.strictEqual(res1[0]?.name, "测试科技");
+  assert.strictEqual(res1[0]?.type, "HK_STOCK");
+  assert.strictEqual(res1[0]?.price, "12.5-15.0港元");
+  assert.strictEqual(res1[0]?.limitOrLots, undefined, "港股全盘招股数不应被伪装为申购上限 (IPO-4)");
+  assert.match(res1[0]?.detail || "", /发行量: 5000万股/, "发行量应收敛至 detail");
+
+  // 2. 测试在 2026-10-20 招股起始日能够命中
+  const res2 = parseHkIpoHtml(sampleHtml, "2026-10-20");
+  assert.strictEqual(res2.length, 1);
+  assert.strictEqual(res2[0]?.code, "02384");
+
+  // 2.1 P2-3 回归：招股结束后及 2026-10-28 上市日绝不得误判为「正在申购」 (IPO-3)
+  const resClosed1 = parseHkIpoHtml(sampleHtml, "2026-10-25");
+  assert.strictEqual(resClosed1.length, 0, "招股已结束日期不应命中");
+  const resClosed2 = parseHkIpoHtml(sampleHtml, "2026-10-28");
+  assert.strictEqual(resClosed2.length, 0, "上市日已过申购期，不应被判为申购中 (IPO-3)");
+
+  // 3. 测试不在任何有效招股区间的日期返回空列表
+  const res3 = parseHkIpoHtml(sampleHtml, "2026-12-01");
+  assert.strictEqual(res3.length, 0, "过期日期不应命中任何标的");
+});
+
+void test("ipoService - 申购时间窗口与交易日判定守卫", () => {
+  // 1. 周六、周日严格拒绝
+  const sunday = new Date("2026-11-01T10:00:00+08:00");
+  assert.strictEqual(isWithinIpoWindow(sunday), false, "周日闭市必须拒绝");
+
+  const saturday = new Date("2026-10-31T10:00:00+08:00");
+  assert.strictEqual(isWithinIpoWindow(saturday), false, "周六闭市必须拒绝");
+
+  // 2. 交易日开盘前 09:14 拒绝，09:15 开启
+  const weekday914 = new Date("2026-11-02T09:14:00+08:00");
+  assert.strictEqual(isWithinIpoWindow(weekday914), false, "09:14 尚未进入申购窗口");
+
+  const weekday915 = new Date("2026-11-02T09:15:00+08:00");
+  assert.strictEqual(isWithinIpoWindow(weekday915), true, "09:15 正式进入申购窗口");
+
+  // 3. 交易日下午 14:59 允许，15:01 闭市拒绝
+  const weekday1459 = new Date("2026-11-02T14:59:00+08:00");
+  assert.strictEqual(isWithinIpoWindow(weekday1459), true, "14:59 处于申购窗口内");
+
+  const weekday1501 = new Date("2026-11-02T15:01:00+08:00");
+  assert.strictEqual(isWithinIpoWindow(weekday1501), false, "15:01 已过申购截止时间");
+});
+
+void test("ipoService - 提醒调度、防重复轰炸与老板键一票否决守卫", async () => {
+  const vscode = await import("vscode");
+  resetIpoCache();
+  const mockState: Record<string, any> = {};
+  const globalState: any = {
+    get: (k: string) => mockState[k],
+    update: async (k: string, v: any) => {
+      mockState[k] = v;
+    },
+  };
+
+  let infoMessageCalled = false;
+  let lastMessageText = "";
+  const origShowInfo = (vscode.window as any).showInformationMessage;
+  (vscode.window as any).showInformationMessage = (msg: string, ...actions: string[]) => {
+    infoMessageCalled = true;
+    lastMessageText = msg;
+    return Promise.resolve(actions[0]);
+  };
+
+  const mockTradingTime = new Date("2026-11-02T10:00:00+08:00");
+
+  try {
+    // 注入有效标的，避免因无数据而提前 return
+    setCachedIpoForTesting([
+      { type: "A_SHARE", code: "600000", name: "浦发银行", applyCode: "730000", price: 10, applyDate: "2026-11-02" }
+    ], "2026-11-02");
+
+    // 1. 老板键激活时：一票否决，绝对不弹窗，且不落盘时间戳（等待退出老板键后能再次检测）(IPO-1 / IPO-14)
+    let isBossKey = true;
+    await checkAndTriggerIpoReminder(globalState, () => isBossKey, false, mockTradingTime);
+    assert.strictEqual(infoMessageCalled, false, "老板键激活期间绝对不得弹窗");
+    assert.strictEqual(globalState.get(GLOBAL_STATE_LAST_IPO_REMIND_KEY), undefined, "老板键激活期间不消耗今日提醒配额");
+
+    // 2. 正常营业时段未提醒过：成功弹窗，且标记当日已提醒 (Happy Path)
+    isBossKey = false;
+    await checkAndTriggerIpoReminder(globalState, () => isBossKey, false, mockTradingTime);
+    assert.strictEqual(infoMessageCalled, true, "正常营业窗口期应触发主动通知");
+    assert.match(lastMessageText, /1 只 A股新股/, "弹窗文案应准确汇报新股数量");
+    assert.strictEqual(globalState.get(GLOBAL_STATE_LAST_IPO_REMIND_KEY), "2026-11-02", "成功提醒后写入配额");
+
+    // 3. 模拟当天已经提醒过：即使解除老板键也必须静默（防重复轰炸）
+    infoMessageCalled = false;
+    await checkAndTriggerIpoReminder(globalState, () => false, false, mockTradingTime);
+    assert.strictEqual(infoMessageCalled, false, "当天已提醒过时绝不重复弹窗");
+
+    // 4. 并发调用互斥测试：同时触发两次调用，只应弹窗一次 (IPO-13)
+    resetIpoCache();
+    delete mockState[GLOBAL_STATE_LAST_IPO_REMIND_KEY];
+    setCachedIpoForTesting([
+      { type: "A_SHARE", code: "600000", name: "浦发银行", applyCode: "730000", price: 10, applyDate: "2026-11-02" }
+    ], "2026-11-02");
+    let callCount = 0;
+    (vscode.window as any).showInformationMessage = (msg: string, ...actions: string[]) => {
+      callCount++;
+      return Promise.resolve(actions[0]);
+    };
+    await Promise.all([
+      checkAndTriggerIpoReminder(globalState, () => false, false, mockTradingTime),
+      checkAndTriggerIpoReminder(globalState, () => false, false, mockTradingTime),
+    ]);
+    assert.strictEqual(callCount, 1, "并发调用必须被在途中单例锁互斥合并，只能弹窗一次 (IPO-13)");
+  } finally {
+    (vscode.window as any).showInformationMessage = origShowInfo;
+    resetIpoCache();
+  }
+});
+
+void test("ipoService - QuickPick 详情展示与剪贴板复制及脱敏守卫", async () => {
+  const vscode = await import("vscode");
+  let lastInfoMsg = "";
+  const origShowInfo = (vscode.window as any).showInformationMessage;
+  (vscode.window as any).showInformationMessage = (msg: string) => {
+    lastInfoMsg = msg;
+    return Promise.resolve(undefined);
+  };
+
+  let quickPickShown = false;
+  let clipboardText = "";
+  const origShowQuickPick = vscode.window.showQuickPick;
+  const origWriteClipboard = vscode.env.clipboard.writeText;
+
+  (vscode.window as any).showQuickPick = (items: any[]) => {
+    quickPickShown = true;
+    return Promise.resolve(items[0]);
+  };
+  (vscode.env.clipboard as any).writeText = (text: string) => {
+    clipboardText = text;
+    return Promise.resolve();
+  };
+
+  try {
+    // 1. 老板键激活时：一票否决，直接退出，不显示 QuickPick (IPO-1)
+    await showIpoDetailQuickPick(
+      [{ type: "A_SHARE", code: "600000", name: "浦发银行", applyCode: "730000", price: 10 }],
+      () => true
+    );
+    assert.strictEqual(quickPickShown, false, "老板键激活时不得打开 QuickPick");
+
+    // 2. 正常状态：展示 QuickPick，用户选择标的后复制申购信息至剪贴板，价格格式正常 (IPO-8)
+    await showIpoDetailQuickPick(
+      [{ type: "A_SHARE", code: "600000", name: "浦发银行", applyCode: "730000", price: 10, limitOrLots: "10万股" }],
+      () => false
+    );
+    assert.strictEqual(quickPickShown, true, "正常状态下应展示 QuickPick");
+    assert.strictEqual(clipboardText, "浦发银行 (600000) 申购代码: 730000 发行价: 10元", "剪贴板内容应格式化正确且不出现 undefined");
+    assert.match(lastInfoMsg, /已复制申购信息至剪贴板/, "应弹出复制成功提示");
+
+    // 3. 空列表友好提示
+    quickPickShown = false;
+    await showIpoDetailQuickPick([], () => false);
+    assert.strictEqual(quickPickShown, false, "空列表不应展示 QuickPick");
+    assert.strictEqual(lastInfoMsg, "今日暂无可申购的新股或可转债。");
+  } finally {
+    (vscode.window as any).showInformationMessage = origShowInfo;
+    (vscode.window as any).showQuickPick = origShowQuickPick;
+    (vscode.env.clipboard as any).writeText = origWriteClipboard;
+  }
+});
+
 
 
 

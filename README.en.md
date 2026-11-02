@@ -8,7 +8,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/VS_Code-^1.85.0-007ACC?logo=visualstudiocode" alt="VS Code Version">
   <img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License">
-  <img src="https://img.shields.io/badge/Release-v1.3.3-blue.svg" alt="Version">
+  <img src="https://img.shields.io/badge/Release-v1.3.4-blue.svg" alt="Version">
   <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-orange" alt="Platform">
 </p>
 
@@ -216,6 +216,7 @@ Designed for corporate network environments with firewall audits, DPI, and DNS l
 Click the **`⚙️`** gear icon at the top of the watchlist sidebar to open the modern Webview configuration panel:
 
 - **General Settings**: Backup export & import restoration, factory reset, clear all symbols, auto-refresh toggles, refresh interval (ms precision), stealth modes, color neutrality, and global carousel control;
+- **🔔 IPO & Subscription Reminders**: Automated alerts for today's A-share IPOs, convertible bonds, and HK IPOs during trading hours (09:15-15:00), or check anytime via `MarketLens: Check Today's IPO & Subscription Calendar`;
 - **⚡ Price Alerts**: Centralized alert management matrix for all market symbols with threshold adjustments and cooldown timers;
 - **Dedicated Section Tabs**: Independent control for Funds, A-Shares, HK Stocks, US Stocks, Binance, and Alpha;
 - **About & Help**: Check version numbers, view keyboard shortcut cheatsheets, file GitHub issues, or join the community.

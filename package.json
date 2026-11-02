@@ -2,7 +2,7 @@
 	"name": "marketlens",
 	"displayName": "%displayName%",
 	"description": "%description%",
-	"version": "1.3.3",
+	"version": "1.3.4",
 	"publisher": "devqqqqq",
 	"repository": {
 		"type": "git",
@@ -189,6 +189,11 @@
 				"command": "marketlens.addCommonIndices",
 				"title": "%command.addCommonIndices%",
 				"icon": "$(graph-line)"
+			},
+			{
+				"command": "marketlens.checkTodayIpo",
+				"title": "%command.checkTodayIpo%",
+				"icon": "$(calendar)"
 			}
 		],
 		"keybindings": [
@@ -807,6 +812,30 @@
 					"maximum": 1440,
 					"order": 72,
 					"description": "%configuration.alertCooldownMinutes.description%"
+				},
+				"marketlens.ipoReminder.enabled": {
+					"type": "boolean",
+					"default": true,
+					"order": 80,
+					"description": "%configuration.ipoReminder.enabled.description%"
+				},
+				"marketlens.ipoReminder.includeAShare": {
+					"type": "boolean",
+					"default": true,
+					"order": 81,
+					"description": "%configuration.ipoReminder.includeAShare.description%"
+				},
+				"marketlens.ipoReminder.includeConvertibleBond": {
+					"type": "boolean",
+					"default": true,
+					"order": 82,
+					"description": "%configuration.ipoReminder.includeConvertibleBond.description%"
+				},
+				"marketlens.ipoReminder.includeHkShare": {
+					"type": "boolean",
+					"default": true,
+					"order": 83,
+					"description": "%configuration.ipoReminder.includeHkShare.description%"
 				}
 			}
 		}

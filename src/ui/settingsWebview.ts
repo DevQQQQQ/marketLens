@@ -31,6 +31,10 @@ const GLOBAL_CONFIG_KEYS = [
   "autoCollapseClosedGroups",
   "alertNotificationMode",
   "alertCooldownMinutes",
+  "ipoReminder.enabled",
+  "ipoReminder.includeAShare",
+  "ipoReminder.includeConvertibleBond",
+  "ipoReminder.includeHkShare",
 ] as const;
 
 const COMMON_SECTION_PROPERTIES = [
@@ -378,6 +382,9 @@ export class SettingsWebviewPanel {
               showInfoMessage(`📋 已复制到剪贴板: ${maskIfNeeded(String(message.text))}`);
             }
             break;
+          case "checkTodayIpo":
+            await vscode.commands.executeCommand("marketlens.checkTodayIpo");
+            break;
         }
       }),
       null,
@@ -557,6 +564,10 @@ export class SettingsWebviewPanel {
       alerts:                   config.alerts || {},
       alertNotificationMode:    config.alertNotificationMode,
       alertCooldownMinutes:     config.alertCooldownMinutes,
+      ipoReminderEnabled:       config.ipoReminder?.enabled ?? true,
+      ipoReminderIncludeAShare: config.ipoReminder?.includeAShare ?? true,
+      ipoReminderIncludeConvertibleBond: config.ipoReminder?.includeConvertibleBond ?? true,
+      ipoReminderIncludeHkShare: config.ipoReminder?.includeHkShare ?? true,
       watchlist:                (() => {
         const rawWatchlist = config.watchlist || {};
         const quoteCache = SettingsWebviewPanel.getQuoteCache?.();

@@ -8,7 +8,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/VS_Code-^1.85.0-007ACC?logo=visualstudiocode" alt="VS Code Version">
   <img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License">
-  <img src="https://img.shields.io/badge/Release-v1.3.3-blue.svg" alt="Version">
+  <img src="https://img.shields.io/badge/Release-v1.3.4-blue.svg" alt="Version">
   <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-orange" alt="Platform">
 </p>
 
@@ -219,6 +219,7 @@
 点击自选栏顶部的 **`⚙️`** 齿轮按钮，即可打开现代化的独立 Webview 配置面板：
 
 - **通用设置**：配置备份导出与导入恢复、恢复出厂默认、一键清空自选、自动刷新开关、刷新频率调节（支持毫秒级）、摸鱼模式开关、颜色脱敏开关、底部轮播总控；
+- **🔔 今日打新与申购提醒**：工作日 09:15~15:00 自动检测今日新股、可转债、港股IPO并弹窗提醒，支持分别勾选开启类别；亦可随时在命令面板运行 `MarketLens: 查看今日打新与申购日历` 查看详情与复制申购代码；
 - **⚡ 到价预警**：集中管理所有板块标的预警规则，配置突破上限、跌破下限、单日涨跌幅与防轰炸冷却时间；
 - **基金 / A股 / 港股 / 美股 / Binance / Alpha 专属 Tab**：独立控制各板块启用状态、是否参与状态栏轮播、交易时段休眠节流、网络直连/代理模式；
 - **关于与帮助**：查看当前版本号、快捷键配置速查、提交 GitHub Issue、加入官方社群与作者直接交流。

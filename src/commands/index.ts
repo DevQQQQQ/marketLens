@@ -9,6 +9,7 @@ import { readConfig } from "../utils/config.ts";
 import { logger } from "../utils/logger.ts";
 import { canEmitUserFeedback, resolveMaskToggle, shouldBlockNodeCommand } from "../utils/maskState.ts";
 import { emitStatusMessage, isMasked, maskIfNeeded } from "../utils/feedback.ts";
+import { checkAndTriggerIpoReminder } from "../services/ipoService.ts";
 
 export interface CommandServices {
   scheduler: RefreshScheduler;
@@ -401,7 +402,20 @@ export function registerCommands(
           logger.debug("[copyCode] focus watchlist failed", err);
         }
       }
-    )
+    ),
+
+    // 查看今日打新与申购日历
+    vscode.commands.registerCommand("marketlens.checkTodayIpo", async () => {
+      if (!canEmitUserFeedback(statusBar.isBossKeyActive())) {
+        logger.info("专注模式激活期间拒绝查看今日申购（老板键守卫已生效）");
+        return;
+      }
+      await checkAndTriggerIpoReminder(
+        context.globalState,
+        () => statusBar.isBossKeyActive() || statusBar.isMaskModeActive(),
+        true
+      );
+    })
   );
 }
 

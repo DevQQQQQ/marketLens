@@ -82,3 +82,14 @@ export function showInfoMessage(message: string): void {
   }
   void vscode.window.showInformationMessage(message);
 }
+
+/** 带操作按钮的信息提示统一出口：老板键期间完全静默并返回 undefined */
+export async function showInfoMessageWithActions<T extends string>(
+  message: string,
+  ...actions: T[]
+): Promise<T | undefined> {
+  if (!canEmitUserFeedback(getMaskSnapshot().bossKeyActive)) {
+    return undefined;
+  }
+  return await vscode.window.showInformationMessage(message, ...actions);
+}

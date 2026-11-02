@@ -131,6 +131,13 @@ export function readConfig(): MarketLensConfig {
     alerts: sanitizeAlerts(cfg.get("alerts", {})),
     alertNotificationMode: cfg.get<"notification" | "statusBarOnly" | "both">("alertNotificationMode", "notification"),
     alertCooldownMinutes: cfg.get<number>("alertCooldownMinutes", 15),
+
+    ipoReminder: {
+      enabled: cfg.get<boolean>("ipoReminder.enabled", true),
+      includeAShare: cfg.get<boolean>("ipoReminder.includeAShare", true),
+      includeConvertibleBond: cfg.get<boolean>("ipoReminder.includeConvertibleBond", true),
+      includeHkShare: cfg.get<boolean>("ipoReminder.includeHkShare", true),
+    },
   };
 }
 

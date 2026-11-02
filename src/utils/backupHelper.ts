@@ -37,6 +37,12 @@ export interface MarketLensBackupData {
     alerts?: Record<string, PriceAlertItem> | undefined;
     alertNotificationMode?: "notification" | "statusBarOnly" | "both" | undefined;
     alertCooldownMinutes?: number | undefined;
+    ipoReminder?: {
+      enabled?: boolean | undefined;
+      includeAShare?: boolean | undefined;
+      includeConvertibleBond?: boolean | undefined;
+      includeHkShare?: boolean | undefined;
+    } | undefined;
   };
   groupSortModes?: Record<string, GroupSortMode>;
 }
@@ -88,6 +94,7 @@ export function generateBackupData(
       alerts: config.alerts ? JSON.parse(JSON.stringify(config.alerts)) : {},
       alertNotificationMode: config.alertNotificationMode,
       alertCooldownMinutes: config.alertCooldownMinutes,
+      ipoReminder: config.ipoReminder ? { ...config.ipoReminder } : undefined,
     },
     groupSortModes: groupSortModes ? { ...groupSortModes } : {},
   };
@@ -224,6 +231,27 @@ export function validateBackupData(raw: unknown): ValidationResult {
       alertCooldownMinutes:
         typeof settingsCandidate.alertCooldownMinutes === "number"
           ? settingsCandidate.alertCooldownMinutes
+          : undefined,
+      ipoReminder:
+        settingsCandidate.ipoReminder && typeof settingsCandidate.ipoReminder === "object"
+          ? {
+              enabled:
+                typeof (settingsCandidate.ipoReminder as Record<string, unknown>).enabled === "boolean"
+                  ? ((settingsCandidate.ipoReminder as Record<string, unknown>).enabled as boolean)
+                  : undefined,
+              includeAShare:
+                typeof (settingsCandidate.ipoReminder as Record<string, unknown>).includeAShare === "boolean"
+                  ? ((settingsCandidate.ipoReminder as Record<string, unknown>).includeAShare as boolean)
+                  : undefined,
+              includeConvertibleBond:
+                typeof (settingsCandidate.ipoReminder as Record<string, unknown>).includeConvertibleBond === "boolean"
+                  ? ((settingsCandidate.ipoReminder as Record<string, unknown>).includeConvertibleBond as boolean)
+                  : undefined,
+              includeHkShare:
+                typeof (settingsCandidate.ipoReminder as Record<string, unknown>).includeHkShare === "boolean"
+                  ? ((settingsCandidate.ipoReminder as Record<string, unknown>).includeHkShare as boolean)
+                  : undefined,
+            }
           : undefined,
     },
     groupSortModes: normalizedGroupSortModes,
@@ -394,6 +422,18 @@ export async function importSettingsFromFile(options: {
     }
     if (data.settings.alertCooldownMinutes !== undefined) {
       await cfg.update("alertCooldownMinutes", data.settings.alertCooldownMinutes, target);
+    }
+    if (data.settings.ipoReminder?.enabled !== undefined) {
+      await cfg.update("ipoReminder.enabled", data.settings.ipoReminder.enabled, target);
+    }
+    if (data.settings.ipoReminder?.includeAShare !== undefined) {
+      await cfg.update("ipoReminder.includeAShare", data.settings.ipoReminder.includeAShare, target);
+    }
+    if (data.settings.ipoReminder?.includeConvertibleBond !== undefined) {
+      await cfg.update("ipoReminder.includeConvertibleBond", data.settings.ipoReminder.includeConvertibleBond, target);
+    }
+    if (data.settings.ipoReminder?.includeHkShare !== undefined) {
+      await cfg.update("ipoReminder.includeHkShare", data.settings.ipoReminder.includeHkShare, target);
     }
     if (data.settings.proxyPort !== undefined) {
       await cfg.update("proxyPort", data.settings.proxyPort, target);

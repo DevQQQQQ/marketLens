@@ -12,12 +12,14 @@ import { readConfig } from "./utils/config.ts";
 import { extractTargetsFromWatchlist, extractStatusBarQuotes, pruneQuoteCache, extractHoldingQuotes, resolveGroupSection } from "./utils/symbolHelper.ts";
 import { AlertManager } from "./services/alertManager.ts";
 import { canEmitUserFeedback } from "./utils/maskState.ts";
+import { checkAndTriggerIpoReminder } from "./services/ipoService.ts";
 
 export interface SchedulerContext {
   marketManager: MarketManager;
   treeProvider: WatchlistProvider;
   statusBar: StatusBar;
   treeView: vscode.TreeView<GroupItem | StockItem>;
+  globalState?: vscode.Memento | undefined;
 }
 
 export class RefreshScheduler implements vscode.Disposable {
@@ -57,12 +59,14 @@ export class RefreshScheduler implements vscode.Disposable {
   private readonly treeProvider: WatchlistProvider;
   private readonly statusBar: StatusBar;
   private readonly treeView: vscode.TreeView<GroupItem | StockItem>;
+  private readonly globalState?: vscode.Memento | undefined;
 
   constructor(context: SchedulerContext) {
     this.marketManager = context.marketManager;
     this.treeProvider = context.treeProvider;
     this.statusBar = context.statusBar;
     this.treeView = context.treeView;
+    this.globalState = context.globalState;
     this.alertManager = new AlertManager(this.statusBar);
   }
 
@@ -395,6 +399,15 @@ export class RefreshScheduler implements vscode.Disposable {
       }
 
       this.updateStatusBar(config);
+
+      if (this.globalState) {
+        void checkAndTriggerIpoReminder(
+          this.globalState,
+          () => this.statusBar.isBossKeyActive() || this.statusBar.isMaskModeActive()
+        ).catch((err) => {
+          logger.debug("[scheduler] IPO check error", err);
+        });
+      }
     } catch (err) {
       this.consecutiveNetworkFailures++;
       // 静默降级：仅写日志到 OutputChannel，绝不弹窗打断用户编码

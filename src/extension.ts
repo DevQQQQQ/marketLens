@@ -21,6 +21,7 @@ import { RefreshScheduler } from "./scheduler.ts";
 import { WatchlistOps } from "./watchlistOps.ts";
 import { registerCommands } from "./commands/index.ts";
 import { SettingsWebviewPanel } from "./ui/settingsWebview.ts";
+import { checkAndTriggerIpoReminder, resetIpoCache } from "./services/ipoService.ts";
 
 // ── 模块级句柄：让 deactivate() 可以显式清理，防止热重载内存泄漏 ──
 let _scheduler: RefreshScheduler | undefined;
@@ -79,6 +80,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     treeProvider,
     statusBar,
     treeView,
+    globalState: context.globalState,
   });
   _scheduler = scheduler;
   SettingsWebviewPanel.getQuoteCache = () => scheduler.quoteCache;
@@ -238,6 +240,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
       applyProxyToAllSections(config, pUrl, port);
       resetProxyCache();
+      resetIpoCache();
       scheduler.clearProxySuspensions();
     } else if (key === "proxyUrl") {
       // 内存镜像与磁盘写入必须同一形态，否则「内存已纠偏、磁盘仍是 socks5:// 原样」
@@ -248,12 +251,23 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           : DEFAULT_PROXY_URL;
       applyProxyToAllSections(config, pUrl);
       resetProxyCache();
+      resetIpoCache();
       scheduler.clearProxySuspensions();
     } else if (key === "alertNotificationMode") {
       config.alertNotificationMode =
         value === "statusBarOnly" || value === "both" ? value : "notification";
     } else if (key === "alertCooldownMinutes") {
       config.alertCooldownMinutes = Number(value) || 15;
+    } else if (key.startsWith("ipoReminder.")) {
+      const sub = key.replace("ipoReminder.", "");
+      if (!config.ipoReminder) {
+        config.ipoReminder = { enabled: true, includeAShare: true, includeConvertibleBond: true, includeHkShare: true };
+      }
+      if (sub === "enabled") config.ipoReminder.enabled = !!value;
+      else if (sub === "includeAShare") config.ipoReminder.includeAShare = !!value;
+      else if (sub === "includeConvertibleBond") config.ipoReminder.includeConvertibleBond = !!value;
+      else if (sub === "includeHkShare") config.ipoReminder.includeHkShare = !!value;
+      resetIpoCache();
     }
 
     const dotIndex = key.indexOf(".");
@@ -375,6 +389,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(statusBar, treeView, treeProvider, scheduler);
 
   scheduler.start();
+
+  // 启动阶段异步触发今日打新与申购检测（符合窗口期且当天未提醒时主动弹窗）
+  void checkAndTriggerIpoReminder(
+    context.globalState,
+    () => statusBar.isBossKeyActive() || statusBar.isMaskModeActive()
+  ).catch((err) => {
+    logger.debug("[extension] initial IPO check error", err);
+  });
+
   logger.info("activated ✓");
 }
 
