@@ -531,6 +531,14 @@ export function sanitizeWatchlist(raw: unknown): Record<string, WatchConfigItem[
               item.shares = candidate.shares;
             }
 
+            if (typeof candidate.showInStatusBar === "boolean") {
+              item.showInStatusBar = candidate.showInStatusBar;
+            }
+
+            if (typeof candidate.alias === "string" && candidate.alias.trim() !== "") {
+              item.alias = candidate.alias.trim();
+            }
+
             cleanItems.push(item);
           }
         }
@@ -901,8 +909,14 @@ export function computeStatusBarEnabled(
 export function resolveItemDisplayName(
   confName?: string,
   confSymbol?: string,
-  cachedQuote?: { name?: string; symbol?: string }
+  cachedQuote?: { name?: string; symbol?: string },
+  confAlias?: string
 ): string {
+  const trimmedAlias = confAlias?.trim();
+  if (trimmedAlias) {
+    return trimmedAlias;
+  }
+
   const trimmedConf = confName?.trim();
   const trimmedSym = confSymbol?.trim();
 
@@ -978,6 +992,10 @@ export function extractStatusBarQuotes<
 
     for (const item of items || []) {
       if (!item?.symbol) continue;
+      // 股票池与展示池解耦 (T1-4): 显式关闭状态栏轮播的标的直接跳过
+      if ((item as any).showInStatusBar === false) {
+        continue;
+      }
       const symKey = item.symbol.toLowerCase().trim();
       if (seenSymbols.has(symKey)) continue;
 
@@ -1007,18 +1025,21 @@ export function extractStatusBarQuotes<
         quoteCache.get(item.symbol.toLowerCase()) ||
         quoteCache.get(rawTicker);
 
-      const displayName = resolveItemDisplayName(item.name, item.symbol, cached);
+      const alias = (item as any).alias;
+      const displayName = resolveItemDisplayName(item.name, item.symbol, cached, alias);
 
       if (cached) {
         result.push({
           ...cached,
           name: displayName,
+          alias,
         });
       } else {
         result.push({
           id: item.symbol,
           name: displayName,
           symbol: item.symbol,
+          alias,
           type: (assetType || item.type || "A_SHARE") as AssetType,
           price: 0,
           changePercent: 0,
@@ -1526,7 +1547,7 @@ export function extractHoldingQuotes(
       const currency = resolveQuoteCurrency(q);
 
       result.push({
-        name: resolveItemDisplayName(conf.name, conf.symbol, q),
+        name: resolveItemDisplayName(conf.name, conf.symbol, q, conf.alias),
         symbol: conf.symbol,
         currency,
         cost: conf.cost,

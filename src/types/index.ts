@@ -62,6 +62,10 @@ export interface MarketItem {
   chain?: string | undefined;      // 公链标识，如 "bsc", "solana", "base", "ethereum"
   dex?: string | undefined;        // 所在 DEX，如 "pancakeswap", "raydium", "uniswap", "pumpfun"
   liquidity?: number | undefined;  // 流动性池资金 (USD)
+
+  // ── 数据新鲜度与展示扩展 (T1) ──
+  updateTime?: number | undefined; // 行情最后拉取成功时间戳（毫秒）
+  alias?: string | undefined;      // 标的自定义展示简称 / 别名
 }
 
 // 兼容别名
@@ -73,6 +77,8 @@ export interface WatchConfigItem {
   type: AssetType;
   cost?: number;   // 持仓买入成本单价
   shares?: number; // 持仓数量/股数/币数
+  showInStatusBar?: boolean | undefined; // 是否在底部状态栏轮播（默认 true，false 则仅在自选树中显示）
+  alias?: string | undefined;           // 标的自定义展示简称 / 别名
 }
 
 export interface WatchlistConfig {
@@ -115,7 +121,7 @@ export interface MarketLensConfig {
   maskMode: boolean;
   colorNeutral: boolean;
   colorScheme: ColorScheme;
-  statusBar: { enabled: boolean; holdingEnabled?: boolean; holdingInterval?: number };
+  statusBar: { enabled: boolean; holdingEnabled?: boolean; holdingInterval?: number; compact?: boolean | undefined };
   autoCollapseClosedGroups?: boolean;
   proxyPort?: number;
   proxyUrl?: string;

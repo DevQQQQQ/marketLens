@@ -173,6 +173,13 @@ void test("inputValidator - 真实源码输入识别与非法拦截", () => {
   assert.strictEqual(c1.parsed?.symbol, "BTCUSDT");
   assert.strictEqual(c1.parsed?.type, "CRYPTO");
 
+  const cBtc = validateAndParseInput("BTC");
+  assert.strictEqual(cBtc.parsed?.symbol, "BTCUSDT", "BTC 输入自动规范化为 BTCUSDT");
+  assert.strictEqual(cBtc.parsed?.type, "CRYPTO", "BTC 输入首选类型应为 CRYPTO");
+  assert.strictEqual(cBtc.parsed?.defaultGroup, "Binance", "BTC 输入首选分组应为 Binance");
+  assert.strictEqual(cBtc.parsed?.alternativeGroup, "美股");
+  assert.strictEqual(cBtc.parsed?.alternativeType, "US_STOCK");
+
   // EVM 合约地址
   const evm = validateAndParseInput("0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c");
   assert.strictEqual(evm.parsed?.type, "ALPHA_TOKEN");
@@ -4790,6 +4797,465 @@ void test("ipoService - QuickPick 详情展示与剪贴板复制及脱敏守卫"
     (vscode.window as any).showQuickPick = origShowQuickPick;
     (vscode.env.clipboard as any).writeText = origWriteClipboard;
   }
+});
+
+void test("T1-1 ~ T1-5: 第一梯队能力回归 - 预警风暴合并、别名优先级、精简模式、独立展示开关与数据新鲜度", async () => {
+  const vscode = await import("vscode");
+  const { StatusBar } = await import("../src/ui/statusBar.ts");
+  const { StockItem } = await import("../src/ui/watchlistProvider.ts");
+
+  // ==========================================
+  // 1. T1-3: resolveItemDisplayName 别名优先级
+  // ==========================================
+  // 当配置了 confAlias 时，优先级高于 confName、quote.name 与 symbol
+  const aliasName = resolveItemDisplayName("贵州茅台", "sh600519", { name: "贵州茅台", symbol: "sh600519" }, "飞天茅台");
+  assert.strictEqual(aliasName, "飞天茅台", "confAlias 具有最高显示优先级");
+
+  // 未配置 confAlias 时，回退到原有逻辑
+  const regularName = resolveItemDisplayName("自定义名称", "sh600519", { name: "贵州茅台", symbol: "sh600519" });
+  assert.strictEqual(regularName, "自定义名称", "无 alias 时应正常使用 confName");
+
+  // ==========================================
+  // 2. T1-4: 股票池 ≠ 展示池 (showInStatusBar)
+  // ==========================================
+  const customWatchlist: WatchlistConfig = {
+    "自选组": [
+      { symbol: "sh600519", name: "贵州茅台", type: "A_SHARE", showInStatusBar: true },
+      { symbol: "sz000001", name: "平安银行", type: "A_SHARE", showInStatusBar: false },
+      { symbol: "hk00700", name: "腾讯控股", type: "HK_STOCK" }, // undefined 默认为展示
+    ],
+  };
+  const mockCache: Record<string, MarketItem> = {
+    sh600519: { id: "sh600519", symbol: "sh600519", name: "贵州茅台", price: 1800, changePercent: 1.5, type: "A_SHARE" },
+    sz000001: { id: "sz000001", symbol: "sz000001", name: "平安银行", price: 12, changePercent: -0.5, type: "A_SHARE" },
+    hk00700: { id: "hk00700", symbol: "hk00700", name: "腾讯控股", price: 380, changePercent: 2.1, type: "HK_STOCK" },
+  };
+
+  const cacheMap = new Map<string, MarketItem>(Object.entries(mockCache));
+  const statusQuotes = extractStatusBarQuotes(customWatchlist, cacheMap, {
+    aShare: { enabled: true, statusBar: true },
+    hkStock: { enabled: true, statusBar: true },
+  });
+  assert.strictEqual(statusQuotes.length, 2, "showInStatusBar=false 的标的必须被排除在状态栏轮播之外");
+  assert.ok(statusQuotes.some((q) => q.symbol === "sh600519"), "showInStatusBar=true 应保留");
+  assert.ok(statusQuotes.some((q) => q.symbol === "hk00700"), "未显式指定 showInStatusBar 时默认保留");
+  assert.ok(!statusQuotes.some((q) => q.symbol === "sz000001"), "sz000001 (showInStatusBar=false) 必须被排除");
+
+  // sanitizeWatchlist 必须完整保留 showInStatusBar 与 alias 字段
+  const sanitized = sanitizeWatchlist({
+    "自选组": [
+      { symbol: "sh600519", name: "茅台", type: "A_SHARE", showInStatusBar: false, alias: "飞天" },
+    ],
+  });
+  assert.strictEqual(sanitized["自选组"]![0]!.showInStatusBar, false, "sanitizeWatchlist 必须保留 showInStatusBar");
+  assert.strictEqual(sanitized["自选组"]![0]!.alias, "飞天", "sanitizeWatchlist 必须保留 alias");
+
+  // ==========================================
+  // 3. T1-3: StatusBar 精简模式 (compact mode)
+  // ==========================================
+  const testBar = new StatusBar({ maskMode: false, colorNeutral: false });
+  try {
+    // 默认模式：包含价格与百分比
+    testBar.setCompact(false);
+    testBar.setQuotes([mockCache.sh600519!]);
+    assert.match((testBar as any).barItem.text, /1800\.00/, "标准模式状态栏必须包含价格");
+    assert.match((testBar as any).barItem.text, /\+1\.50%/, "标准模式状态栏必须包含涨跌幅");
+
+    // 精简模式：不包含价格，仅保留标的名与涨跌幅
+    testBar.setCompact(true);
+    assert.ok(!(testBar as any).barItem.text.includes("1800.00"), "精简模式状态栏不得包含现价");
+    assert.match((testBar as any).barItem.text, /\+1\.50%/, "精简模式状态栏必须保留涨跌幅");
+  } finally {
+    testBar.dispose();
+  }
+
+  // ==========================================
+  // 4. T1-5: 数据新鲜度与刷新时刻展示
+  // ==========================================
+  const now = Date.now();
+  const quoteWithTime: MarketItem = {
+    ...mockCache.sh600519!,
+    updateTime: now - 3500, // 3.5秒前更新
+  };
+  const stockNode = new StockItem(
+    quoteWithTime,
+    "自选组",
+    "sh600519",
+    false,
+    false,
+    undefined,
+    "贵州茅台",
+    "greenUpRedDown",
+    undefined,
+    undefined,
+    false, // showInStatusBar: false
+    "飞天茅台"
+  );
+  const tooltipVal = typeof stockNode.tooltip === "string" ? stockNode.tooltip : stockNode.tooltip?.value || "";
+  assert.match(tooltipVal, /🕒 行情更新:/, "StockItem tooltip 应展示行情更新时间戳");
+  assert.doesNotMatch(tooltipVal, /_更新时间:/, "旧的冗余更新时间必须彻底清理，杜绝双重时间戳");
+  assert.match(tooltipVal, /3秒前|4秒前/, "StockItem tooltip 应展示人类可读的秒级新鲜度");
+  assert.match(tooltipVal, /状态栏轮播展示：已停用/, "showInStatusBar=false 时 tooltip 需给出清晰提示");
+
+  // 状态栏自身 tooltip 新鲜度
+  const freshBar = new StatusBar({ maskMode: false, colorNeutral: false });
+  try {
+    freshBar.setQuotes([mockCache.sh600519!]);
+    const rawTooltip = (freshBar as any).barItem.tooltip;
+    const barTooltip = typeof rawTooltip === "string" ? rawTooltip : rawTooltip?.value || "";
+    assert.match(barTooltip, /🕒 最后刷新:/, "StatusBar tooltip 应包含最后刷新时间戳");
+  } finally {
+    freshBar.dispose();
+  }
+
+  // ==========================================
+  // 5. T1-1: 预警风暴合并 (Batch Alert Merging)
+  // ==========================================
+  const alertMgr = new AlertManager();
+  const stormQuotes: MarketItem[] = [
+    { id: "sh600519", symbol: "sh600519", name: "贵州茅台", price: 2000, changePercent: 5.5, type: "A_SHARE" },
+    { id: "sz000001", symbol: "sz000001", name: "平安银行", price: 15, changePercent: -6.0, type: "A_SHARE" },
+  ];
+  const stormConfig: any = {
+    alerts: {
+      sh600519: { symbol: "sh600519", name: "贵州茅台", above: 1900, enabled: true },
+      sz000001: { symbol: "sz000001", name: "平安银行", below: 16, enabled: true },
+    },
+    alertNotificationMode: "notification",
+    alertCooldownMinutes: 20,
+  };
+
+  let batchMsgCalled = false;
+  let batchMsgText = "";
+  let batchActions: string[] = [];
+  const origShowInfo = (vscode.window as any).showInformationMessage;
+  (vscode.window as any).showInformationMessage = (msg: string, ...actions: string[]) => {
+    batchMsgCalled = true;
+    batchMsgText = msg;
+    batchActions = actions;
+    // 模拟用户点击 "全部静音 20 分钟"
+    return Promise.resolve(actions.find((a) => a.startsWith("全部静音")));
+  };
+
+  try {
+    const events = alertMgr.checkQuotes(stormQuotes, stormConfig);
+    assert.strictEqual(events.length, 2, "两个标的均达到预警阈值");
+    assert.strictEqual(batchMsgCalled, true, "预警风暴应触发合并弹窗");
+    assert.match(batchMsgText, /\[MarketLens 预警汇总\] 本轮共有 2 只标的触发预警/, "合并弹窗应显示聚合摘要");
+    assert.ok(batchActions.includes("查看详情"), "操作按钮应包含查看详情");
+    assert.ok(batchActions.some((a) => a.includes("全部静音 20 分钟")), "操作按钮应包含全部静音");
+    assert.ok(batchActions.includes("管理预警"), "操作按钮应包含管理预警");
+
+    // 下一轮检测：由于已全部静音 20 分钟，两个标的都不应再触发
+    batchMsgCalled = false;
+    const nextEvents = alertMgr.checkQuotes(stormQuotes, stormConfig);
+    assert.strictEqual(nextEvents.length, 0, "静音后不得再次触发预警");
+    assert.strictEqual(batchMsgCalled, false, "静音生效期间不弹窗");
+  } finally {
+    (vscode.window as any).showInformationMessage = origShowInfo;
+  }
+});
+
+void test("T2-2: 中文名/拼音搜索添加标的 (Smartbox 报文解析、Unicode 解码、缓存与 QuickPick 联想)", async () => {
+  const { parseSmartboxResponse, decodeUnicodeEscapes, searchSymbols, resetSearchCacheForTesting } = await import(
+    "../src/services/symbolSearchService.ts"
+  );
+  const { WatchlistOps } = await import("../src/watchlistOps.ts");
+  const { readConfig } = await import("../src/utils/config.ts");
+  const vscode = await import("vscode");
+
+  // 1. Unicode 转义解码测试
+  assert.strictEqual(decodeUnicodeEscapes("\\u8d35\\u5dde\\u8305\\u53f0"), "贵州茅台", "必须正确解码 Unicode 转义字符");
+  assert.strictEqual(decodeUnicodeEscapes("Apple AAPL"), "Apple AAPL", "无转义字符时原样返回");
+
+  // 2. parseSmartboxResponse 报文解析测试
+  // 2.1 A 股常规标的
+  const aRes = parseSmartboxResponse('v_hint="sh~600519~\\u8d35\\u5dde\\u8305\\u53f0~gzmt~GP-A";');
+  assert.strictEqual(aRes.length, 1);
+  assert.strictEqual(aRes[0]?.symbol, "sh600519");
+  assert.strictEqual(aRes[0]?.name, "贵州茅台");
+  assert.strictEqual(aRes[0]?.type, "A_SHARE");
+  assert.strictEqual(aRes[0]?.defaultGroup, "A股");
+  assert.strictEqual(aRes[0]?.pinyin, "gzmt");
+
+  // 2.2 场内基金与 ETF (510300, 159915)
+  const etfRes = parseSmartboxResponse('v_hint="sh~510300~\\u6caa\\u6df1300ETF~hs300etf~ETF^sz~159915~\\u521b\\u4e1a\\u677fETF~cybetf~ETF";');
+  assert.strictEqual(etfRes.length, 2);
+  assert.strictEqual(etfRes[0]?.symbol, "sh510300");
+  assert.strictEqual(etfRes[0]?.defaultGroup, "基金", "沪深300ETF应归入基金分组");
+  assert.strictEqual(etfRes[1]?.symbol, "sz159915");
+  assert.strictEqual(etfRes[1]?.defaultGroup, "基金", "创业板ETF应归入基金分组");
+
+  // 2.3 港股
+  const hkRes = parseSmartboxResponse('v_hint="hk~00700~\\u817e\\u8baf\\u63a7\\u80a1~txkg~GP";');
+  assert.strictEqual(hkRes.length, 1);
+  assert.strictEqual(hkRes[0]?.symbol, "hk00700");
+  assert.strictEqual(hkRes[0]?.name, "腾讯控股");
+  assert.strictEqual(hkRes[0]?.type, "HK_STOCK");
+  assert.strictEqual(hkRes[0]?.defaultGroup, "港股");
+
+  // 2.4 美股 (自动去除 .oq / .n / .am 等交易所后缀，支持 BRK.B 类股)
+  const usRes = parseSmartboxResponse('v_hint="us~tsla.oq~\\u7279\\u65af\\u62c9~tsl~GP^us~brk.b.n~\\u4f2f\\u514b\\u5e0c\\u5c14B~bkxeb~GP";');
+  assert.strictEqual(usRes.length, 2);
+  assert.strictEqual(usRes[0]?.symbol, "TSLA", "美股代码需剥离 .oq 交易所后缀并大写");
+  assert.strictEqual(usRes[0]?.name, "特斯拉");
+  assert.strictEqual(usRes[0]?.type, "US_STOCK");
+  assert.strictEqual(usRes[1]?.symbol, "BRK.B", "美股双重类股点号需正确保留并剥离 .n 后缀");
+
+  // 2.5 过滤权证/牛熊证 (QZ)
+  const qzRes = parseSmartboxResponse('v_hint="hk~13005~腾讯认购证~txqz~QZ";');
+  assert.strictEqual(qzRes.length, 0, "应过滤掉权证 QZ，避免散户误触");
+
+  // 2.6 无匹配或空报文
+  assert.deepStrictEqual(parseSmartboxResponse('v_hint="N";'), []);
+  assert.deepStrictEqual(parseSmartboxResponse(''), []);
+
+  // 2.7 多市场权重排序校验：A股 > 港股 > 美股（确保输入“中国银行”时 A 股置顶）
+  const multiMarketRes = parseSmartboxResponse(
+    'v_hint="us~bachy.otc~\\u4e2d\\u56fd\\u94f6\\u884c~zgyh~GP^hk~03988~\\u4e2d\\u56fd\\u94f6\\u884c~zgyh~GP^sh~601988~\\u4e2d\\u56fd\\u94f6\\u884c~zgyh~GP";'
+  );
+  assert.strictEqual(multiMarketRes.length, 3);
+  assert.strictEqual(multiMarketRes[0]?.symbol, "sh601988", "A股中国银行必须置顶在第1位");
+  assert.strictEqual(multiMarketRes[0]?.defaultGroup, "A股");
+  assert.strictEqual(multiMarketRes[1]?.symbol, "hk03988", "港股中国银行紧随第2位");
+  assert.strictEqual(multiMarketRes[1]?.defaultGroup, "港股");
+  assert.strictEqual(multiMarketRes[2]?.symbol, "BACHY", "美股中国银行排在最后");
+  assert.strictEqual(multiMarketRes[2]?.defaultGroup, "美股");
+
+  // 2.8 Binance 与 Alpha 维持原有直接输入方式，不走股票 Smartbox 联想
+  const cryptoSearchRes = await searchSymbols("BTCUSDT");
+  assert.strictEqual(cryptoSearchRes.length, 0, "币对不触发股票联想请求");
+  const alphaSearchRes = await searchSymbols("0x1234567890123456789012345678901234567890");
+  assert.strictEqual(alphaSearchRes.length, 0, "合约地址不触发股票联想请求");
+
+  // 3. 搜索短期 TTL 缓存测试
+  resetSearchCacheForTesting();
+  const origAxiosGet = axios.get;
+  let networkCallCount = 0;
+  try {
+    axios.get = (async (_url: string, config: any) => {
+      networkCallCount++;
+      return {
+        data: 'v_hint="sh~600519~\\u8d35\\u5dde\\u8305\\u53f0~gzmt~GP";',
+        status: 200,
+        statusText: "OK",
+        headers: {},
+        config,
+      };
+    }) as any;
+
+    const res1 = await searchSymbols("600519");
+    const res2 = await searchSymbols("600519");
+    assert.deepStrictEqual(res1, res2);
+    assert.strictEqual(networkCallCount, 1, "命中 60s 缓存时不应重复触发网络请求");
+    assert.strictEqual(res1[0]?.name, "贵州茅台");
+  } finally {
+    axios.get = origAxiosGet;
+  }
+
+  // 4. QuickPick 选标的交互 happy path
+  const origCreateQuickPick = vscode.window.createQuickPick;
+  const origShowQuickPick = vscode.window.showQuickPick;
+  const origShowInputBox = vscode.window.showInputBox;
+
+  let inputDialogShown = false;
+
+  try {
+    // 确保测试标的不在原有自选中
+    const curCfg = vscode.workspace.getConfiguration("marketlens");
+    const curWl = { ...curCfg.get<any>("watchlist", {}) };
+    curWl["A股"] = (curWl["A股"] || []).filter((it: any) => it.symbol !== "sh600036");
+    await curCfg.update("watchlist", curWl, vscode.ConfigurationTarget.Global);
+
+    // 模拟用户在 QuickPick 中选中 "招商银行 (sh600036)"
+    (vscode.window as any).createQuickPick = () => {
+      const qp = origCreateQuickPick();
+      qp.show = () => {
+        void Promise.resolve().then(() => {
+          (qp as any).selectedItems = [
+            {
+              label: "招商银行 (sh600036)",
+              detected: {
+                symbol: "sh600036",
+                type: "A_SHARE",
+                defaultGroup: "A股",
+                hint: "招商银行 (sh600036)",
+              },
+              suggestedName: "招商银行",
+            },
+          ];
+          (qp as any)._onDidAccept.fire();
+        });
+      };
+      return qp;
+    };
+
+    let offeredGroups: any[] = [];
+    (vscode.window as any).showQuickPick = async (items: any[]) => {
+      offeredGroups = items;
+      return items[0];
+    };
+
+    (vscode.window as any).showInputBox = async (options: any) => {
+      inputDialogShown = true;
+      return options?.value;
+    };
+
+    const mockQuoteCache = new Map<string, any>();
+    const ops = new WatchlistOps({
+      quoteCache: mockQuoteCache,
+      rebuildTree: () => {},
+    });
+
+    await ops.addItem();
+    assert.strictEqual(inputDialogShown, false, "联想搜索命中官方名称且专属分组唯一时，一步直达自动落盘，无需多余弹窗与多次回车");
+    assert.deepStrictEqual(offeredGroups, [], "专属分组唯一时无需弹出QuickPick重复确认");
+
+    const watchlist = readConfig().watchlist["A股"] ?? [];
+    const addedStock = watchlist.find((it: any) => it.symbol === "sh600036");
+    assert.ok(addedStock, "招商银行必须成功落入 A股 分组");
+    assert.strictEqual(addedStock.name, "招商银行", "标的名称必须为官方预填名称");
+  } finally {
+    (vscode.window as any).createQuickPick = origCreateQuickPick;
+    (vscode.window as any).showQuickPick = origShowQuickPick;
+    (vscode.window as any).showInputBox = origShowInputBox;
+  }
+});
+
+void test("addItem - 标的与系统专属分组排他性约束与防呆守卫 (暂不支持自定义分组)", async () => {
+  const { WatchlistOps } = await import("../src/watchlistOps.ts");
+  const vscode = await import("vscode");
+
+  const origCreateQuickPick = vscode.window.createQuickPick;
+  const origShowQuickPick = vscode.window.showQuickPick;
+  const origShowInputBox = vscode.window.showInputBox;
+
+  try {
+    const testCases: Array<{
+      inputLabel: string;
+      detected: any;
+      expectedOffered: string[]; // 当 length > 1 时弹窗供用户选择；length === 1 时自动直达
+    }> = [
+      {
+        inputLabel: "特斯拉 (TSLA)",
+        detected: { symbol: "TSLA", type: "US_STOCK", defaultGroup: "美股", hint: "美股 (TSLA)" },
+        expectedOffered: [], // 唯一分组美股，自动直达不弹窗
+      },
+      {
+        inputLabel: "腾讯控股 (hk00700)",
+        detected: { symbol: "hk00700", type: "HK_STOCK", defaultGroup: "港股", hint: "港股 (hk00700)" },
+        expectedOffered: [], // 唯一分组港股，自动直达不弹窗
+      },
+      {
+        inputLabel: "300ETF (sh510300)",
+        detected: { symbol: "sh510300", type: "A_SHARE", defaultGroup: "基金", hint: "场内基金 (sh510300)" },
+        expectedOffered: ["基金", "A股"], // 多重可能，弹窗供用户二选一
+      },
+      {
+        inputLabel: "BTC",
+        detected: { symbol: "BTC", type: "CRYPTO", defaultGroup: "Binance", alternativeGroup: "美股", hint: "BTC" },
+        expectedOffered: ["Binance", "美股"], // 多重可能，弹窗供用户二选一
+      },
+    ];
+
+    for (const tc of testCases) {
+      let offeredGroups: any[] = [];
+      (vscode.window as any).createQuickPick = () => {
+        const qp = origCreateQuickPick();
+        qp.show = () => {
+          void Promise.resolve().then(() => {
+            (qp as any).selectedItems = [
+              {
+                label: tc.inputLabel,
+                detected: tc.detected,
+                suggestedName: tc.inputLabel.split(" ")[0],
+              },
+            ];
+            (qp as any)._onDidAccept.fire();
+          });
+        };
+        return qp;
+      };
+
+      (vscode.window as any).showQuickPick = async (items: any[]) => {
+        offeredGroups = items;
+        return undefined; // 选完组后取消，无需真正写盘
+      };
+
+      const ops = new WatchlistOps({
+        quoteCache: new Map(),
+        rebuildTree: () => {},
+      });
+
+      await ops.addItem();
+      assert.deepStrictEqual(
+        offeredGroups,
+        tc.expectedOffered,
+        `${tc.inputLabel} 的选组弹窗行为必须符合预期（多重候选时供选择，唯一候选时不打扰）`
+      );
+    }
+  } finally {
+    (vscode.window as any).createQuickPick = origCreateQuickPick;
+    (vscode.window as any).showQuickPick = origShowQuickPick;
+    (vscode.window as any).showInputBox = origShowInputBox;
+  }
+});
+
+void test("RefreshScheduler - fetchAndCacheSymbols 单标的即时定向拉取与缓存注入测试", async () => {
+  const { RefreshScheduler } = await import("../src/scheduler.ts");
+  const { WatchlistProvider } = await import("../src/ui/watchlistProvider.ts");
+  const { StatusBar } = await import("../src/ui/statusBar.ts");
+
+  let polledCodes: string[] = [];
+  const mockMarketManager = {
+    clearInvalidCache: () => {},
+    pollAll: async (targets: any) => {
+      polledCodes = targets.aShares || [];
+      return [
+        {
+          id: "sz002385",
+          symbol: "002385",
+          name: "大北农",
+          price: 2.97,
+          changePercent: 1.37,
+          type: "A_SHARE" as const,
+          open: 2.92,
+          prevClose: 2.93,
+          high: 3.00,
+          low: 2.92,
+          change: 0.04,
+          volume: 43471000,
+          currency: "CNY" as const,
+        },
+      ];
+    },
+  };
+
+  const treeProvider = new WatchlistProvider(false, false);
+  const statusBar = new StatusBar({ maskMode: false, colorNeutral: false });
+  const mockTreeView = { visible: true } as any;
+
+  const scheduler = new RefreshScheduler({
+    marketManager: mockMarketManager as any,
+    treeProvider,
+    statusBar,
+    treeView: mockTreeView,
+  });
+
+  const quotes = await scheduler.fetchAndCacheSymbols([
+    { symbol: "sz002385", type: "A_SHARE", groupName: "A股" },
+  ]);
+
+  assert.strictEqual(quotes.length, 1);
+  assert.strictEqual(quotes[0]?.symbol, "002385");
+  assert.strictEqual(polledCodes.length, 1);
+  assert.strictEqual(polledCodes[0], "sz002385");
+
+  // 验证成功存入 quoteCache
+  const cached = scheduler.quoteCache.get("sz002385");
+  assert.ok(cached, "大北农行情必须成功注入 quoteCache");
+  assert.strictEqual(cached?.price, 2.97);
+  assert.strictEqual(cached?.name, "大北农");
 });
 
 

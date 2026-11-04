@@ -175,12 +175,96 @@ export class AlertManager {
       }
     }
 
-    // 分发触发通知
-    for (const evt of triggeredEvents) {
-      this.dispatchAlert(evt, config);
+    // 分发触发通知：单条直接推送，多条执行防风暴合并汇总 (T1-1)
+    if (triggeredEvents.length === 1) {
+      this.dispatchAlert(triggeredEvents[0]!, config);
+    } else if (triggeredEvents.length > 1) {
+      this.dispatchBatchAlert(triggeredEvents, config);
     }
 
     return triggeredEvents;
+  }
+
+  /**
+   * 批量预警风暴合并分发 (T1-1)
+   * 当短时间内多只标的同时突破阈值时，合并为单条弹窗，避免系统通知轰炸
+   */
+  private dispatchBatchAlert(events: AlertTriggerEvent[], config: Partial<MarketLensConfig>): void {
+    const masked = isDisplayMasked(this.statusBar?.isBossKeyActive() ?? false, config.maskMode ?? false);
+    const mode = config.alertNotificationMode || "notification";
+    const cooldownMins = config.alertCooldownMinutes || DEFAULT_ALERT_COOLDOWN_MINUTES;
+
+    const summaryParts = events.map((e) => {
+      const name = masked ? "****" : (e.item.name || e.item.symbol);
+      const tag = e.type === "above" ? "突破上限" : e.type === "below" ? "跌破下限" : "剧烈波动";
+      return `${name} (${tag})`;
+    });
+
+    const alertMessage = masked
+      ? `🔔 [MarketLens 预警汇总] 本轮共有 ${events.length} 只标的触发预警`
+      : `🔔 [MarketLens 预警汇总] 本轮共有 ${events.length} 只标的触发预警：${summaryParts.join("、")}`;
+
+    const statusText = masked
+      ? `$(bell) [批量预警] ${events.length} 只标的`
+      : `$(bell) [批量预警] ${events.length} 只标的触发预警`;
+
+    if (!masked && (mode === "statusBarOnly" || mode === "both") && this.statusBar) {
+      this.statusBar.flashAlert(statusText, 15000);
+    }
+
+    if (!masked && (mode === "notification" || mode === "both")) {
+      const detailsAction = "查看详情";
+      const muteAllAction = `全部静音 ${cooldownMins} 分钟`;
+      const settingsAction = "管理预警";
+
+      const notifyFn = vscode.window?.showInformationMessage;
+      if (typeof notifyFn === "function") {
+        void Promise.resolve(notifyFn(alertMessage, detailsAction, muteAllAction, settingsAction))
+          .then((action?: string) => {
+            if (action === detailsAction) {
+              this.showBatchAlertQuickPick(events);
+            } else if (action === muteAllAction) {
+              for (const e of events) {
+                this.mute(e.symbolKey, cooldownMins);
+              }
+              if (!masked) {
+                emitStatusMessage(`$(bell-slash) 已静音本轮 ${events.length} 只标的预警 ${cooldownMins} 分钟`, 3000);
+              }
+            } else if (action === settingsAction) {
+              void vscode.commands?.executeCommand("marketlens.openSettings");
+            }
+          })
+          .catch((err) => {
+            logger.warn("[AlertManager] 批量预警交互异常", err);
+          });
+      }
+    }
+  }
+
+  private showBatchAlertQuickPick(events: AlertTriggerEvent[]): void {
+    if (this.statusBar?.isBossKeyActive()) return;
+
+    const pickItems = events.map((e) => {
+      const typeLabel = e.type === "above" ? "突破上限" : e.type === "below" ? "跌破下限" : "剧烈波动";
+      const icon = e.type === "above" ? "$(arrow-up)" : e.type === "below" ? "$(arrow-down)" : "$(pulse)";
+      const label = `${icon} [${typeLabel}] ${e.item.name || e.item.symbol} (${e.item.symbol})`;
+      const desc = e.type === "changePercent"
+        ? `现涨跌幅: ${e.currentValue >= 0 ? "+" : ""}${e.currentValue.toFixed(2)}% · 设定阈值: ±${e.thresholdValue}%`
+        : `现价: ${e.currentValue} · 设定阈值: ${e.thresholdValue}`;
+      return {
+        label,
+        description: desc,
+        event: e,
+      };
+    });
+
+    void vscode.window?.showQuickPick(pickItems, {
+      placeHolder: `本轮共有 ${events.length} 只标的触发预警（回车可前往管理预警）`,
+    }).then((selected) => {
+      if (selected && !this.statusBar?.isBossKeyActive()) {
+        void vscode.commands?.executeCommand("marketlens.openSettings");
+      }
+    });
   }
 
   private dispatchAlert(evt: AlertTriggerEvent, config: Partial<MarketLensConfig>): void {

@@ -104,6 +104,8 @@ export class StatusBar implements vscode.Disposable {
   private colorNeutral: boolean;
   private colorScheme: "greenUpRedDown" | "redUpGreenDown";
   private bossKeyActive = false;
+  private compactMode = false;
+  private lastFetchTimestamp: number | undefined;
 
   // 网络退避状态（用于状态栏 Tooltip 提示）
   private networkBackoffFailures = 0;
@@ -160,6 +162,9 @@ export class StatusBar implements vscode.Disposable {
   setQuotes(quotes: MarketItem[]): void {
     const prevCount = this.quotes.length;
     this.quotes = quotes;
+    if (this.quotes.length > 0) {
+      this.lastFetchTimestamp = Date.now();
+    }
     if (this.quotes.length === 0) {
       this.carouselIndex = 0;
       this.stopCarousel();
@@ -248,6 +253,12 @@ export class StatusBar implements vscode.Disposable {
         this.renderHolding();
       }
     }
+  }
+
+  /** 切换状态栏紧凑模式（省略价格，仅显示 名称+涨跌幅） */
+  setCompact(enabled: boolean): void {
+    this.compactMode = !!enabled;
+    this.render();
   }
 
   /** 切换颜色脱敏模式（纯白/无红绿） */
@@ -379,10 +390,14 @@ export class StatusBar implements vscode.Disposable {
   /** 正常模式：显示真实名称、价格与涨跌幅 */
   private renderNormal(visible: MarketItem[], carousel: boolean): void {
     const parts = visible.map((q) => {
-      const price  = toDisplayPrice(q.price);
+      const displayName = q.alias || q.name;
       const sign   = q.changePercent >= 0 ? "+" : "";
       const arrow  = q.changePercent >= 0 ? "▲" : "▼";
-      return `${q.name} ${price} ${arrow}${sign}${q.changePercent.toFixed(2)}%`;
+      if (this.compactMode) {
+        return `${displayName} ${arrow}${sign}${q.changePercent.toFixed(2)}%`;
+      }
+      const price  = toDisplayPrice(q.price);
+      return `${displayName} ${price} ${arrow}${sign}${q.changePercent.toFixed(2)}%`;
     });
 
     const suffix = carousel
@@ -392,6 +407,10 @@ export class StatusBar implements vscode.Disposable {
     this.barItem.text = `$(graph-line) ${parts.join("  |  ")}${suffix}`;
 
     let tip = "MarketLens — 点击立即刷新";
+    if (this.lastFetchTimestamp) {
+      const timeStr = new Date(this.lastFetchTimestamp).toLocaleTimeString("zh-CN", { hour12: false });
+      tip += `\n🕒 最后刷新: ${timeStr}`;
+    }
     const proxyStatus = getProxyStatus();
     if (proxyStatus.inCooldown) {
       tip += `\n⚠️ 代理不可达 (冷却中 ${proxyStatus.cooldownRemainingSeconds}s)`;

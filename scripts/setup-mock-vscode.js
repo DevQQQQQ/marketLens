@@ -227,6 +227,58 @@ const window = {
   },
   async showErrorMessage(msg) { return undefined; },
   async showQuickPick(items) { return undefined; },
+  createQuickPick() {
+    const qp = {
+      title: "",
+      placeholder: "",
+      items: [],
+      selectedItems: [],
+      activeItems: [],
+      value: "",
+      busy: false,
+      enabled: true,
+      ignoreFocusOut: true,
+      matchOnDescription: true,
+      matchOnDetail: true,
+      _validateInput: undefined,
+      _onDidAccept: new EventEmitter(),
+      _onDidChangeValue: new EventEmitter(),
+      _onDidHide: new EventEmitter(),
+      _onDidChangeActive: new EventEmitter(),
+      _onDidChangeSelection: new EventEmitter(),
+      get onDidAccept() { return this._onDidAccept.event; },
+      get onDidChangeValue() { return this._onDidChangeValue.event; },
+      get onDidHide() { return this._onDidHide.event; },
+      get onDidChangeActive() { return this._onDidChangeActive.event; },
+      get onDidChangeSelection() { return this._onDidChangeSelection.event; },
+      show() {
+        if (typeof window.showInputBox === "function") {
+          Promise.resolve().then(async () => {
+            const inputVal = await window.showInputBox({
+              prompt: "输入股票代码 / 币对 / 合约地址",
+              validateInput: (v) => qp._validateInput ? qp._validateInput(v) : undefined
+            });
+            if (inputVal !== undefined) {
+              qp.value = inputVal;
+              qp._onDidChangeValue.fire(inputVal);
+              qp._onDidAccept.fire();
+            } else {
+              qp._onDidHide.fire();
+            }
+          });
+        }
+      },
+      hide() { this._onDidHide.fire(); },
+      dispose() {
+        this._onDidAccept.dispose();
+        this._onDidChangeValue.dispose();
+        this._onDidHide.dispose();
+        this._onDidChangeActive.dispose();
+        this._onDidChangeSelection.dispose();
+      }
+    };
+    return qp;
+  },
   async showInputBox(options) { return undefined; },
   async showSaveDialog(options) {
     lastDialogUri = options?.defaultUri || Uri.file("/mock/backup.json");

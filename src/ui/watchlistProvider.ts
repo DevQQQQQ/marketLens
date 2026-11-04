@@ -195,6 +195,8 @@ export class StockItem extends vscode.TreeItem {
   public readonly confSymbol: string;
   public cost: number | undefined;
   public shares: number | undefined;
+  public showInStatusBar: boolean | undefined;
+  public alias: string | undefined;
   private colorNeutral: boolean;
 
   constructor(
@@ -207,9 +209,11 @@ export class StockItem extends vscode.TreeItem {
     confName?: string,
     colorScheme: ColorScheme = "greenUpRedDown",
     cost?: number,
-    shares?: number
+    shares?: number,
+    showInStatusBar?: boolean,
+    alias?: string
   ) {
-    super(resolveItemDisplayName(confName, confSymbol, item), vscode.TreeItemCollapsibleState.None);
+    super(resolveItemDisplayName(confName, confSymbol, item, alias), vscode.TreeItemCollapsibleState.None);
     this.item = item;
     this.groupName = groupName;
     this.confSymbol = confSymbol;
@@ -218,10 +222,12 @@ export class StockItem extends vscode.TreeItem {
     this.colorScheme = colorScheme;
     this.cost = cost;
     this.shares = shares;
+    this.showInStatusBar = showInStatusBar;
+    this.alias = alias;
     this.id = `${groupName}_${confSymbol}`;
     this.contextValue = "stockItem";
     this.alertRule = alertRule;
-    this.refresh(item, maskMode, colorNeutral, alertRule, confName, colorScheme, cost, shares);
+    this.refresh(item, maskMode, colorNeutral, alertRule, confName, colorScheme, cost, shares, showInStatusBar, alias);
   }
 
   /** 更新显示内容与悬停详细信息 */
@@ -233,7 +239,9 @@ export class StockItem extends vscode.TreeItem {
     confName?: string,
     colorScheme?: ColorScheme,
     cost?: number,
-    shares?: number
+    shares?: number,
+    showInStatusBar?: boolean,
+    alias?: string
   ): void {
     this.item = item;
     if (alertRule !== undefined) {
@@ -250,6 +258,12 @@ export class StockItem extends vscode.TreeItem {
     }
     if (shares !== undefined) {
       this.shares = shares;
+    }
+    if (showInStatusBar !== undefined) {
+      this.showInStatusBar = showInStatusBar;
+    }
+    if (alias !== undefined) {
+      this.alias = alias;
     }
     const currentAlert = this.alertRule;
     const hasAlert = !!(
@@ -300,7 +314,7 @@ export class StockItem extends vscode.TreeItem {
     // 预警铃铛本身就是一个可见的「该标的设有到价预警」信号，脱敏态下与价格同等对待：
     // 只遮价格却留着 🔔，等同于向旁观者交代了关注范围与预警存在（§5.4 只在 UI 上遮挡不算完整防护）。
     const alertSuffix = hasAlert && !maskMode ? " 🔔" : "";
-    const displayName = resolveItemDisplayName(this.confName, this.confSymbol, item);
+    const displayName = resolveItemDisplayName(this.confName, this.confSymbol, item, this.alias);
     this.label = displayName;
     this.description = maskMode
       ? `****  **${holdingBadge}${alertSuffix}`
@@ -421,8 +435,7 @@ export class StockItem extends vscode.TreeItem {
           `| 核心指标 | 实时行情 |\n` +
           `| :--- | :--- |\n` +
           `${tableRows.join("\n")}\n` +
-          holdingSection +
-          `\n_更新时间: ${new Date().toLocaleTimeString()}_`;
+          holdingSection;
       }
 
       if (!hasQuote) {
@@ -447,6 +460,17 @@ export class StockItem extends vscode.TreeItem {
           parts.push(`单日剧烈波动 ≥ ±${currentAlert.changePercent}%`);
         }
         mdText += `\n\n---\n🔔 **到价与波动预警（已生效）**\n• ${parts.join("\n• ")}`;
+      }
+
+      if (this.showInStatusBar === false) {
+        mdText += `\n\n> 📌 *状态栏轮播展示：已停用（仅在自选树常驻）*`;
+      }
+
+      if (item.updateTime) {
+        const timeStr = new Date(item.updateTime).toLocaleTimeString("zh-CN", { hour12: false });
+        const diffSec = Math.max(0, Math.floor((Date.now() - item.updateTime) / 1000));
+        const agoStr = diffSec < 60 ? `${diffSec}秒前` : `${Math.floor(diffSec / 60)}分钟前`;
+        mdText += `\n\n---\n*🕒 行情更新: ${timeStr} (${agoStr})*`;
       }
 
       const md = new vscode.MarkdownString(mdText);
@@ -1064,7 +1088,9 @@ export class WatchlistProvider
           conf.name,
           this.colorScheme,
           conf.cost,
-          conf.shares
+          conf.shares,
+          conf.showInStatusBar,
+          conf.alias
         );
         // 使用规范化 key 存储，辅以原始 conf.symbol 索引，支持同一标的在不同分组中均能刷新
         const registerKey = (k?: string) => {

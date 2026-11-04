@@ -28,6 +28,7 @@ const GLOBAL_CONFIG_KEYS = [
   "statusBar.enabled",
   "statusBar.holdingEnabled",
   "statusBar.holdingInterval",
+  "statusBar.compact",
   "autoCollapseClosedGroups",
   "alertNotificationMode",
   "alertCooldownMinutes",

@@ -117,6 +117,7 @@ export function readConfig(): MarketLensConfig {
         60,
         Math.max(1, Math.round(cfg.get<number>("statusBar.holdingInterval", 3)) || 3)
       ),
+      compact: cfg.get<boolean>("statusBar.compact", false),
     },
     autoCollapseClosedGroups: cfg.get<boolean>("autoCollapseClosedGroups", true),
 

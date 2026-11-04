@@ -2,7 +2,7 @@
 	"name": "marketlens",
 	"displayName": "%displayName%",
 	"description": "%description%",
-	"version": "1.3.4",
+	"version": "1.3.5",
 	"publisher": "devqqqqq",
 	"repository": {
 		"type": "git",
@@ -194,6 +194,16 @@
 				"command": "marketlens.checkTodayIpo",
 				"title": "%command.checkTodayIpo%",
 				"icon": "$(calendar)"
+			},
+			{
+				"command": "marketlens.toggleStatusBarItem",
+				"title": "%command.toggleStatusBarItem%",
+				"icon": "$(eye)"
+			},
+			{
+				"command": "marketlens.setAlias",
+				"title": "%command.setAlias%",
+				"icon": "$(tag)"
 			}
 		],
 		"keybindings": [
@@ -312,6 +322,16 @@
 					"command": "marketlens.setHolding",
 					"when": "view == marketlens.watchlist && viewItem == stockItem",
 					"group": "2_manage@3"
+				},
+				{
+					"command": "marketlens.toggleStatusBarItem",
+					"when": "view == marketlens.watchlist && viewItem == stockItem",
+					"group": "2_manage@4"
+				},
+				{
+					"command": "marketlens.setAlias",
+					"when": "view == marketlens.watchlist && viewItem == stockItem",
+					"group": "2_manage@5"
 				}
 			]
 		},
@@ -613,6 +633,12 @@
 					"default": 3,
 					"order": 65,
 					"description": "%configuration.statusBar.holdingInterval.description%"
+				},
+				"marketlens.statusBar.compact": {
+					"type": "boolean",
+					"default": false,
+					"order": 66,
+					"description": "%configuration.statusBar.compact.description%"
 				},
 				"marketlens.watchlist": {
 					"type": "object",

@@ -217,18 +217,30 @@ export function validateAndParseInput(input: string): { error?: string; parsed?:
     // 如果是 1~5 位纯字母（如 AAPL, TSLA, NVDA），可能是美股也可以是单币
     const POPULAR_CRYPTO_TOKENS = new Set([
       "BTC", "ETH", "SOL", "BNB", "DOGE", "XRP", "ADA", "AVAX", "DOT", "MATIC",
-      "LINK", "UNI", "SHIB", "PEPE", "NEAR", "SUI", "APT", "TRX", "LTC", "BCH"
+      "LINK", "UNI", "SHIB", "PEPE", "NEAR", "SUI", "APT", "TRX", "LTC", "BCH",
+      "TON", "TRUMP", "XLM", "HBAR", "RENDER", "AAVE", "FET", "FIL", "ATOM"
     ]);
     const isPopularCrypto = POPULAR_CRYPTO_TOKENS.has(cleanUpper);
+
+    if (isPopularCrypto) {
+      return {
+        parsed: {
+          symbol: `${cleanUpper}USDT`,
+          type: "CRYPTO",
+          defaultGroup: "Binance",
+          hint: `主流加密货币 (${cleanUpper})，已自动适配为 ${cleanUpper}USDT；亦可作为美股`,
+          alternativeGroup: "美股",
+          alternativeType: "US_STOCK",
+        },
+      };
+    }
 
     return {
       parsed: {
         symbol: cleanUpper,
         type: "US_STOCK",
         defaultGroup: "美股",
-        hint: isPopularCrypto
-          ? `常见加密货币 (${cleanUpper})，加入 Binance 将自动适配为 ${cleanUpper}USDT；亦可作为美股`
-          : `美股代码 (${cleanUpper})，亦可作为加密币加入 Binance`,
+        hint: `美股代码 (${cleanUpper})，亦可作为加密币加入 Binance`,
         alternativeGroup: "Binance",
         alternativeType: "CRYPTO",
       },

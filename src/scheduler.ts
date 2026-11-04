@@ -3,8 +3,8 @@ import * as vscode from "vscode";
 import { MarketManager } from "./services/marketManager.ts";
 import { WatchlistProvider, GroupItem, StockItem } from "./ui/watchlistProvider.ts";
 import { StatusBar } from "./ui/statusBar.ts";
-import type { MarketLensConfig, MarketItem, WatchlistConfig } from "./types/index.ts";
-import { normalizeSymbolKey } from "./utils/symbolHelper.ts";
+import type { MarketLensConfig, MarketItem, WatchlistConfig, AssetType } from "./types/index.ts";
+import { normalizeSymbolKey, isFundGroupName } from "./utils/symbolHelper.ts";
 import { logger, describeForLog } from "./utils/logger.ts";
 import { isAShareMarketOpen, isHKMarketOpen, isUSMarketOpen, evaluateAdaptiveThrottle, shouldSkipMarketPolling } from "./utils/marketHours.ts";
 import { readConfig } from "./utils/config.ts";
@@ -146,12 +146,72 @@ export class RefreshScheduler implements vscode.Disposable {
   }
 
   public saveToQuoteCache(q: MarketItem): void {
+    if (!q) return;
+    q.updateTime = Date.now();
     const normSym = normalizeSymbolKey(q.symbol);
     const normId = normalizeSymbolKey(q.id);
     if (normSym) this.quoteCache.set(normSym, q);
     if (normId && normId !== normSym) this.quoteCache.set(normId, q);
     if (q.symbol) this.quoteCache.set(q.symbol, q);
     if (q.id && q.id !== q.symbol) this.quoteCache.set(q.id, q);
+  }
+
+  /**
+   * 即时拉取并缓存指定标的行情（用于新增标的场景，绕过全量轮询并发锁与磁盘落盘时延）
+   */
+  public async fetchAndCacheSymbols(
+    items: { symbol: string; type: AssetType; groupName: string }[]
+  ): Promise<MarketItem[]> {
+    if (!items || items.length === 0) {
+      return [];
+    }
+    const config = readConfig();
+    const targets = {
+      funds: [] as string[],
+      aShares: [] as string[],
+      hkStocks: [] as string[],
+      usStocks: [] as string[],
+      cryptos: [] as string[],
+      bscTokens: [] as string[],
+    };
+
+    for (const item of items) {
+      if (item.type === "A_SHARE") {
+        if (isFundGroupName(item.groupName)) {
+          targets.funds.push(item.symbol);
+        } else {
+          targets.aShares.push(item.symbol);
+        }
+      } else if (item.type === "HK_STOCK") {
+        targets.hkStocks.push(item.symbol);
+      } else if (item.type === "US_STOCK") {
+        targets.usStocks.push(item.symbol);
+      } else if (item.type === "CRYPTO") {
+        targets.cryptos.push(item.symbol);
+      } else if (item.type === "ALPHA_TOKEN" || item.type === "BSC_TOKEN") {
+        targets.bscTokens.push(item.symbol);
+      }
+    }
+
+    try {
+      const quotes = await this.marketManager.pollAll(
+        targets,
+        { mode: config.aShare.networkMode, proxyUrl: config.aShare.proxyUrl },
+        { mode: config.hkStock.networkMode, proxyUrl: config.hkStock.proxyUrl },
+        { mode: config.usStock.networkMode, proxyUrl: config.usStock.proxyUrl },
+        { mode: config.binance.networkMode, proxyUrl: config.binance.proxyUrl },
+        { mode: config.alpha.networkMode, proxyUrl: config.alpha.proxyUrl },
+        { mode: config.fund?.networkMode ?? "direct", proxyUrl: config.fund?.proxyUrl }
+      );
+
+      for (const q of quotes) {
+        this.saveToQuoteCache(q);
+      }
+      return quotes;
+    } catch (err) {
+      logger.error("[scheduler] fetchAndCacheSymbols 异常", err);
+      return [];
+    }
   }
 
   /**
@@ -237,11 +297,14 @@ export class RefreshScheduler implements vscode.Disposable {
 
   // ── 全量刷新 ────────────────────────────────────────────────────
 
-  public async refresh(forceRefreshAll: boolean = false): Promise<void> {
+  public async refresh(forceRefreshAll: boolean = false, customWatchlist?: WatchlistConfig): Promise<void> {
     if (this.disposed) {
       return;
     }
     const config = readConfig();
+    if (customWatchlist) {
+      config.watchlist = customWatchlist;
+    }
     // 资源节流控制：若状态栏未开启且侧边栏视图不可见，且非显式强制唤醒刷新，暂停后台打网
     const isStatusBarActive = config.statusBar?.enabled !== false;
     const isTreeViewActive = this.treeView.visible;
@@ -256,7 +319,7 @@ export class RefreshScheduler implements vscode.Disposable {
         // 若当前已有刷新在执行，且未排队重试，延迟 300ms 再次触发一次强制刷新
         this.retryTimer = setTimeout(() => {
           this.retryTimer = undefined;
-          void this.refresh(true);
+          void this.refresh(true, customWatchlist);
         }, this.RETRY_DELAY_MS);
       }
       return;
@@ -393,7 +456,7 @@ export class RefreshScheduler implements vscode.Disposable {
       }
 
       if (this.treeProvider.isEmpty() || wasFirstLoad || forceRefreshAll || proxySuspensionChanged) {
-        this.rebuildTree();
+        this.rebuildTree(customWatchlist, config);
       } else {
         this.treeProvider.applyQuotes(quotes);
       }

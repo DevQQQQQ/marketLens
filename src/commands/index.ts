@@ -325,6 +325,30 @@ export function registerCommands(
       }
     ),
 
+    // 切换标的是否在底部状态栏轮播展示 (T1-4)
+    vscode.commands.registerCommand(
+      "marketlens.toggleStatusBarItem",
+      async (node?: StockItem) => {
+        if (shouldBlockNodeCommand(statusBar.isBossKeyActive(), readConfig().maskMode, Boolean(node))) {
+          logger.info("专注/简洁展示模式激活期间拒绝修改状态栏轮播（老板键/打码守卫已生效）");
+          return;
+        }
+        await watchlistOps.toggleStatusBarItem(node);
+      }
+    ),
+
+    // 设置标的展示简称 / 别名 (T1-3)
+    vscode.commands.registerCommand(
+      "marketlens.setAlias",
+      async (node?: StockItem) => {
+        if (shouldBlockNodeCommand(statusBar.isBossKeyActive(), readConfig().maskMode, Boolean(node))) {
+          logger.info("专注/简洁展示模式激活期间拒绝修改标的别名（老板键/打码守卫已生效）");
+          return;
+        }
+        await watchlistOps.setAlias(node);
+      }
+    ),
+
     // 一键添加常用核心大盘指数 (F2: Core Indices)
     vscode.commands.registerCommand(
       "marketlens.addCommonIndices",

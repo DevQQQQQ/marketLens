@@ -36,18 +36,21 @@ export const GLOBAL_STATE_LAST_IPO_REMIND_KEY = "marketlens.lastIpoRemindDate";
 /** 内存缓存：记录当天抓取的全量申购列表，避免单日重复请求 */
 let _cachedIpoDate: string | undefined = undefined;
 let _cachedIpoItems: IpoItem[] | undefined = undefined;
+let _fetchGeneration = 0;
 
 /** 在途中单例任务锁：彻底杜绝激活瞬间多入口并发重复弹窗 (IPO-13) */
 let _inFlightCheck: Promise<void> | null = null;
 
 /** 重置缓存（供测试、配置变更与手动刷新使用） */
 export function resetIpoCache(): void {
+  _fetchGeneration++;
   _cachedIpoDate = undefined;
   _cachedIpoItems = undefined;
 }
 
 /** 测试辅助注入缓存（供单元测试注入 mock 数据，避免直连外网） */
 export function setCachedIpoForTesting(items: IpoItem[], dateStr?: string): void {
+  _fetchGeneration++;
   _cachedIpoDate = dateStr || getBeijingTodayString();
   _cachedIpoItems = [...items];
 }
@@ -240,6 +243,7 @@ export async function fetchTodayIposWithStatus(
     return { items: filterIpoItems(_cachedIpoItems, options), fetchFailed: false };
   }
 
+  const currentGen = _fetchGeneration;
   const netOpts = getNetworkOptions();
   let fetchFailed = false;
 
@@ -273,6 +277,14 @@ export async function fetchTodayIposWithStatus(
 
   const [aShares, bonds, hkStocks] = await Promise.all(tasks);
   const allItems = [...aShares, ...bonds, ...hkStocks];
+
+  // 若在抓取期间缓存已被重置或注入测试数据，则丢弃本次网络结果 (IPO-5)
+  if (currentGen !== _fetchGeneration) {
+    return {
+      items: _cachedIpoItems ? filterIpoItems(_cachedIpoItems, options) : [],
+      fetchFailed,
+    };
+  }
 
   // 只要未发生网络错误，或即便有局部错误但已抓到有效标的，才写入缓存
   if (!fetchFailed || allItems.length > 0) {

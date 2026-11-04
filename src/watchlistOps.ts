@@ -2,7 +2,8 @@ import * as vscode from "vscode";
 import { StockItem, WatchlistProvider } from "./ui/watchlistProvider.ts";
 import type { MarketItem, PriceAlertItem, WatchlistConfig, WatchConfigItem, AssetType } from "./types/index.ts";
 import { isSameSymbol, normalizeSymbolKey, resolveItemDisplayName, batchReorderWatchlist, type ReorderItemDescriptor } from "./utils/symbolHelper.ts";
-import { validateAndParseInput } from "./utils/inputValidator.ts";
+import { validateAndParseInput, type ParsedItemInput } from "./utils/inputValidator.ts";
+import { searchSymbols } from "./services/symbolSearchService.ts";
 import { readConfig } from "./utils/config.ts";
 import { SettingsWebviewPanel } from "./ui/settingsWebview.ts";
 import { logger } from "./utils/logger.ts";
@@ -12,6 +13,13 @@ export interface WatchlistOpsContext {
   quoteCache: Map<string, MarketItem>;
   rebuildTree: (customWatchlist?: WatchlistConfig) => void;
   treeProvider?: WatchlistProvider;
+  refresh?: ((forceAll: boolean, customWatchlist?: WatchlistConfig) => Promise<void>) | undefined;
+  fetchAndCacheSymbols?: ((items: { symbol: string; type: AssetType; groupName: string }[]) => Promise<MarketItem[]>) | undefined;
+}
+
+interface AddItemQuickPickItem extends vscode.QuickPickItem {
+  detected: ParsedItemInput;
+  suggestedName?: string;
 }
 
 export class WatchlistOps {
@@ -19,11 +27,15 @@ export class WatchlistOps {
   private readonly rebuildTree: (customWatchlist?: WatchlistConfig) => void;
   // 上下文里 treeProvider 可缺省，构造时存入 `undefined`，故声明为必需可空而非可选键
   private readonly treeProvider: WatchlistProvider | undefined;
+  private readonly refresh: ((forceAll: boolean, customWatchlist?: WatchlistConfig) => Promise<void>) | undefined;
+  private readonly fetchAndCacheSymbols: ((items: { symbol: string; type: AssetType; groupName: string }[]) => Promise<MarketItem[]>) | undefined;
 
   constructor(context: WatchlistOpsContext) {
     this.quoteCache = context.quoteCache;
     this.rebuildTree = context.rebuildTree;
     this.treeProvider = context.treeProvider;
+    this.refresh = context.refresh;
+    this.fetchAndCacheSymbols = context.fetchAndCacheSymbols;
   }
 
   /**
@@ -63,7 +75,173 @@ export class WatchlistOps {
   }
 
   /**
-   * 添加自选（带实时严格校验）
+   * 弹出输入/联想选择框（方案 A：QuickPick 动态实时联想）
+   * - 输入代码/币对/合约时：本地规则 0ms 零延迟置顶直接添加项；
+   * - 输入拼音缩写/中文名时：防抖 250ms 请求 Smartbox 联想候选；
+   * - 完美回退：支持 mock vscode 环境下的自动化测试向导桥接。
+   */
+  private async promptForSymbol(): Promise<{ detected: ParsedItemInput; suggestedName?: string } | undefined> {
+    return new Promise((resolve) => {
+      const qp = vscode.window.createQuickPick<AddItemQuickPickItem>();
+
+      qp.title = "添加自选标的 (支持代码 / 拼音缩写 / 中文名 / 币对 / 合约)";
+      qp.placeholder = "如：600519、gzmt、贵州茅台、BTCUSDT、AAPL、0x...";
+      qp.ignoreFocusOut = true;
+      qp.matchOnDescription = true;
+      qp.matchOnDetail = true;
+
+      // 绑定校验函数供 mock 测试环境识别
+      (qp as any)._validateInput = (v: string) => {
+        const res = validateAndParseInput(v);
+        return res.error ? res.error : undefined;
+      };
+
+      let debounceTimer: ReturnType<typeof setTimeout> | undefined;
+      let resolved = false;
+
+      const cleanup = () => {
+        if (debounceTimer) {
+          clearTimeout(debounceTimer);
+          debounceTimer = undefined;
+        }
+        qp.dispose();
+      };
+
+      const finish = (res?: { detected: ParsedItemInput; suggestedName?: string }) => {
+        if (!resolved) {
+          resolved = true;
+          cleanup();
+          resolve(res);
+        }
+      };
+
+      qp.onDidChangeValue((rawVal) => {
+        const val = rawVal.trim();
+        if (!val) {
+          qp.items = [];
+          qp.busy = false;
+          if (debounceTimer) {
+            clearTimeout(debounceTimer);
+            debounceTimer = undefined;
+          }
+          return;
+        }
+
+        // 1. 本地即时校验与置顶候选 (0ms 零等待)
+        const localRes = validateAndParseInput(val);
+        const directItems: AddItemQuickPickItem[] = [];
+
+        if (localRes.parsed) {
+          directItems.push({
+            label: `$(add) 直接添加: ${localRes.parsed.symbol}`,
+            description: `[${localRes.parsed.defaultGroup}] ${localRes.parsed.hint}`,
+            detected: localRes.parsed,
+            alwaysShow: true,
+          });
+        }
+        qp.items = directItems;
+
+        // 2. 异步网络 Smartbox 联想 (防抖 250ms)
+        if (debounceTimer) {
+          clearTimeout(debounceTimer);
+        }
+        qp.busy = true;
+        debounceTimer = setTimeout(() => {
+          void (async () => {
+            try {
+              const remoteItems = await searchSymbols(val);
+              if (qp.value.trim() !== val) {
+                return;
+              }
+
+              const combined: AddItemQuickPickItem[] = [];
+
+              if (localRes.parsed) {
+                combined.push(directItems[0]!);
+              }
+
+              for (const item of remoteItems) {
+                if (localRes.parsed && isSameSymbol(item.symbol, localRes.parsed.symbol)) {
+                  continue;
+                }
+                const icon =
+                  item.defaultGroup === "基金"
+                    ? "$(credit-card)"
+                    : item.type === "HK_STOCK"
+                    ? "$(globe)"
+                    : item.type === "US_STOCK"
+                    ? "$(organization)"
+                    : item.type === "CRYPTO"
+                    ? "$(shield)"
+                    : "$(graph)";
+
+                const pickItem: AddItemQuickPickItem = {
+                  label: `${icon} ${item.name} (${item.symbol})`,
+                  description: `[${item.defaultGroup}] ${item.hint}`,
+                  detected: {
+                    symbol: item.symbol,
+                    type: item.type,
+                    defaultGroup: item.defaultGroup,
+                    hint: `${item.name} (${item.symbol})`,
+                  },
+                  suggestedName: item.name,
+                };
+                if (item.pinyin) {
+                  pickItem.detail = `拼音: ${item.pinyin}`;
+                }
+                combined.push(pickItem);
+              }
+
+              qp.items = combined;
+            } catch (err: unknown) {
+              logger.debug("[WatchlistOps] symbol search error", err);
+            } finally {
+              if (qp.value.trim() === val) {
+                qp.busy = false;
+              }
+            }
+          })();
+        }, 250);
+      });
+
+      qp.onDidAccept(() => {
+        const selected = qp.selectedItems[0] || qp.activeItems[0];
+        if (selected && selected.detected) {
+          const itemRes: { detected: ParsedItemInput; suggestedName?: string } = {
+            detected: selected.detected,
+          };
+          if (selected.suggestedName) {
+            itemRes.suggestedName = selected.suggestedName;
+          }
+          finish(itemRes);
+          return;
+        }
+
+        const val = qp.value.trim();
+        if (!val) {
+          finish(undefined);
+          return;
+        }
+
+        const fallback = validateAndParseInput(val);
+        if (fallback.parsed) {
+          finish({ detected: fallback.parsed });
+        } else {
+          vscode.window.showErrorMessage(fallback.error || "输入格式不合法，未检索到对应标的");
+          finish(undefined);
+        }
+      });
+
+      qp.onDidHide(() => {
+        finish(undefined);
+      });
+
+      qp.show();
+    });
+  }
+
+  /**
+   * 添加自选（支持代码 / 拼音缩写 / 中文名联想检索）
    */
   public async addItem(): Promise<void> {
     // 守卫下沉：本模块可读到全部真实自选名称、代码与现价，命令层之外（菜单、其他扩展调用）
@@ -73,51 +251,42 @@ export class WatchlistOps {
       return;
     }
 
-    // ── Step 1: 获取用户输入并实时校验 ────────────────────────────
-    const input = await vscode.window.showInputBox({
-      prompt: "输入股票代码 / 币对 / 合约地址",
-      placeHolder: "如：600519 / BTCUSDT / 0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c",
-      validateInput: (v) => {
-        const res = validateAndParseInput(v);
-        return res.error ? res.error : undefined;
-      },
-    });
-    if (!input) { return; }
+    // ── Step 1: 获取用户输入（支持代码/拼音/中文实时联想） ────────
+    const picked = await this.promptForSymbol();
+    if (!picked) { return; }
 
-    const validation = validateAndParseInput(input);
-    if (validation.error || !validation.parsed) {
-      vscode.window.showErrorMessage(validation.error || "输入格式不合法");
-      return;
-    }
-    const detected = validation.parsed;
+    const detected = picked.detected;
     const sym = detected.symbol;
 
-    // ── Step 2: 读取当前 watchlist，让用户选择目标分组 ───────────
+    // ── Step 2: 严格锁定到匹配的系统专属分组（防呆拦截跨市场错配，暂不支持自定义分组） ─
     const watchlist: WatchlistConfig =
       vscode.workspace.getConfiguration("marketlens").get<WatchlistConfig>("watchlist", {});
 
-    const existingGroups = Object.keys(watchlist);
-    const sortedGroups = [
-      detected.defaultGroup,
-      ...existingGroups.filter((g) => g !== detected.defaultGroup),
-      "➕ 新建分组…",
-    ];
+    const validGroups: string[] = [];
+    if (detected.defaultGroup) {
+      validGroups.push(detected.defaultGroup);
+    }
+    if (detected.alternativeGroup && !validGroups.includes(detected.alternativeGroup)) {
+      validGroups.push(detected.alternativeGroup);
+    }
+    // 特殊兼容：若是 ETF/场内基金，允许在“基金”和“A股”之间选择
+    if (detected.type === "A_SHARE" && detected.defaultGroup === "基金" && !validGroups.includes("A股")) {
+      validGroups.push("A股");
+    }
+    if (validGroups.length === 0) {
+      validGroups.push(detected.defaultGroup || "A股");
+    }
 
-    const pickedGroup = await vscode.window.showQuickPick(sortedGroups, {
-      title: `添加 "${sym}" (${detected.hint}) 到哪个分组？`,
-      placeHolder: `自动识别：${detected.defaultGroup}（按 Enter 确认）`,
-    });
-    if (!pickedGroup) { return; }
-
-    let targetGroup = pickedGroup;
-    if (pickedGroup === "➕ 新建分组…") {
-      const newGroup = await vscode.window.showInputBox({
-        prompt: "输入新分组名称",
-        placeHolder: "如：海外股票",
-        validateInput: (v) => v.trim() ? undefined : "不能为空",
+    let targetGroup = validGroups[0]!;
+    // 仅当存在多个合规系统分组（如 ETF 选 基金 vs A股，或 BTC 选 Binance vs 美股）时才弹窗；
+    // 分组唯一时自动直达，无需让用户重复确认唯一选项
+    if (validGroups.length > 1) {
+      const pickedGroup = await vscode.window.showQuickPick(validGroups, {
+        title: `添加 "${sym}" (${detected.hint}) 到哪个系统分组？`,
+        placeHolder: `自动匹配系统分组：${validGroups[0]}（按 Enter 确认）`,
       });
-      if (!newGroup) { return; }
-      targetGroup = newGroup.trim();
+      if (!pickedGroup) { return; }
+      targetGroup = pickedGroup;
     }
 
     // ── Step 3: 检查是否已存在（去重）───────────────────────────
@@ -132,16 +301,22 @@ export class WatchlistOps {
       return;
     }
 
-    // ── Step 3.5: 可选输入友好显示名称（如：特斯拉、比特币） ───────
-    const customNameInput = await vscode.window.showInputBox({
-      title: `为 "${sym}" 设置显示名称（可选）`,
-      prompt: "直接按 Enter 默认使用标的代码作为显示名称",
-      placeHolder: `如：${detected.type === "US_STOCK" && sym.toUpperCase() === "TSLA" ? "特斯拉" : sym}`,
-    });
-    if (customNameInput === undefined) {
-      return; // 用户按下 Esc 取消
+    // ── Step 3.5: 确定显示名称 ───────────────────────────────────
+    // 若联想搜索已带官方名称（如“长鑫科技”、“贵州茅台”），直接采用并一键落盘，杜绝多次按回车；
+    // 仅当输入裸代码（无 suggestedName）时，才提示输入自定义显示名称。
+    let finalName = picked.suggestedName || sym;
+    if (!picked.suggestedName) {
+      const defaultPlaceholder = detected.type === "US_STOCK" && sym.toUpperCase() === "TSLA" ? "特斯拉" : sym;
+      const customNameInput = await vscode.window.showInputBox({
+        title: `为 "${sym}" 设置显示名称（可选）`,
+        prompt: "直接按 Enter 默认使用标的代码作为显示名称",
+        placeHolder: `如：${defaultPlaceholder}`,
+      });
+      if (customNameInput === undefined) {
+        return; // 用户按下 Esc 取消
+      }
+      finalName = customNameInput.trim() || sym;
     }
-    const finalName = customNameInput.trim() || sym;
 
     // ── Step 4: 写入 settings.json ───────────────────────────────
     let finalType = detected.type;
@@ -151,11 +326,16 @@ export class WatchlistOps {
         finalType = detected.alternativeType;
         if (finalType === "CRYPTO" && !/(USDT|USDC|FDUSD|BUSD|BTC|ETH)$/i.test(symToSave)) {
           symToSave = `${symToSave.toUpperCase()}USDT`;
+        } else if (finalType === "US_STOCK" && /(USDT|USDC)$/i.test(symToSave)) {
+          symToSave = symToSave.replace(/(USDT|USDC)$/i, "");
         }
       } else if (targetGroup.includes("港股") || /\bhk\b/i.test(targetGroup)) {
         finalType = "HK_STOCK";
       } else if (targetGroup.includes("美股") || /\bus\b/i.test(targetGroup)) {
         finalType = "US_STOCK";
+        if (/(USDT|USDC)$/i.test(symToSave)) {
+          symToSave = symToSave.replace(/(USDT|USDC)$/i, "");
+        }
       }
     }
 
@@ -172,7 +352,20 @@ export class WatchlistOps {
         .getConfiguration("marketlens")
         .update("watchlist", updated, vscode.ConfigurationTarget.Global);
 
-      // 主动重建树视图，与 pinToTop / removeItem / handleReorder 行为保持一致
+      // 立即针对新增标的发起定向高速拉取并直接写入内存缓存（彻底消除全量轮询锁、VS Code 异步落盘与休市时序抖动）
+      try {
+        if (this.fetchAndCacheSymbols) {
+          await this.fetchAndCacheSymbols([{ symbol: symToSave, type: finalType, groupName: targetGroup }]);
+        } else if (this.refresh) {
+          await this.refresh(true, updated);
+        } else {
+          await vscode.commands.executeCommand("marketlens.refresh");
+        }
+      } catch (err) {
+        logger.debug("[addItem] instant symbol fetch error", err);
+      }
+
+      // 拉取后（已写入 quoteCache）一次性重建树视图与设置面板，杜绝先显示“获取行情中...”的短暂闪烁
       this.rebuildTree(updated);
       SettingsWebviewPanel.syncSettings();
 
@@ -842,7 +1035,11 @@ export class WatchlistOps {
       this.rebuildTree(watchlist);
       SettingsWebviewPanel.syncSettings();
       try {
-        await vscode.commands.executeCommand("marketlens.refresh");
+        if (this.refresh) {
+          await this.refresh(true, watchlist);
+        } else {
+          await vscode.commands.executeCommand("marketlens.refresh");
+        }
       } catch (err) {
         logger.debug("[addCommonIndices] refresh command failed", err);
       }
@@ -852,5 +1049,156 @@ export class WatchlistOps {
     } catch (err: unknown) {
       vscode.window.showErrorMessage(`添加大盘指数失败: ${(err as Error)?.message || String(err)}`);
     }
+  }
+
+  /**
+   * 切换标的是否在底部状态栏参与轮播展示 (T1-4: 股票池与展示池解耦)
+   */
+  public async toggleStatusBarItem(node?: StockItem): Promise<void> {
+    if (!canOpenPrompt(Boolean(node))) {
+      logger.info("专注/简洁展示模式激活期间拒绝修改状态栏显示（模块级脱敏守卫）");
+      return;
+    }
+
+    let targetGroup: string | undefined;
+    let targetSymbol: string | undefined;
+    let targetName: string | undefined;
+
+    if (node && node.item) {
+      targetGroup = node.groupName;
+      targetSymbol = node.confSymbol || node.item.symbol;
+      targetName = resolveItemDisplayName(node.confName, node.confSymbol, node.item, node.alias);
+    } else {
+      const cfg = readConfig();
+      const allItems: Array<{ label: string; description: string; group: string; symbol: string; name: string }> = [];
+      for (const [grp, items] of Object.entries(cfg.watchlist || {})) {
+        for (const it of items ?? []) {
+          if (!it?.symbol) continue;
+          allItems.push({
+            label: it.alias || it.name || it.symbol,
+            description: `分组: ${grp} · 代码: ${it.symbol}`,
+            group: grp,
+            symbol: it.symbol,
+            name: it.alias || it.name || it.symbol,
+          });
+        }
+      }
+      if (allItems.length === 0) {
+        showInfoMessage("自选列表为空，无法设置。");
+        return;
+      }
+      const picked = await vscode.window.showQuickPick(allItems, { placeHolder: "选择要切换状态栏轮播展示的标的" });
+      if (!picked) return;
+      targetGroup = picked.group;
+      targetSymbol = picked.symbol;
+      targetName = picked.name;
+    }
+
+    const cfg = readConfig();
+    const updated = { ...cfg.watchlist };
+    const list = updated[targetGroup] ? [...updated[targetGroup]!] : [];
+    const idx = list.findIndex(
+      (it) => it.symbol === targetSymbol || normalizeSymbolKey(it.symbol) === normalizeSymbolKey(targetSymbol!)
+    );
+    if (idx === -1) return;
+
+    const currentItem = list[idx]!;
+    // 默认是 true（轮播），切换为 false 则停用，反之重新启用
+    const nextShow = currentItem.showInStatusBar === false ? true : false;
+    list[idx] = {
+      ...currentItem,
+      showInStatusBar: nextShow,
+    };
+    updated[targetGroup] = list;
+
+    await vscode.workspace.getConfiguration("marketlens").update("watchlist", updated, vscode.ConfigurationTarget.Global);
+    this.rebuildTree(updated);
+    SettingsWebviewPanel.syncSettings();
+
+    const statusTip = nextShow ? "已开启状态栏轮播展示" : "已关闭状态栏轮播（仅在自选树常驻）";
+    emitStatusMessage(`$(check) ${targetName} ${statusTip}`, 3000);
+  }
+
+  /**
+   * 设置标的展示简称 / 别名 (T1-3)
+   */
+  public async setAlias(node?: StockItem): Promise<void> {
+    if (!canOpenPrompt(Boolean(node))) {
+      logger.info("专注/简洁展示模式激活期间拒绝修改标的别名（模块级脱敏守卫）");
+      return;
+    }
+
+    let targetGroup: string | undefined;
+    let targetSymbol: string | undefined;
+    let currentAlias: string | undefined;
+    let currentName: string | undefined;
+
+    if (node && node.item) {
+      targetGroup = node.groupName;
+      targetSymbol = node.confSymbol || node.item.symbol;
+      currentAlias = node.alias;
+      currentName = resolveItemDisplayName(node.confName, node.confSymbol, node.item);
+    } else {
+      const cfg = readConfig();
+      const allItems: Array<{ label: string; description: string; group: string; symbol: string; alias?: string | undefined; name: string }> = [];
+      for (const [grp, items] of Object.entries(cfg.watchlist || {})) {
+        for (const it of items ?? []) {
+          if (!it?.symbol) continue;
+          allItems.push({
+            label: it.alias || it.name || it.symbol,
+            description: `分组: ${grp} · 代码: ${it.symbol}${it.alias ? ` · 别名: ${it.alias}` : ""}`,
+            group: grp,
+            symbol: it.symbol,
+            alias: it.alias,
+            name: it.name || it.symbol,
+          });
+        }
+      }
+      if (allItems.length === 0) {
+        showInfoMessage("自选列表为空，无法设置。");
+        return;
+      }
+      const picked = await vscode.window.showQuickPick(allItems, { placeHolder: "选择要设置展示简称 / 别名的标的" });
+      if (!picked) return;
+      targetGroup = picked.group;
+      targetSymbol = picked.symbol;
+      currentAlias = picked.alias;
+      currentName = picked.name;
+    }
+
+    const input = await vscode.window.showInputBox({
+      title: `设置标的展示简称 / 别名: ${currentName} (${targetSymbol})`,
+      prompt: "输入要在侧边栏和状态栏优先展示的简短别名（如“茅台”、“红利低波”）；留空清空别名并恢复默认",
+      value: currentAlias || "",
+      placeHolder: "例如：茅台",
+    });
+
+    if (input === undefined) return;
+
+    const cfg = readConfig();
+    const updated = { ...cfg.watchlist };
+    const list = updated[targetGroup] ? [...updated[targetGroup]!] : [];
+    const idx = list.findIndex(
+      (it) => it.symbol === targetSymbol || normalizeSymbolKey(it.symbol) === normalizeSymbolKey(targetSymbol!)
+    );
+    if (idx === -1) return;
+
+    const trimmed = input.trim();
+    const currentItem = list[idx]!;
+    if (trimmed) {
+      list[idx] = { ...currentItem, alias: trimmed };
+    } else {
+      const cloned = { ...currentItem };
+      delete cloned.alias;
+      list[idx] = cloned;
+    }
+    updated[targetGroup] = list;
+
+    await vscode.workspace.getConfiguration("marketlens").update("watchlist", updated, vscode.ConfigurationTarget.Global);
+    this.rebuildTree(updated);
+    SettingsWebviewPanel.syncSettings();
+
+    const tip = trimmed ? `已设置别名为 “${trimmed}”` : "已清空别名并恢复默认";
+    emitStatusMessage(`$(check) ${targetSymbol} ${tip}`, 3000);
   }
 }

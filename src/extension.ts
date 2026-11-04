@@ -57,6 +57,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   if (config.statusBar?.enabled === false) {
     statusBar.hide();
   }
+  statusBar.setCompact(config.statusBar?.compact ?? false);
 
   // 绑定到模块级变量，使 deactivate() 可以显式清理
   _statusBar = statusBar;
@@ -90,6 +91,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     quoteCache: scheduler.quoteCache,
     rebuildTree: (customWatchlist) => scheduler.rebuildTree(customWatchlist),
     treeProvider,
+    refresh: (forceAll, customWatchlist) => scheduler.refresh(forceAll, customWatchlist),
+    fetchAndCacheSymbols: (items) => scheduler.fetchAndCacheSymbols(items),
   });
 
   // 恢复持久化的各分组排序模式并监听变更
@@ -194,6 +197,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
     if (key === "statusBar.enabled") {
       applyStatusBarToAllSections(config, !!value);
+    } else if (key === "statusBar.compact") {
+      if (!config.statusBar) {
+        config.statusBar = { enabled: true, holdingEnabled: true, holdingInterval: 3, compact: false };
+      }
+      config.statusBar.compact = !!value;
+      statusBar.setCompact(config.statusBar.compact);
     } else if (key === "autoCollapseClosedGroups") {
       config.autoCollapseClosedGroups = !!value;
       treeProvider.setAutoCollapseClosedGroups(config.autoCollapseClosedGroups);
@@ -338,6 +347,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       statusBar.setMaskMode(config.maskMode);
       statusBar.setColorNeutral(config.colorNeutral);
       statusBar.setColorScheme(config.colorScheme);
+      statusBar.setCompact(config.statusBar?.compact ?? false);
 
       const isFromRecentWebview = Date.now() - lastWebviewUpdateTimestamp < 400;
       const watchlistContentChanged = oldFingerprint !== getWatchlistFingerprint(config.watchlist);
@@ -412,6 +422,9 @@ export function deactivate(): void {
   SettingsWebviewPanel.onDidUpdateSetting = undefined;
   SettingsWebviewPanel.getQuoteCache = undefined;
   SettingsWebviewPanel.globalState = undefined;
+
+  setMaskSnapshotSource(() => ({ bossKeyActive: false, maskMode: false }));
+  resetIpoCache();
 
   _scheduler?.dispose();
   _scheduler = undefined;
