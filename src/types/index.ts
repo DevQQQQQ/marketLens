@@ -165,3 +165,8 @@ export interface IpoReminderConfig {
   includeConvertibleBond: boolean;
   includeHkShare: boolean;
 }
+
+/**
+ * 离线行情缓存持久化键名（存放在 VS Code context.globalState 中）
+ */
+export const GLOBAL_STATE_QUOTE_CACHE_KEY = "marketlens.quoteCache.v1";

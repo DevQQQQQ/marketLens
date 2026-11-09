@@ -25,3 +25,6 @@ package-lock.json
 AUDIT*
 .gitattributes
 tsconfig.test.json
+
+.CHANGELOG.full.bak
+README.en.md

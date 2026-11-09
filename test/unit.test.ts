@@ -9,11 +9,11 @@ import { fileURLToPath } from "node:url";
 
 import { isSameSymbol, normalizeSymbolKey, stripMarketPrefix, normalizeUSCode, inferAShareExchange, normalizeAShareCode, resolveItemAssetType, resolveItemDisplayName, getWatchlistFingerprint, reorderWatchlist, batchReorderWatchlist, pruneQuoteCache, extractTargetsFromWatchlist, extractStatusBarQuotes, computeStatusBarEnabled, resolveTrendColors, chunkArray, decodeGbk, escapeHtml, escapeMarkdownInline, toMarkdownCodeSpan, ASSET_TYPE_TO_SECTION_MAP, NORMALIZE_SYMBOL_KEY_CLIENT_SCRIPT, isItemMarketClosed, isGroupMarketClosed, buildGroupNodeId, sanitizeWatchlist } from "../src/utils/symbolHelper.ts";
 import type { MarketItem, WatchlistConfig, WatchConfigItem, PriceAlertItem } from "../src/types/index.ts";
+import { GLOBAL_STATE_QUOTE_CACHE_KEY } from "../src/types/index.ts";
 import { describeForLog, describeListForLog, scrubForLog, describeErrorForLog, describeErrorNameForLog, formatDetailForLog, logger } from "../src/utils/logger.ts";
 import { validateAndParseInput, isContractAddress, extractContractAddressFromUrl } from "../src/utils/inputValidator.ts";
 import { isAShareMarketOpen, isHKMarketOpen, isUSMarketOpen, isAShareHoliday, isHKHoliday, isUSHoliday, evaluateAdaptiveThrottle, getZonedTimeParts, beijingFormatter, newYorkFormatter, beijingDateFormatter, newYorkDateFormatter, shouldSkipMarketPolling, MAX_COVERED_HOLIDAY_YEAR, FORECAST_HOLIDAY_YEARS, checkHolidayCoverage, US_HOLIDAYS, HK_HOLIDAYS, A_SHARE_HOLIDAYS } from "../src/utils/marketHours.ts";
-import { validateAndNormalizeProxyUrl, parseProxy, resetProxyCache, getSystemProxyUrl, smartNetworkGet, getCachedWorkingPort, testLocalPort, DEFAULT_PROXY_PORT, DEFAULT_PROXY_URL, COMMON_PROXY_PORTS, DEFAULT_REQUEST_TIMEOUT_MS, SYSTEM_PROXY_FALLBACK_TIMEOUT_MS, QUICK_PROXY_PROBE_TIMEOUT_MS, PORT_PROBE_TIMEOUT_MS } from "../src/services/network.ts";
-import axios from "axios";
+import { validateAndNormalizeProxyUrl, parseProxy, resetProxyCache, getSystemProxyUrl, smartNetworkGet, getCachedWorkingPort, testLocalPort, DEFAULT_PROXY_PORT, DEFAULT_PROXY_URL, COMMON_PROXY_PORTS, DEFAULT_REQUEST_TIMEOUT_MS, SYSTEM_PROXY_FALLBACK_TIMEOUT_MS, QUICK_PROXY_PROBE_TIMEOUT_MS, PORT_PROBE_TIMEOUT_MS, setCustomHttpExecutor } from "../src/services/network.ts";
 import { isDisplayMasked, shouldAutoExitBossKey, canEmitUserFeedback, resolveMaskToggle, shouldBlockNodeCommand, MASKED_TOOLTIP_TEXT, resolveStockTooltip } from "../src/utils/maskState.ts";
 import { AlertManager, DEFAULT_ALERT_COOLDOWN_MINUTES } from "../src/services/alertManager.ts";
 import { DexScreenerService } from "../src/services/dexScreenerService.ts";
@@ -3103,7 +3103,6 @@ void test("network 常量与本地端口探活接口基础契约", async () => {
 
 void test("smartNetworkGet - 核心网络调度、直连模式、代理回退与熔断守卫", async () => {
   resetProxyCache();
-  const originalGet = axios.get;
   const originalEnv = { ...process.env };
   const cleanProxyEnv = () => {
     delete process.env.HTTPS_PROXY;
@@ -3118,20 +3117,23 @@ void test("smartNetworkGet - 核心网络调度、直连模式、代理回退与
     cleanProxyEnv();
     // 1. 直连模式：显式声明 proxy: false
     let interceptedConfig: any = null;
-    axios.get = (async (url: string, config: any) => {
-      interceptedConfig = config;
-      return { data: { status: "ok" }, status: 200, statusText: "OK", headers: {}, config };
-    }) as any;
+    let interceptedIsDirect: boolean = false;
+    setCustomHttpExecutor(async (opts) => {
+      interceptedConfig = opts.config;
+      interceptedIsDirect = opts.isDirect;
+      return { data: { status: "ok" }, status: 200, statusText: "OK", headers: {}, config: opts.config };
+    });
 
     const resDirect = await smartNetworkGet<Record<string, string>>("http://example.com/api", { mode: "direct" });
     assert.strictEqual(resDirect.data.status, "ok");
+    assert.strictEqual(interceptedIsDirect, true, "直连模式必须显式走直连");
     assert.strictEqual(interceptedConfig.proxy, false, "直连模式必须显式设置 proxy: false");
 
     // 2. 代理模式：目标代理请求成功并更新 cachedWorkingPort
-    axios.get = (async (url: string, config: any) => {
-      interceptedConfig = config;
-      return { data: { price: "50000" }, status: 200, statusText: "OK", headers: {}, config };
-    }) as any;
+    setCustomHttpExecutor(async (opts) => {
+      interceptedConfig = opts.config;
+      return { data: { price: "50000" }, status: 200, statusText: "OK", headers: {}, config: opts.config };
+    });
 
     const resProxy = await smartNetworkGet<Record<string, string>>("http://example.com/quote", {
       mode: "proxy",
@@ -3142,11 +3144,11 @@ void test("smartNetworkGet - 核心网络调度、直连模式、代理回退与
     assert.strictEqual(getCachedWorkingPort(), 7890, "请求成功后必须缓存工作端口");
 
     // 3. 远端服务器返回原生 HTTP 响应（如 400 Bad Request）时必须保留异常且不进入探测
-    axios.get = (async () => {
+    setCustomHttpExecutor(async () => {
       const err: any = new Error("Request failed with status code 400");
       err.response = { status: 400, data: { msg: "Invalid symbol" } };
       throw err;
-    }) as any;
+    });
 
     await assert.rejects(
       async () => {
@@ -3163,15 +3165,15 @@ void test("smartNetworkGet - 核心网络调度、直连模式、代理回退与
     cleanProxyEnv();
     process.env.HTTP_PROXY = "http://127.0.0.1:7897";
 
-    axios.get = (async (url: string, config: any) => {
-      if (config.proxy?.port === 10808) {
+    setCustomHttpExecutor(async (opts) => {
+      if (opts.config.proxy && typeof opts.config.proxy === "object" && opts.config.proxy.port === 10808) {
         throw new Error("connect ECONNREFUSED 127.0.0.1:10808");
       }
-      if (config.proxy?.port === 7897) {
-        return { data: { fallback: "sys-proxy" }, status: 200, statusText: "OK", headers: {}, config };
+      if (opts.config.proxy && typeof opts.config.proxy === "object" && opts.config.proxy.port === 7897) {
+        return { data: { fallback: "sys-proxy" }, status: 200, statusText: "OK", headers: {}, config: opts.config };
       }
       throw new Error("unexpected port");
-    }) as any;
+    });
 
     const resSys = await smartNetworkGet<Record<string, string>>("http://example.com/test", {
       mode: "proxy",
@@ -3185,9 +3187,9 @@ void test("smartNetworkGet - 核心网络调度、直连模式、代理回退与
 
     // 5. 所有端口不可达时触发熔断冷却并阻止重试
     resetProxyCache();
-    axios.get = (async () => {
+    setCustomHttpExecutor(async () => {
       throw new Error("connect ECONNREFUSED");
-    }) as any;
+    });
 
     await assert.rejects(
       async () => {
@@ -3212,11 +3214,24 @@ void test("smartNetworkGet - 核心网络调度、直连模式、代理回退与
       "熔断冷却期内必须拒绝重试"
     );
 
+    // 6. Gzip 压缩响应与重定向能力回归
+    setCustomHttpExecutor(async (opts) => {
+      return {
+        data: { gzipSuccess: true },
+        status: 200,
+        statusText: "OK",
+        headers: { "content-encoding": "gzip" },
+        config: opts.config,
+      };
+    });
+    const resGzip = await smartNetworkGet<{ gzipSuccess: boolean }>("http://example.com/gzip", { mode: "direct" });
+    assert.strictEqual(resGzip.data.gzipSuccess, true, "Gzip 响应解析成功");
+
     // 重置后解除冷却
     resetProxyCache();
     assert.strictEqual(getCachedWorkingPort(), undefined);
   } finally {
-    axios.get = originalGet;
+    setCustomHttpExecutor(undefined);
     resetProxyCache();
     for (const key of Object.keys(process.env)) {
       if (!(key in originalEnv)) {
@@ -3229,7 +3244,6 @@ void test("smartNetworkGet - 核心网络调度、直连模式、代理回退与
 
 void test("BinanceService - fetchQuotes 批量拉取与代理/直连模式及异常隔离", async () => {
   const service = new BinanceService();
-  const originalGet = axios.get;
 
   try {
     // 1. 空输入测试
@@ -3237,9 +3251,11 @@ void test("BinanceService - fetchQuotes 批量拉取与代理/直连模式及异
     assert.deepStrictEqual(emptyRes, []);
 
     // 2. 模拟 Binance 正常行情返回
-    axios.get = (async () => {
+    setCustomHttpExecutor(async () => {
       return {
         status: 200,
+        statusText: "OK",
+        headers: {},
         data: [
           {
             symbol: "BTCUSDT",
@@ -3267,7 +3283,7 @@ void test("BinanceService - fetchQuotes 批量拉取与代理/直连模式及异
           },
         ],
       };
-    }) as any;
+    });
 
     const quotes = await service.fetchQuotes(["BTCUSDT", "ETHUSDT"], { mode: "direct" });
     assert.strictEqual(quotes.length, 2);
@@ -3277,20 +3293,19 @@ void test("BinanceService - fetchQuotes 批量拉取与代理/直连模式及异
     assert.strictEqual(quotes[1].price, 3500);
 
     // 3. 网络异常单批次失败容错，返回空数组并不崩溃
-    axios.get = (async () => {
+    setCustomHttpExecutor(async () => {
       throw new Error("Network timeout");
-    }) as any;
+    });
 
     const failedQuotes = await service.fetchQuotes(["BTCUSDT"], { mode: "direct" });
     assert.deepStrictEqual(failedQuotes, []);
   } finally {
-    axios.get = originalGet;
+    setCustomHttpExecutor(undefined);
   }
 });
 
 void test("DexScreenerService - fetchQuotes 报文映射、多流动性池与无效地址 TTL 清理", async () => {
   const service = new DexScreenerService();
-  const originalGet = axios.get;
 
   try {
     // 1. 空输入与非法格式校验
@@ -3302,15 +3317,18 @@ void test("DexScreenerService - fetchQuotes 报文映射、多流动性池与无
 
     // 2. 模拟 DexScreener 正常返回 pairs
     const mockAddr = "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c";
-    axios.get = (async () => {
+    setCustomHttpExecutor(async () => {
       return {
         status: 200,
+        statusText: "OK",
+        headers: {},
         data: {
           schemaVersion: "1.0.0",
           pairs: [
             {
               chainId: "bsc",
               dexId: "pancakeswap",
+              url: "https://dexscreener.com/bsc/0x123",
               pairAddress: "0x1234567890abcdef1234567890abcdef12345678",
               baseToken: { address: mockAddr, name: "Wrapped BNB", symbol: "WBNB" },
               priceUsd: "580.5",
@@ -3321,7 +3339,7 @@ void test("DexScreenerService - fetchQuotes 报文映射、多流动性池与无
           ],
         },
       };
-    }) as any;
+    });
 
     const quotes = await service.fetchQuotes([mockAddr], { mode: "direct" });
     assert.strictEqual(quotes.length, 1);
@@ -3337,7 +3355,7 @@ void test("DexScreenerService - fetchQuotes 报文映射、多流动性池与无
     service.clearInvalidCache();
     assert.strictEqual(service.isAddressSuppressed(mockAddr), false);
   } finally {
-    axios.get = originalGet;
+    setCustomHttpExecutor(undefined);
   }
 });
 
@@ -5030,19 +5048,17 @@ void test("T2-2: 中文名/拼音搜索添加标的 (Smartbox 报文解析、Uni
 
   // 3. 搜索短期 TTL 缓存测试
   resetSearchCacheForTesting();
-  const origAxiosGet = axios.get;
   let networkCallCount = 0;
   try {
-    axios.get = (async (_url: string, config: any) => {
+    setCustomHttpExecutor(async (_opts) => {
       networkCallCount++;
       return {
         data: 'v_hint="sh~600519~\\u8d35\\u5dde\\u8305\\u53f0~gzmt~GP";',
         status: 200,
         statusText: "OK",
         headers: {},
-        config,
       };
-    }) as any;
+    });
 
     const res1 = await searchSymbols("600519");
     const res2 = await searchSymbols("600519");
@@ -5050,7 +5066,7 @@ void test("T2-2: 中文名/拼音搜索添加标的 (Smartbox 报文解析、Uni
     assert.strictEqual(networkCallCount, 1, "命中 60s 缓存时不应重复触发网络请求");
     assert.strictEqual(res1[0]?.name, "贵州茅台");
   } finally {
-    axios.get = origAxiosGet;
+    setCustomHttpExecutor(undefined);
   }
 
   // 4. QuickPick 选标的交互 happy path
@@ -5256,6 +5272,100 @@ void test("RefreshScheduler - fetchAndCacheSymbols 单标的即时定向拉取�
   assert.ok(cached, "大北农行情必须成功注入 quoteCache");
   assert.strictEqual(cached?.price, 2.97);
   assert.strictEqual(cached?.name, "大北农");
+});
+
+void test("RefreshScheduler - 离线行情缓存持久化与冷启动秒开恢复测试", async () => {
+  const { RefreshScheduler } = await import("../src/scheduler.ts");
+  const { WatchlistProvider } = await import("../src/ui/watchlistProvider.ts");
+  const { StatusBar } = await import("../src/ui/statusBar.ts");
+
+  const mockState: Record<string, unknown> = {};
+  const mockGlobalState = {
+    get: <T>(key: string, def?: T) => (mockState[key] !== undefined ? (mockState[key] as T) : def),
+    update: async (key: string, value: unknown) => {
+      mockState[key] = value;
+    },
+  };
+
+  const treeProvider = new WatchlistProvider(false, false);
+  const statusBar = new StatusBar({ maskMode: false, colorNeutral: false });
+  const mockTreeView = { visible: true } as any;
+
+  // 1. 预先在 globalState 中放入离线持久化行情数据
+  const pastUpdateTime = Date.now() - 3600000; // 1小时前
+  mockState[GLOBAL_STATE_QUOTE_CACHE_KEY] = {
+    sh600519: {
+      id: "sh600519",
+      name: "贵州茅台",
+      symbol: "600519",
+      type: "A_SHARE",
+      price: 1466.8,
+      changePercent: 1.25,
+      updateTime: pastUpdateTime,
+    },
+    btc: {
+      id: "btc",
+      name: "Bitcoin",
+      symbol: "BTCUSDT",
+      type: "CRYPTO",
+      price: 68000,
+      changePercent: -0.5,
+      updateTime: pastUpdateTime,
+    },
+    // 注入脏数据以测试防御容错
+    corrupted: { price: "invalid" },
+    nullItem: null,
+  };
+
+  const scheduler = new RefreshScheduler({
+    marketManager: {} as any,
+    treeProvider,
+    statusBar,
+    treeView: mockTreeView,
+    globalState: mockGlobalState as any,
+  });
+
+  // 2. 测试 restoreQuoteCache
+  scheduler.restoreQuoteCache();
+
+  const cachedMoutai = scheduler.quoteCache.get("sh600519");
+  assert.ok(cachedMoutai, "贵州茅台必须成功从离线缓存恢复");
+  assert.strictEqual(cachedMoutai?.price, 1466.8);
+  assert.strictEqual(
+    cachedMoutai?.updateTime,
+    pastUpdateTime,
+    "恢复的历史缓存必须保留原 updateTime 时间戳，不得虚假伪装为当前时间"
+  );
+
+  const cachedBtc = scheduler.quoteCache.get("btcusdt");
+  assert.ok(cachedBtc, "BTCUSDT 规范化 key 必须被成功索引");
+  assert.strictEqual(cachedBtc?.price, 68000);
+
+  // 验证脏数据被安全忽略
+  assert.strictEqual(scheduler.quoteCache.get("corrupted"), undefined);
+
+  // 3. 测试 flushPersistQuoteCache 正确序列化与去重落盘
+  scheduler.saveToQuoteCache({
+    id: "sz000001",
+    name: "平安银行",
+    symbol: "000001",
+    type: "A_SHARE",
+    price: 11.5,
+    changePercent: 0.8,
+  });
+
+  await scheduler.flushPersistQuoteCache();
+
+  const savedRecord = mockState[GLOBAL_STATE_QUOTE_CACHE_KEY] as Record<string, MarketItem>;
+  assert.ok(savedRecord, "必须写入持久化存储");
+  const pingan = savedRecord["sz000001"] || savedRecord["000001"];
+  assert.ok(pingan, "平安银行必须被落盘保存");
+  assert.strictEqual(pingan?.price, 11.5);
+
+  // 4. 测试 schedulePersistQuoteCache 与 dispose() 生命周期自动清理与落盘
+  scheduler.schedulePersistQuoteCache();
+  scheduler.dispose();
+  assert.strictEqual(scheduler.isDisposed(), true);
 });
 
 

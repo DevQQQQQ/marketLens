@@ -5,6 +5,33 @@ All notable changes to the "MarketLens" extension will be documented in this fil
 
 ## [Unreleased]
 
+## [1.3.6] - 2026-11-09
+
+<details>
+<summary><b>⚡ 本地离线行情缓存持久化与冷启动秒开 (Cold-Start Quote Cache Persistence)</b></summary>
+
+- **冷启动 0 毫秒秒开与离线看板保护**
+  - **背景**：此前每次启动 VS Code 或在离线/弱网环境下启动时，自选树看板和状态栏必须等待首轮网络请求成功返回后才呈现行情，初始阶段短暂呈现空白或加载中。
+  - **改动**：
+    - `RefreshScheduler` 新增 `restoreQuoteCache()`、`schedulePersistQuoteCache()` 与 `flushPersistQuoteCache()`；
+    - 在行情更新、新增标的或单组刷新后，通过 3 秒防抖将行情快照紧凑去重落盘至 `context.globalState`（`marketlens.quoteCache.v1`）；
+    - 扩展激活时优先恢复离线快照并立即完成初始树骨架与状态栏构建；网络请求返回后再平滑覆盖；
+    - 恢复的离线行情如实保留其原始采集时间戳（`updateTime`），不虚伪伪装为当前时间；
+    - 在扩展生命周期注销（`dispose`）时自动清空防抖定时器并执行同步落盘。
+  - **效果**：编辑器打开瞬间自选列表与状态栏即刻呈现上一轮最新收盘/盘中价格与盈亏比，彻底消除启动时的等待与闪烁。
+
+- **彻底清零生产依赖（0 Runtime Dependencies）**
+  - **背景**：此前生产依赖包含 `axios` 及其 14 个传递依赖，导致 esbuild 单文件打包体积达到 523KB，安装包约 200KB。
+  - **改动**：
+    - 卸载 `axios`，用 Node.js 原生标准库（`http`/`https`/`net`/`zlib`）全自研重写 `src/services/network.ts`；
+    - 完整支持 HTTP CONNECT 隧道代理、GBK 二进制流解码、JSON 自动转换、三级端口探活熔断；
+    - 补齐 `gzip` / `deflate` / `br` 自动透明解压与 HTTP 301/302 自动重定向跟随；
+    - 生产依赖完全清零，消除供应链潜在安全漏洞风险。
+  - **效果**：
+    - 单文件 bundle 体积从 **523.1 KB** 降至 **266.8 KB**（减少 49.0%）；
+    - `.vsix` 安装包体积从 **199.1 KB** 降至 **100.52 KB**（减少 49.5%）。
+</details>
+
 ## [1.3.5] - 2026-11-04
 
 <details>
@@ -20,6 +47,7 @@ All notable changes to the "MarketLens" extension will be documented in this fil
     - 输入主流单币代码（如 `BTC`、`ETH`、`SOL`、`DOGE`）自动将 `Binance` 设为首选分组并自动补全计价后缀；
     - 选中搜索候选后，后续步骤智能预填标的官方中文名并 1 键秒级直达入库，省去多余弹窗与多次回车。
   - **效果**：支持代码、拼音、中文名任意方式检索添加，操作直观流畅。
+  
 - **标的与系统专属分组排他性强约束（防呆拦截跨市场错配）**
   - **背景**：此前添加向导将全部板块分组平铺展示，若用户误选可能将 A 股（如中金黄金）错误添加到「美股」等无关系统分组，导致休市判定与板块开关异常。
   - **改动**：向导 Step 2 依据识别的资产类型实施严格排他性候选过滤，移除无约束的「新建分组」入口；A 股标的候选严格限定为 `A股`（ETF 支持 `基金` 与 `A股`），美股标的严格限定为 `美股`，港股标的严格限定为 `港股`，加密货币严格限定为 `Binance`。

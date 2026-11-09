@@ -17,6 +17,10 @@ const buildOptions = {
   target: "node18",
   sourcemap: !isProduction,
   minify: isProduction,
+  treeShaking: true,
+  minifyWhitespace: isProduction,
+  minifyIdentifiers: isProduction,
+  minifySyntax: isProduction,
   logLevel: "info",
 };
 

@@ -1,5 +1,5 @@
 {
-	"displayName": "MarketLens-全球行情看板(A股/港股/美股/基金/加密货币)",
+	"displayName": "MarketLens全球行情看板(A股/港股/美股/基金/加密货币)",
 	"description": "实时查看A股/港股/美股/基金/加密货币与链上DEX资产。Real-time stock, fund, crypto & DEX token tracker for developers with boss key stealth mode & status bar carousel.",
 	"command.openSettings": "MarketLens: Open Settings Panel",
 	"command.refresh": "MarketLens: Refresh Market Quotes",

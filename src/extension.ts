@@ -112,8 +112,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   treeProvider.onBatchReorderCallback = (items, targetGroup, targetSymbol) =>
     watchlistOps.handleBatchReorder(items, targetGroup, targetSymbol);
 
-  // 立即构建初版树骨架（展示配置中的所有分组和标的，无需等待首次网络请求返回）
+  // 恢复持久化的离线行情快照，实现冷启动 0 毫秒展示（无需等待首次网络请求返回）
+  scheduler.restoreQuoteCache();
   scheduler.rebuildTree();
+  scheduler.updateStatusBar();
 
   // 当用户展开侧边栏视图时，开启一次新的折叠会话（让休市分组回到默认折叠，
   // 避免 VS Code 恢复用户上一次的手动展开状态），并立即唤醒刷新一次保证最新数据

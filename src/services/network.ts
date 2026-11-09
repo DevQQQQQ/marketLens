@@ -1,6 +1,9 @@
 // src/services/network.ts
-import axios, { type AxiosRequestConfig, type AxiosResponse } from "axios";
 import * as http from "http";
+import * as https from "https";
+import * as net from "net";
+import * as zlib from "zlib";
+import { URL } from "url";
 import { logger } from "../utils/logger.ts";
 
 export interface CryptoNetworkOptions {
@@ -15,13 +18,53 @@ export interface ProxyStatus {
   cooldownRemainingSeconds: number;
 }
 
+export interface NetworkRequestConfig {
+  timeout?: number;
+  maxRedirects?: number;
+  headers?: Record<string, string>;
+  responseType?: "json" | "text" | "arraybuffer";
+  proxy?: { host: string; port: number; protocol?: string; auth?: { username: string; password: string } } | false;
+}
+
+export interface NetworkResponse<T = unknown> {
+  data: T;
+  status: number;
+  statusText: string;
+  headers: Record<string, string>;
+  config?: NetworkRequestConfig;
+}
+
+// 保持历史兼容别名
+export type AxiosRequestConfig = NetworkRequestConfig;
+export type AxiosResponse<T = unknown> = NetworkResponse<T>;
+
+/**
+ * 当服务端返回非 2xx HTTP 状态码时抛出的异常，结构对齐原 AxiosError
+ */
+export class HttpError extends Error {
+  response: {
+    status: number;
+    statusText: string;
+    data: unknown;
+    headers: Record<string, string>;
+  };
+  status: number;
+
+  constructor(status: number, statusText: string, data: unknown, headers: Record<string, string>) {
+    super(`Request failed with status code ${status}`);
+    this.name = "HttpError";
+    this.status = status;
+    this.response = { status, statusText, data, headers };
+  }
+}
+
 /** 默认本地代理端口与地址常量 */
 export const DEFAULT_PROXY_PORT = 10808;
 export const DEFAULT_PROXY_URL = `http://127.0.0.1:${DEFAULT_PROXY_PORT}`;
 
 /**
  * 主流代理客户端 HTTP/Mixed 端口探测池
- * 优先探测 HTTP 监听端口，确保与 Axios HTTP 代理协议无缝匹配
+ * 优先探测 HTTP 监听端口，确保与 HTTP 代理协议无缝匹配
  */
 export const COMMON_PROXY_PORTS = [
   DEFAULT_PROXY_PORT, // v2rayN (Socks/Mixed)
@@ -34,7 +77,7 @@ export const COMMON_PROXY_PORTS = [
   16100, // OpenClash / 内网定制
 ];
 
-const BASE_HEADERS = {
+const BASE_HEADERS: Record<string, string> = {
   "User-Agent":
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
     "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -56,13 +99,7 @@ export const SYSTEM_PROXY_FALLBACK_TIMEOUT_MS = 2500;
 export const QUICK_PROXY_PROBE_TIMEOUT_MS = 1500;
 /** 本地代理端口轻量前置探活超时（毫秒） */
 export const PORT_PROBE_TIMEOUT_MS = 600;
-/**
- * 行情请求最大重定向跳数。
- *
- * 代理模式下 `parseProxy()` 会把用户代理凭据作为 `proxy.auth` 下发给 axios，
- * 每一跳重定向都是一次凭据外抛面；行情接口（腾讯 / Binance / DexScreener）实测均为
- * 零跳转直出 JSON，故把默认 5 跳收紧到 3，只作为防御纵深兜底，不改变正常链路行为。
- */
+/** 行情请求最大重定向跳数 */
 export const MAX_REDIRECTS = 3;
 
 /** 获取当前已探测并生效的本地代理端口 */
@@ -150,11 +187,6 @@ export function normalizeProxyUrlString(rawStr: string): string {
 
 /**
  * 校验并规范化代理地址（防止用户输入为空、带特殊协议或格式残缺导致崩溃）
- * 1. 支持纯端口号输入（如 10808 或 "10808"），自动规范化为 http://127.0.0.1:10808
- * 2. 彻底纠偏 https://：本地代理服务器均为明文 HTTP 监听，自动规整为 http://
- * 3. 友好支持 socks5:// / socks://：提取其中的 host 与 port，将其转换为 Node.js HTTP 代理形式
- * 4. 完整保留认证信息 (http://user:pass@host:port)
- * 5. 缺省优先返回当前可用工作端口、操作系统环境变量代理、或默认 10808
  */
 export function validateAndNormalizeProxyUrl(rawUrl: string | undefined): string {
   if (!rawUrl || !rawUrl.trim()) {
@@ -171,10 +203,14 @@ export function validateAndNormalizeProxyUrl(rawUrl: string | undefined): string
 }
 
 /**
- * 解析 proxyUrl，供 axios proxy 配置项使用
- * 提取 host, port, protocol 以及企业代理认证信息 auth (username, password)
+ * 解析 proxyUrl，供代理通道使用
  */
-export function parseProxy(proxyUrlStr: string) {
+export function parseProxy(proxyUrlStr: string): {
+  host: string;
+  port: number;
+  protocol: string;
+  auth?: { username: string; password: string };
+} {
   const normalized = validateAndNormalizeProxyUrl(proxyUrlStr);
   try {
     const url = new URL(normalized);
@@ -243,7 +279,6 @@ export async function detectAvailablePort(): Promise<number | null> {
   if (cachedWorkingPort && (await testLocalPort(cachedWorkingPort))) {
     return cachedWorkingPort;
   }
-  // 优先探测操作系统环境变量中配置的代理端口（若为本地端口）
   const sysUrl = getSystemProxyUrl();
   if (sysUrl) {
     const sysProxy = parseProxy(sysUrl);
@@ -265,34 +300,295 @@ export async function detectAvailablePort(): Promise<number | null> {
   return null;
 }
 
+// =================== 测试 Mock 钩子支持 ===================
+export interface RawHttpRequestOptions {
+  url: string;
+  config: NetworkRequestConfig;
+  proxy?: { host: string; port: number; protocol?: string; auth?: { username: string; password: string } } | undefined;
+  isDirect: boolean;
+}
+
+export type RawHttpExecutor = (
+  options: RawHttpRequestOptions
+) => Promise<NetworkResponse<unknown>> | NetworkResponse<unknown>;
+
+let customHttpExecutor: RawHttpExecutor | undefined = undefined;
+
+/**
+ * 设置单测专属的底层网络执行器（传入 undefined 恢复真实网络调用）
+ */
+export function setCustomHttpExecutor(executor?: RawHttpExecutor): void {
+  customHttpExecutor = executor;
+}
+
+// =================== Node.js 原生 0 依赖 HTTP 请求执行器 ===================
+
+/**
+ * 建立到 HTTP 代理服务器的 CONNECT TCP 隧道（用于安全发起远端 HTTPS 请求）
+ */
+function createProxyConnectTunnel(
+  proxyHost: string,
+  proxyPort: number,
+  targetHost: string,
+  targetPort: number,
+  auth?: { username: string; password: string },
+  timeoutMs: number = 5000
+): Promise<net.Socket> {
+  return new Promise((resolve, reject) => {
+    const headers: Record<string, string> = {
+      Host: `${targetHost}:${targetPort}`,
+    };
+    if (auth) {
+      headers["Proxy-Authorization"] = `Basic ${Buffer.from(`${auth.username}:${auth.password}`).toString("base64")}`;
+    }
+
+    const req = http.request({
+      host: proxyHost,
+      port: proxyPort,
+      method: "CONNECT",
+      path: `${targetHost}:${targetPort}`,
+      headers,
+      timeout: timeoutMs,
+    });
+
+    req.on("connect", (res, socket) => {
+      if (res.statusCode === 200) {
+        resolve(socket);
+      } else {
+        socket.destroy();
+        reject(new Error(`Proxy CONNECT failed with status code ${res.statusCode}`));
+      }
+    });
+
+    req.on("error", reject);
+    req.on("timeout", () => {
+      req.destroy();
+      reject(new Error(`Proxy CONNECT timeout after ${timeoutMs}ms`));
+    });
+
+    req.end();
+  });
+}
+
+/**
+ * 依据响应头的 Content-Encoding 对原始报文进行透明解压（支持 gzip / deflate / br）
+ */
+function decompressBufferIfNeeded(buffer: Buffer, contentEncoding?: string): Buffer {
+  if (!contentEncoding || buffer.length === 0) {
+    return buffer;
+  }
+  const encoding = contentEncoding.toLowerCase().trim();
+  try {
+    if (encoding === "gzip" || encoding === "x-gzip") {
+      return zlib.gunzipSync(buffer);
+    }
+    if (encoding === "deflate") {
+      return zlib.inflateSync(buffer);
+    }
+    if (encoding === "br") {
+      return zlib.brotliDecompressSync(buffer);
+    }
+  } catch {
+    // 若特定解压格式异常，优雅降级为原始 Buffer
+  }
+  return buffer;
+}
+
+/**
+ * 原生执行单个 GET 请求（支持 direct 直连 与 HTTP Proxy 通道，内置解压缩与重定向）
+ */
+async function executeNativeGet<T>(
+  targetUrlStr: string,
+  config: NetworkRequestConfig,
+  proxy?: { host: string; port: number; protocol?: string; auth?: { username: string; password: string } },
+  redirectsRemaining: number = config.maxRedirects ?? MAX_REDIRECTS
+): Promise<NetworkResponse<T>> {
+  const parsedUrl = new URL(targetUrlStr);
+  const isHttps = parsedUrl.protocol === "https:";
+  const timeoutMs = config.timeout || DEFAULT_REQUEST_TIMEOUT_MS;
+  const headers = { ...BASE_HEADERS, ...config.headers };
+
+  let reqOptions: http.RequestOptions;
+
+  if (proxy) {
+    if (isHttps) {
+      // HTTPS over HTTP Proxy: 必须通过 CONNECT 隧道先打通 TCP Socket
+      const targetPort = parseInt(parsedUrl.port, 10) || 443;
+      const socket = await createProxyConnectTunnel(
+        proxy.host,
+        proxy.port,
+        parsedUrl.hostname,
+        targetPort,
+        proxy.auth,
+        timeoutMs
+      );
+
+      reqOptions = {
+        createConnection: () => socket, // 复用已建立好代理隧道的 TCP Socket
+        agent: false,
+        hostname: parsedUrl.hostname,
+        port: targetPort,
+        method: "GET",
+        path: `${parsedUrl.pathname}${parsedUrl.search}`,
+        headers: {
+          Host: parsedUrl.hostname,
+          ...headers,
+        },
+        timeout: timeoutMs,
+      };
+    } else {
+      // HTTP over HTTP Proxy: 直接向代理服务器发 GET，Path 为完整 URL
+      const reqHeaders = { ...headers };
+      if (proxy.auth) {
+        reqHeaders["Proxy-Authorization"] = `Basic ${Buffer.from(`${proxy.auth.username}:${proxy.auth.password}`).toString("base64")}`;
+      }
+      reqOptions = {
+        host: proxy.host,
+        port: proxy.port,
+        method: "GET",
+        path: targetUrlStr,
+        headers: {
+          Host: parsedUrl.hostname,
+          ...reqHeaders,
+        },
+        timeout: timeoutMs,
+      };
+    }
+  } else {
+    // 直连模式
+    reqOptions = {
+      protocol: parsedUrl.protocol,
+      hostname: parsedUrl.hostname,
+      port: parsedUrl.port || (isHttps ? 443 : 80),
+      method: "GET",
+      path: `${parsedUrl.pathname}${parsedUrl.search}`,
+      headers: {
+        Host: parsedUrl.hostname,
+        ...headers,
+      },
+      timeout: timeoutMs,
+    };
+  }
+
+  return new Promise((resolve, reject) => {
+    const client = (isHttps && !proxy) || (isHttps && proxy) ? https : http;
+    const req = client.request(reqOptions, (res) => {
+      const chunks: Buffer[] = [];
+      res.on("data", (chunk: Buffer) => chunks.push(chunk));
+      res.on("end", () => {
+        const rawBuffer = Buffer.concat(chunks);
+        const respHeaders: Record<string, string> = {};
+        for (const [k, v] of Object.entries(res.headers)) {
+          if (v !== undefined) {
+            respHeaders[k.toLowerCase()] = Array.isArray(v) ? v.join(", ") : v;
+          }
+        }
+
+        const statusCode = res.statusCode || 200;
+        const statusText = res.statusMessage || "OK";
+
+        // 自动跟随 301 / 302 / 307 / 308 重定向
+        if (
+          statusCode >= 300 &&
+          statusCode < 400 &&
+          res.headers.location &&
+          redirectsRemaining > 0
+        ) {
+          try {
+            const nextUrl = new URL(res.headers.location, targetUrlStr).toString();
+            executeNativeGet<T>(nextUrl, config, proxy, redirectsRemaining - 1).then(resolve, reject);
+            return;
+          } catch {
+            // URL 格式异常时继续向下按常规状态码处理
+          }
+        }
+
+        // 透明解压缩（支持网关注入的 gzip / deflate / br）
+        const fullBuffer = decompressBufferIfNeeded(rawBuffer, respHeaders["content-encoding"]);
+
+        let parsedData: unknown;
+        if (config.responseType === "arraybuffer") {
+          // 直接将 Buffer 转换为 ArrayBuffer（供腾讯行情 decodeGbk 消费）
+          const arrayBuffer = fullBuffer.buffer.slice(
+            fullBuffer.byteOffset,
+            fullBuffer.byteOffset + fullBuffer.byteLength
+          );
+          parsedData = arrayBuffer;
+        } else {
+          const text = fullBuffer.toString("utf8");
+          if (config.responseType === "text") {
+            parsedData = text;
+          } else {
+            try {
+              parsedData = JSON.parse(text);
+            } catch {
+              parsedData = text;
+            }
+          }
+        }
+
+        // 若 HTTP 状态码不是 2xx，抛出 HttpError 以对齐 AxiosError 契约
+        if (statusCode < 200 || statusCode >= 300) {
+          reject(new HttpError(statusCode, statusText, parsedData, respHeaders));
+          return;
+        }
+
+        resolve({
+          data: parsedData as T,
+          status: statusCode,
+          statusText,
+          headers: respHeaders,
+          config,
+        });
+      });
+    });
+
+    req.on("error", reject);
+    req.on("timeout", () => {
+      req.destroy();
+      reject(new Error(`Request timeout after ${timeoutMs}ms: ${targetUrlStr}`));
+    });
+
+    req.end();
+  });
+}
+
+async function performRequest<T>(
+  url: string,
+  config: NetworkRequestConfig,
+  isDirect: boolean,
+  proxy?: { host: string; port: number; protocol?: string; auth?: { username: string; password: string } }
+): Promise<NetworkResponse<T>> {
+  if (customHttpExecutor) {
+    const res = await customHttpExecutor({ url, config, isDirect, proxy });
+    return res as NetworkResponse<T>;
+  }
+  return await executeNativeGet<T>(url, config, isDirect ? undefined : proxy);
+}
+
 /**
  * 通用网络请求核心方法（支持 direct 直连 与 proxy 强制代理）
  */
 export async function smartNetworkGet<T = unknown>(
   url: string,
   options: CryptoNetworkOptions,
-  config: AxiosRequestConfig = {}
-): Promise<AxiosResponse<T>> {
+  config: NetworkRequestConfig = {}
+): Promise<NetworkResponse<T>> {
   const { mode = "direct", proxyUrl } = options;
 
-  const mergedConfig: AxiosRequestConfig = {
+  const mergedConfig: NetworkRequestConfig = {
     ...config,
     timeout: config.timeout || DEFAULT_REQUEST_TIMEOUT_MS,
-    // 防御纵深：显式收窄重定向跳数，避免代理凭据在多跳重定向中被外抛（见 MAX_REDIRECTS 注释）
     maxRedirects: config.maxRedirects ?? MAX_REDIRECTS,
     headers: { ...BASE_HEADERS, ...config.headers },
   };
 
-  // 1. 直连模式（显式声明 proxy: false，杜绝宿主环境 http_proxy/https_proxy 环境变量隐式劫持）
+  // 1. 直连模式（绝不走代理）
   if (mode === "direct") {
-    return await axios.get<T>(url, {
-      ...mergedConfig,
-      proxy: false,
-    });
+    return await performRequest<T>(url, { ...mergedConfig, proxy: false }, true, undefined);
   }
 
   // 2. 强制代理模式（绝不直连）
-  // 优先使用用户输入的代理或缺省/缓存代理（若 proxyUrl 为空，validateAndNormalizeProxyUrl 已自适应返回 cachedWorkingPort/系统代理/10808）
   const rawProxy = parseProxy(proxyUrl || "");
   const targetProxy =
     cachedWorkingPort && !proxyUrl && (rawProxy.host === "127.0.0.1" || rawProxy.host === "localhost") && rawProxy.port === DEFAULT_PROXY_PORT
@@ -301,17 +597,14 @@ export async function smartNetworkGet<T = unknown>(
 
   // 第一优先级：尝试目标代理端口
   try {
-    const res = await axios.get<T>(url, {
-      ...mergedConfig,
-      proxy: targetProxy,
-    });
+    const res = await performRequest<T>(url, { ...mergedConfig, proxy: targetProxy }, false, targetProxy);
     cachedWorkingPort = targetProxy.port;
     return res;
   } catch (err: unknown) {
     // 若远端服务器已正常返回 HTTP 响应（如 400 Bad Request, 404, 429），说明代理通道完全通畅且连接成功，
     // 绝非代理端口不可用，直接抛出原生异常保留 status 与业务错误体，杜绝误触发代理探测熔断
-    const axiosError = err as { response?: unknown } | null | undefined;
-    if (axiosError?.response) {
+    const httpError = err as { response?: unknown } | null | undefined;
+    if (httpError?.response) {
       throw err;
     }
     const now = Date.now();
@@ -328,11 +621,12 @@ export async function smartNetworkGet<T = unknown>(
       const sysProxy = parseProxy(sysUrl);
       if (sysProxy.host !== targetProxy.host || sysProxy.port !== targetProxy.port) {
         try {
-          const res = await axios.get<T>(url, {
-            ...mergedConfig,
-            timeout: SYSTEM_PROXY_FALLBACK_TIMEOUT_MS,
-            proxy: sysProxy,
-          });
+          const res = await performRequest<T>(
+            url,
+            { ...mergedConfig, timeout: SYSTEM_PROXY_FALLBACK_TIMEOUT_MS, proxy: sysProxy },
+            false,
+            sysProxy
+          );
           if (cachedWorkingPort !== sysProxy.port) {
             logger.info(`[smartNetworkGet] 目标代理端口不可达，已自动切换至系统环境变量代理端口: ${sysProxy.port}`);
           }
@@ -352,11 +646,13 @@ export async function smartNetworkGet<T = unknown>(
       if (!isAlive) continue;
 
       try {
-        const res = await axios.get<T>(url, {
-          ...mergedConfig,
-          timeout: QUICK_PROXY_PROBE_TIMEOUT_MS, // 快速探测
-          proxy: { host: "127.0.0.1", port, protocol: "http" },
-        });
+        const fallbackProxy = { host: "127.0.0.1", port, protocol: "http" };
+        const res = await performRequest<T>(
+          url,
+          { ...mergedConfig, timeout: QUICK_PROXY_PROBE_TIMEOUT_MS, proxy: fallbackProxy },
+          false,
+          fallbackProxy
+        );
         // 成功！记录并缓存此端口，后续无需重试
         if (cachedWorkingPort !== port) {
           logger.info(`[smartNetworkGet] 目标代理端口不可达，已自动降级回退至本地可用端口: ${port}`);

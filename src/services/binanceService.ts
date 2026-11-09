@@ -140,8 +140,8 @@ export class BinanceService {
 
         return rawList.map((item) => this.parseTickerItem(item));
       } catch (err: unknown) {
-        const axiosErr = err as { response?: { status?: number }; status?: number; message?: string } | null | undefined;
-        if (axiosErr?.response?.status === 400 || axiosErr?.status === 400 || String(axiosErr?.message || "").includes("400")) {
+        const httpErr = err as { response?: { status?: number }; status?: number; message?: string } | null | undefined;
+        if (httpErr?.response?.status === 400 || httpErr?.status === 400 || String(httpErr?.message || "").includes("400")) {
           is400Error = true;
         }
       }
@@ -167,8 +167,8 @@ export class BinanceService {
           this.symbolFailureCounts.delete(s);
           successfulItems.push(this.parseTickerItem(item));
         } catch (err: unknown) {
-          const axiosErr = err as { response?: { status?: number }; status?: number; message?: string } | null | undefined;
-          const is400 = axiosErr?.response?.status === 400 || axiosErr?.status === 400 || String(axiosErr?.message || "").includes("400");
+          const httpErr = err as { response?: { status?: number }; status?: number; message?: string } | null | undefined;
+          const is400 = httpErr?.response?.status === 400 || httpErr?.status === 400 || String(httpErr?.message || "").includes("400");
           const failCount = (this.symbolFailureCounts.get(s) || 0) + 1;
           this.symbolFailureCounts.set(s, failCount);
 

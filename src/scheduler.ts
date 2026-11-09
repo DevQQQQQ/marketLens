@@ -4,6 +4,7 @@ import { MarketManager } from "./services/marketManager.ts";
 import { WatchlistProvider, GroupItem, StockItem } from "./ui/watchlistProvider.ts";
 import { StatusBar } from "./ui/statusBar.ts";
 import type { MarketLensConfig, MarketItem, WatchlistConfig, AssetType } from "./types/index.ts";
+import { GLOBAL_STATE_QUOTE_CACHE_KEY } from "./types/index.ts";
 import { normalizeSymbolKey, isFundGroupName } from "./utils/symbolHelper.ts";
 import { logger, describeForLog } from "./utils/logger.ts";
 import { isAShareMarketOpen, isHKMarketOpen, isUSMarketOpen, evaluateAdaptiveThrottle, shouldSkipMarketPolling } from "./utils/marketHours.ts";
@@ -30,6 +31,7 @@ export class RefreshScheduler implements vscode.Disposable {
   private readonly RETRY_DELAY_MS = 300;
   private hasLoadedInitialQuotes = false;
   private isRefreshing = false;
+  private persistTimer: ReturnType<typeof setTimeout> | undefined;
   /**
    * 终止标志：dispose() 之后永久为 true。
    *
@@ -145,15 +147,81 @@ export class RefreshScheduler implements vscode.Disposable {
     });
   }
 
-  public saveToQuoteCache(q: MarketItem): void {
+  public saveToQuoteCache(q: MarketItem, updateTimestamp: boolean = true): void {
     if (!q) return;
-    q.updateTime = Date.now();
+    if (updateTimestamp || !q.updateTime) {
+      q.updateTime = Date.now();
+    }
     const normSym = normalizeSymbolKey(q.symbol);
     const normId = normalizeSymbolKey(q.id);
     if (normSym) this.quoteCache.set(normSym, q);
     if (normId && normId !== normSym) this.quoteCache.set(normId, q);
     if (q.symbol) this.quoteCache.set(q.symbol, q);
     if (q.id && q.id !== q.symbol) this.quoteCache.set(q.id, q);
+  }
+
+  /**
+   * 从 context.globalState 中恢复持久化的离线行情快照，实现冷启动 0 毫秒展示
+   */
+  public restoreQuoteCache(): void {
+    if (!this.globalState) return;
+    try {
+      const cached = this.globalState.get<Record<string, MarketItem>>(GLOBAL_STATE_QUOTE_CACHE_KEY);
+      if (!cached || typeof cached !== "object") return;
+
+      let count = 0;
+      for (const item of Object.values(cached)) {
+        if (item && typeof item === "object" && typeof item.symbol === "string" && typeof item.price === "number") {
+          // 恢复历史行情，保留其原始 updateTime（不虚伪刷新为当前时间）
+          this.saveToQuoteCache(item, false);
+          count++;
+        }
+      }
+      if (count > 0) {
+        logger.info(`[RefreshScheduler] 已从本地离线缓存恢复 ${count} 条历史行情记录`);
+      }
+    } catch (err) {
+      logger.error("[RefreshScheduler] 恢复本地离线行情缓存失败", err);
+    }
+  }
+
+  /**
+   * 去抖动（3秒）调度将当前内存中的 quoteCache 持久化到 globalState，合并高频刷新以减少频繁磁盘 I/O
+   */
+  public schedulePersistQuoteCache(): void {
+    if (!this.globalState || this.disposed) return;
+    if (this.persistTimer) {
+      clearTimeout(this.persistTimer);
+    }
+    this.persistTimer = setTimeout(() => {
+      this.persistTimer = undefined;
+      void this.flushPersistQuoteCache();
+    }, 3000);
+  }
+
+  /**
+   * 立即将内存中的 quoteCache 序列化并安全落盘至 globalState
+   */
+  public async flushPersistQuoteCache(): Promise<void> {
+    if (this.persistTimer) {
+      clearTimeout(this.persistTimer);
+      this.persistTimer = undefined;
+    }
+    if (!this.globalState) return;
+    try {
+      const serialized: Record<string, MarketItem> = {};
+      for (const quote of this.quoteCache.values()) {
+        if (quote && typeof quote.symbol === "string" && typeof quote.price === "number") {
+          const key = normalizeSymbolKey(quote.symbol) || quote.symbol;
+          if (!serialized[key]) {
+            serialized[key] = quote;
+          }
+        }
+      }
+      await this.globalState.update(GLOBAL_STATE_QUOTE_CACHE_KEY, serialized);
+    } catch (err) {
+      logger.error("[RefreshScheduler] 持久化离线行情缓存失败", err);
+    }
   }
 
   /**
@@ -206,6 +274,9 @@ export class RefreshScheduler implements vscode.Disposable {
 
       for (const q of quotes) {
         this.saveToQuoteCache(q);
+      }
+      if (quotes.length > 0) {
+        this.schedulePersistQuoteCache();
       }
       return quotes;
     } catch (err) {
@@ -407,6 +478,7 @@ export class RefreshScheduler implements vscode.Disposable {
 
       if (isWatchlistCompletelyEmpty) {
         this.quoteCache.clear();
+        void this.flushPersistQuoteCache();
       }
 
       // 行情变动与休市降频评估
@@ -427,6 +499,12 @@ export class RefreshScheduler implements vscode.Disposable {
         this.saveToQuoteCache(q);
       }
       pruneQuoteCache(config.watchlist, this.quoteCache);
+      if (quotes.length > 0) {
+        this.schedulePersistQuoteCache();
+      }
+      if (quotes.length > 0) {
+        this.schedulePersistQuoteCache();
+      }
 
       // 评估休市与自适应降频状态
       const has24HourCrypto =
@@ -565,6 +643,9 @@ export class RefreshScheduler implements vscode.Disposable {
         this.saveToQuoteCache(q);
       }
       pruneQuoteCache(config.watchlist, this.quoteCache);
+      if (quotes.length > 0) {
+        this.schedulePersistQuoteCache();
+      }
 
       // 评估价格预警与剧烈波动
       this.alertManager.checkQuotes(quotes, config);
@@ -659,6 +740,11 @@ export class RefreshScheduler implements vscode.Disposable {
     // 直至 VS Code 进程退出（轮询窗口 5s、请求最长 5s，命中概率不低）。
     this.disposed = true;
     this.stop();
+    if (this.persistTimer !== undefined) {
+      clearTimeout(this.persistTimer);
+      this.persistTimer = undefined;
+    }
+    void this.flushPersistQuoteCache();
   }
 
   public isDisposed(): boolean {
