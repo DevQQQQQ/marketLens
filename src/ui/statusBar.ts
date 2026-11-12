@@ -416,6 +416,8 @@ export class StatusBar implements vscode.Disposable {
       tip += `\n⚠️ 代理不可达 (冷却中 ${proxyStatus.cooldownRemainingSeconds}s)`;
     } else if (proxyStatus.activePort) {
       tip += `\n🌐 本地代理: 已连接 (127.0.0.1)`;
+    } else if (proxyStatus.isGatewayProxy) {
+      tip += `\n🌐 网关代理: 软路由/透明代理已生效`;
     }
     if (this.networkBackoffFailures >= 2) {
       const retryHint = this.networkBackoffSeconds > 0 ? `，${this.networkBackoffSeconds}s 后重试` : "";

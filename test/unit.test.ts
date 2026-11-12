@@ -13,7 +13,7 @@ import { GLOBAL_STATE_QUOTE_CACHE_KEY } from "../src/types/index.ts";
 import { describeForLog, describeListForLog, scrubForLog, describeErrorForLog, describeErrorNameForLog, formatDetailForLog, logger } from "../src/utils/logger.ts";
 import { validateAndParseInput, isContractAddress, extractContractAddressFromUrl } from "../src/utils/inputValidator.ts";
 import { isAShareMarketOpen, isHKMarketOpen, isUSMarketOpen, isAShareHoliday, isHKHoliday, isUSHoliday, evaluateAdaptiveThrottle, getZonedTimeParts, beijingFormatter, newYorkFormatter, beijingDateFormatter, newYorkDateFormatter, shouldSkipMarketPolling, MAX_COVERED_HOLIDAY_YEAR, FORECAST_HOLIDAY_YEARS, checkHolidayCoverage, US_HOLIDAYS, HK_HOLIDAYS, A_SHARE_HOLIDAYS } from "../src/utils/marketHours.ts";
-import { validateAndNormalizeProxyUrl, parseProxy, resetProxyCache, getSystemProxyUrl, smartNetworkGet, getCachedWorkingPort, testLocalPort, DEFAULT_PROXY_PORT, DEFAULT_PROXY_URL, COMMON_PROXY_PORTS, DEFAULT_REQUEST_TIMEOUT_MS, SYSTEM_PROXY_FALLBACK_TIMEOUT_MS, QUICK_PROXY_PROBE_TIMEOUT_MS, PORT_PROBE_TIMEOUT_MS, setCustomHttpExecutor } from "../src/services/network.ts";
+import { validateAndNormalizeProxyUrl, parseProxy, resetProxyCache, getSystemProxyUrl, smartNetworkGet, getCachedWorkingPort, testLocalPort, DEFAULT_PROXY_PORT, DEFAULT_PROXY_URL, COMMON_PROXY_PORTS, DEFAULT_REQUEST_TIMEOUT_MS, SYSTEM_PROXY_FALLBACK_TIMEOUT_MS, QUICK_PROXY_PROBE_TIMEOUT_MS, PORT_PROBE_TIMEOUT_MS, setCustomHttpExecutor, getProxyStatus, getIsGatewayProxyActive, testGatewayTransparentProxy } from "../src/services/network.ts";
 import { isDisplayMasked, shouldAutoExitBossKey, canEmitUserFeedback, resolveMaskToggle, shouldBlockNodeCommand, MASKED_TOOLTIP_TEXT, resolveStockTooltip } from "../src/utils/maskState.ts";
 import { AlertManager, DEFAULT_ALERT_COOLDOWN_MINUTES } from "../src/services/alertManager.ts";
 import { DexScreenerService } from "../src/services/dexScreenerService.ts";
@@ -3230,6 +3230,118 @@ void test("smartNetworkGet - 核心网络调度、直连模式、代理回退与
     // 重置后解除冷却
     resetProxyCache();
     assert.strictEqual(getCachedWorkingPort(), undefined);
+  } finally {
+    setCustomHttpExecutor(undefined);
+    resetProxyCache();
+    for (const key of Object.keys(process.env)) {
+      if (!(key in originalEnv)) {
+        delete process.env[key];
+      }
+    }
+    Object.assign(process.env, originalEnv);
+  }
+});
+
+void test("smartNetworkGet - 软路由网关透明代理自适应识别、直连出海与环境切换熔断", async () => {
+  resetProxyCache();
+  const originalEnv = { ...process.env };
+  const cleanProxyEnv = () => {
+    delete process.env.HTTPS_PROXY;
+    delete process.env.https_proxy;
+    delete process.env.HTTP_PROXY;
+    delete process.env.http_proxy;
+    delete process.env.ALL_PROXY;
+    delete process.env.all_proxy;
+  };
+
+  try {
+    cleanProxyEnv();
+
+    // 1. 本地无代理端口，软路由网关探活成功时自适应直连
+    let probeHitCount = 0;
+    let directHitCount = 0;
+    let proxyAttemptCount = 0;
+    setCustomHttpExecutor(async (opts) => {
+      // 模拟所有本地代理端口连接拒绝
+      if (opts.config.proxy && typeof opts.config.proxy === "object") {
+        proxyAttemptCount++;
+        throw new Error("connect ECONNREFUSED 127.0.0.1:" + opts.config.proxy.port);
+      }
+      // 模拟软路由网关对 cp.cloudflare.com 的透明代理放行
+      if (opts.url.includes("cp.cloudflare.com/generate_204")) {
+        probeHitCount++;
+        return { data: "", status: 204, statusText: "No Content", headers: {}, config: opts.config };
+      }
+      // 业务请求直连成功
+      if (opts.isDirect) {
+        directHitCount++;
+        return { data: { symbol: "BTCUSDT", price: "90000" }, status: 200, statusText: "OK", headers: {}, config: opts.config };
+      }
+      throw new Error("unexpected request: " + opts.url);
+    });
+
+    const resGateway = await smartNetworkGet<Record<string, string>>("https://data-api.binance.vision/api/v3/ticker/24hr", {
+      mode: "proxy",
+      proxyUrl: "http://127.0.0.1:10808",
+    });
+
+    assert.strictEqual(resGateway.data.symbol, "BTCUSDT");
+    assert.strictEqual(getIsGatewayProxyActive(), true, "识别成功后必须标记网关代理激活");
+    assert.strictEqual(getProxyStatus().isGatewayProxy, true, "ProxyStatus 必须暴露 isGatewayProxy 为 true");
+    assert.strictEqual(getCachedWorkingPort(), undefined, "网关代理下不应占用本地端口缓存");
+    assert.strictEqual(probeHitCount, 1, "应发起一次网关探活");
+    assert.strictEqual(directHitCount, 1, "应发起一次直连业务请求");
+    const initialProxyAttempts = proxyAttemptCount;
+    assert.ok(initialProxyAttempts > 0, "首轮应尝试过代理端口");
+    assert.strictEqual(await testGatewayTransparentProxy(), true, "独立网关探活接口必须返回 true");
+
+    // 2. 状态保持：在网关激活状态下，下一次轮询直接走直连，0 开销复用（绝不应再尝试任何本地代理端口）
+    const resGateway2 = await smartNetworkGet<Record<string, string>>("https://data-api.binance.vision/api/v3/ticker/24hr", {
+      mode: "proxy",
+      proxyUrl: "http://127.0.0.1:10808",
+    });
+    assert.strictEqual(resGateway2.data.symbol, "BTCUSDT");
+    assert.strictEqual(directHitCount, 2, "第二次请求应直接复用直连");
+    assert.strictEqual(probeHitCount, 1, "状态保持期间无需重复探活");
+    assert.strictEqual(proxyAttemptCount, initialProxyAttempts, "状态保持期间应直接命中直连通道，绝不应再次产生代理连接拒绝重试");
+
+    // 3. 环境切换：离开软路由环境（直连网络中断，网关探活亦失败）
+    // 模拟离开软路由：直连报错且网关探活也失败（此处不用参数，故使用 _opts）
+    setCustomHttpExecutor(async (_opts) => {
+      throw new Error("connect ETIMEDOUT (network switch)");
+    });
+
+    await assert.rejects(
+      async () => {
+        await smartNetworkGet("https://data-api.binance.vision/api/v3/ticker/24hr", {
+          mode: "proxy",
+          proxyUrl: "http://127.0.0.1:10808",
+        });
+      },
+      /\[MarketLens\] 代理连接失败。已阻止直连。/,
+      "离开软路由且无本地代理时必须立刻熔断阻断直连以保护隐私"
+    );
+
+    assert.strictEqual(getIsGatewayProxyActive(), false, "断开后网关激活态必须重置为 false");
+    assert.strictEqual(getProxyStatus().inCooldown, true, "断开后必须进入熔断冷却状态");
+
+    // 4. 用户重新开启本地代理客户端（如开启了 Clash Verge 7890 端口）
+    resetProxyCache(); // 模拟用户手动刷新或等待冷却后恢复
+    setCustomHttpExecutor(async (opts) => {
+      if (opts.config.proxy && typeof opts.config.proxy === "object" && opts.config.proxy.port === 7890) {
+        return { data: { symbol: "BTCUSDT", price: "91000" }, status: 200, statusText: "OK", headers: {}, config: opts.config };
+      }
+      throw new Error("connect ECONNREFUSED");
+    });
+
+    const resLocalProxy = await smartNetworkGet<Record<string, string>>("https://data-api.binance.vision/api/v3/ticker/24hr", {
+      mode: "proxy",
+      proxyUrl: "http://127.0.0.1:7890",
+    });
+    assert.strictEqual(resLocalProxy.data.price, "91000");
+    assert.strictEqual(getProxyStatus().activePort, 7890, "本地代理恢复后必须优先走本地代理端口");
+    assert.strictEqual(getProxyStatus().isGatewayProxy, false, "走本地代理时 isGatewayProxy 必须为 false");
+
   } finally {
     setCustomHttpExecutor(undefined);
     resetProxyCache();

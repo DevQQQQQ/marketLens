@@ -16,6 +16,8 @@ export interface ProxyStatus {
   activePort?: number | undefined;
   inCooldown: boolean;
   cooldownRemainingSeconds: number;
+  /** 当前是否处于软路由/网关透明代理生效模式 */
+  isGatewayProxy?: boolean;
 }
 
 export interface NetworkRequestConfig {
@@ -102,15 +104,34 @@ export const PORT_PROBE_TIMEOUT_MS = 600;
 /** 行情请求最大重定向跳数 */
 export const MAX_REDIRECTS = 3;
 
+/** 网关透明代理探活超时（毫秒） */
+export const GATEWAY_PROBE_TIMEOUT_MS = 1500;
+/** 网关透明代理探测状态缓存有效期（毫秒）：60 秒，避免每轮高频轮询重复请求外网探活 */
+export const GATEWAY_PROBE_CACHE_TTL_MS = 60_000;
+/** 网关透明代理无敏感检测地址 */
+export const GATEWAY_PROBE_URL = "https://cp.cloudflare.com/generate_204";
+
+let lastGatewayProbeTime = 0;
+let lastGatewayProbeResult = false;
+let isGatewayProxyActive = false;
+
 /** 获取当前已探测并生效的本地代理端口 */
 export function getCachedWorkingPort(): number | undefined {
   return cachedWorkingPort;
+}
+
+/** 获取当前是否已识别并切换至软路由/网关透明代理 */
+export function getIsGatewayProxyActive(): boolean {
+  return isGatewayProxyActive;
 }
 
 /** 重置代理缓存与探测状态（当用户在设置面板修改网络配置时调用） */
 export function resetProxyCache(): void {
   cachedWorkingPort = undefined;
   lastFallbackFailedTime = 0;
+  lastGatewayProbeTime = 0;
+  lastGatewayProbeResult = false;
+  isGatewayProxyActive = false;
 }
 
 /** 获取当前代理连接健康度与熔断状态 */
@@ -123,6 +144,7 @@ export function getProxyStatus(): ProxyStatus {
     activePort: cachedWorkingPort,
     inCooldown,
     cooldownRemainingSeconds,
+    isGatewayProxy: cachedWorkingPort === undefined && isGatewayProxyActive,
   };
 }
 
@@ -567,6 +589,38 @@ async function performRequest<T>(
 }
 
 /**
+ * 探测当前网络是否具备软路由/网关透明代理能力（即直连可透明出海）
+ * @param timeoutMs 探测超时，默认 GATEWAY_PROBE_TIMEOUT_MS (1500ms)
+ * @param forceBypassCache 是否绕过缓存强制重新探测
+ */
+export async function testGatewayTransparentProxy(
+  timeoutMs: number = GATEWAY_PROBE_TIMEOUT_MS,
+  forceBypassCache: boolean = false
+): Promise<boolean> {
+  const now = Date.now();
+  if (!forceBypassCache && lastGatewayProbeTime > 0 && now - lastGatewayProbeTime < GATEWAY_PROBE_CACHE_TTL_MS) {
+    return lastGatewayProbeResult;
+  }
+  try {
+    const res = await performRequest<{ status?: string } | string>(
+      GATEWAY_PROBE_URL,
+      { timeout: timeoutMs, proxy: false },
+      true,
+      undefined
+    );
+    // 204 No Content 或 200 OK 均视为透明代理连通有效
+    const isSuccess = res.status === 204 || res.status === 200;
+    lastGatewayProbeTime = now;
+    lastGatewayProbeResult = isSuccess;
+    return isSuccess;
+  } catch {
+    lastGatewayProbeTime = now;
+    lastGatewayProbeResult = false;
+    return false;
+  }
+}
+
+/**
  * 通用网络请求核心方法（支持 direct 直连 与 proxy 强制代理）
  */
 export async function smartNetworkGet<T = unknown>(
@@ -588,17 +642,42 @@ export async function smartNetworkGet<T = unknown>(
     return await performRequest<T>(url, { ...mergedConfig, proxy: false }, true, undefined);
   }
 
-  // 2. 强制代理模式（绝不直连）
+  // 2. 强制代理模式（含软路由透明网关自适应）
   const rawProxy = parseProxy(proxyUrl || "");
+  const isLocalTarget = !proxyUrl || rawProxy.host === "127.0.0.1" || rawProxy.host === "localhost";
+  const isDefaultLocalProxy =
+    !proxyUrl ||
+    proxyUrl === DEFAULT_PROXY_URL ||
+    ((rawProxy.host === "127.0.0.1" || rawProxy.host === "localhost") && rawProxy.port === DEFAULT_PROXY_PORT);
+
+  // 若已识别处于软路由透明网关模式，且本地无活跃端口、未指定远程代理，优先走网关直连
+  if (isGatewayProxyActive && isLocalTarget && !cachedWorkingPort) {
+    try {
+      const res = await performRequest<T>(url, { ...mergedConfig, proxy: false }, true, undefined);
+      return res;
+    } catch (err: unknown) {
+      const httpError = err as { response?: unknown } | null | undefined;
+      if (httpError?.response) {
+        throw err;
+      }
+      // 网关直连失败（可能用户已离开软路由环境），清除状态并下落进入常规本地代理与探测流程
+      isGatewayProxyActive = false;
+      lastGatewayProbeResult = false;
+      lastGatewayProbeTime = 0;
+      logger.warn(`[smartNetworkGet] 软路由网关连接中断，已自动退回本地代理与端口探测流程: ${String((err as Error)?.message || err)}`);
+    }
+  }
+
   const targetProxy =
-    cachedWorkingPort && !proxyUrl && (rawProxy.host === "127.0.0.1" || rawProxy.host === "localhost") && rawProxy.port === DEFAULT_PROXY_PORT
-      ? { ...rawProxy, port: cachedWorkingPort }
+    cachedWorkingPort && isDefaultLocalProxy
+      ? { ...rawProxy, host: "127.0.0.1", port: cachedWorkingPort }
       : rawProxy;
 
   // 第一优先级：尝试目标代理端口
   try {
     const res = await performRequest<T>(url, { ...mergedConfig, proxy: targetProxy }, false, targetProxy);
     cachedWorkingPort = targetProxy.port;
+    isGatewayProxyActive = false;
     return res;
   } catch (err: unknown) {
     // 若远端服务器已正常返回 HTTP 响应（如 400 Bad Request, 404, 429），说明代理通道完全通畅且连接成功，
@@ -631,6 +710,7 @@ export async function smartNetworkGet<T = unknown>(
             logger.info(`[smartNetworkGet] 目标代理端口不可达，已自动切换至系统环境变量代理端口: ${sysProxy.port}`);
           }
           cachedWorkingPort = sysProxy.port;
+          isGatewayProxyActive = false;
           return res;
         } catch {
           // 继续回退到主流常见端口探测池
@@ -658,19 +738,46 @@ export async function smartNetworkGet<T = unknown>(
           logger.info(`[smartNetworkGet] 目标代理端口不可达，已自动降级回退至本地可用端口: ${port}`);
         }
         cachedWorkingPort = port;
+        isGatewayProxyActive = false;
         return res;
       } catch {
         // 继续探测下一个端口
       }
     }
 
-    // 所有代理端口均不可达，记录失败时间以开启冷却熔断
+    // 第四优先级：本地所有代理端口均不可达时，智能检测网关透明代理（软路由环境自适应）
+    const isLocalDefault = !proxyUrl || targetProxy.host === "127.0.0.1" || targetProxy.host === "localhost";
+    if (isLocalDefault) {
+      const isGatewayOk = await testGatewayTransparentProxy();
+      if (isGatewayOk) {
+        try {
+          const res = await performRequest<T>(url, { ...mergedConfig, proxy: false }, true, undefined);
+          if (!isGatewayProxyActive) {
+            logger.info(`[smartNetworkGet] 未检测到本地代理客户端，但已成功识别软路由/网关透明代理，自动启用透明直连。`);
+          }
+          cachedWorkingPort = undefined;
+          isGatewayProxyActive = true;
+          return res;
+        } catch (gatewayErr: unknown) {
+          const httpError = gatewayErr as { response?: unknown } | null | undefined;
+          if (httpError?.response) {
+            cachedWorkingPort = undefined;
+            isGatewayProxyActive = true;
+            throw gatewayErr;
+          }
+          logger.warn(`[smartNetworkGet] 网关探活成功但实际业务请求连接失败: ${String((gatewayErr as Error)?.message || gatewayErr)}`);
+        }
+      }
+    }
+
+    // 所有代理端口与网关透明代理均不可达，记录失败时间以开启冷却熔断
+    isGatewayProxyActive = false;
     lastFallbackFailedTime = Date.now();
-    logger.warn(`[smartNetworkGet] 所有本地代理端口与系统代理均不可达，已进入 ${Math.round(FALLBACK_COOLDOWN_MS / 1000)}s 熔断冷却。`);
+    logger.warn(`[smartNetworkGet] 所有本地代理端口与网关透明代理均不可达，已进入 ${Math.round(FALLBACK_COOLDOWN_MS / 1000)}s 熔断冷却。`);
 
     // 所有代理端口不可达，阻止直连，保护隐私
     throw new Error(
-      `[MarketLens] 代理连接失败。已阻止直连。请确认代理软件已启动。`
+      `[MarketLens] 代理连接失败。已阻止直连。请确认代理软件已启动或软路由已开启透明代理。`
     );
   }
 }

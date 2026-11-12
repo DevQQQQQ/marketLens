@@ -444,7 +444,9 @@ export class StockItem extends vscode.TreeItem {
           ? `当前本地代理探测处于熔断冷却中（${proxyStatus.cooldownRemainingSeconds}s 后自动重试），请确认代理客户端已启动。`
           : proxyStatus.activePort
             ? `当前已连接本地代理端口（127.0.0.1:${proxyStatus.activePort}），若仍无法拉取请检查代理节点连通性。`
-            : `建议在插件设置中开启代理模式（自动探测 ${DEFAULT_PROXY_PORT}/7890 等主流本地端口），或暂时关闭该分组。`;
+            : proxyStatus.isGatewayProxy
+              ? `当前已识别软路由/网关透明代理，若仍无法拉取请检查软路由分流规则与节点地区（币安不支持美国节点）。`
+              : `建议在插件设置中开启代理模式（自动探测 ${DEFAULT_PROXY_PORT}/7890 等主流本地端口），或暂时关闭该分组。`;
         mdText += `\n\n> 💡 **提示**：若长期处于“获取行情中”，可能是当前网络或内网拦截了该接口。${proxyHint}`;
       }
 
