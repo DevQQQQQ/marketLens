@@ -1,6 +1,6 @@
 {
-  "displayName": "MarketLens全球行情看板(A股/港股/美股/基金/加密货币)",
-  "description": "实时查看A股/港股/美股/基金/加密货币与链上DEX资产，支持快捷键隐藏、简洁模式及网络代理。专为开发者打造的摸鱼盯盘与股票看板效率工具，支持自定义自选列表、价格预警、底部状态栏轮播。",
+  "displayName": "MarketLens-全球行情看板(A股/港股/美股/基金/加密货币)",
+  "description": "实时查看A股/港股/美股/基金/加密货币与链上DEX资产，支持快捷键隐藏、简洁模式及网络代理。专为开发者打造的摸鱼盯盘、股票看板与持仓盈亏效率工具，支持自定义自选列表、价格预警、大盘指数及底部状态栏轮播。",
   "command.openSettings": "设置",
   "command.refresh": "立即刷新全部",
   "command.refreshGroup": "刷新当前分类",
@@ -71,9 +71,23 @@
   "command.checkTodayIpo": "MarketLens: 查看今日申购与打新日历",
   "command.toggleStatusBarItem": "MarketLens: 在状态栏显示 / 隐藏此标的",
   "command.setAlias": "MarketLens: 设置标的展示简称 / 别名...",
+  "command.showPortfolioSummary": "查看持仓总资产总账 (Alt+P)",
   "configuration.statusBar.compact.description": "【通用设置】状态栏紧凑模式：省略实时现价，仅展示标的名称与涨跌幅，大幅节省状态栏空间",
   "configuration.ipoReminder.enabled.description": "是否开启交易日今日打新与申购提醒（09:15~15:00 期间触发）。",
   "configuration.ipoReminder.includeAShare.description": "是否包含 A 股新股申购提醒。",
   "configuration.ipoReminder.includeConvertibleBond.description": "是否包含 A 股可转债申购提醒。",
-  "configuration.ipoReminder.includeHkShare.description": "是否包含港股 IPO 招股提醒。"
+  "configuration.ipoReminder.includeHkShare.description": "是否包含港股 IPO 招股提醒。",
+  "configuration.portfolio.baseCurrency.description": "【持仓总账】总资产折算基准货币：人民币 (CNY) 或美元 (USD)。前置条件：需先在自选标的右键菜单中录入「成本价 + 持股数量」，仅同时具备这两项的标的会计入总账。A股/港股/美股/基金/加密持仓按在线实时汇率统一折算（约每 30 分钟自动刷新）；拉取失败、数值失真或快照过期时自动回退内置静态参考汇率（USDT 锚定 USD，可能与实时牌价存在偏差），实际生效牌价与来源见总账浮窗 / Tooltip。",
+  "configuration.portfolio.sidebarSummaryEnabled.description": "【持仓总账】是否在侧边栏自选列表顶部常驻展示「💼 持仓总资产总览」分组（总资产、今日盈亏与各板块资产占比；老板键/简洁展示模式下自动打码隐藏）。",
+  "configuration.enum.colorScheme.greenUpRedDown": "绿涨红跌（国际/加密/美股习惯，默认）",
+  "configuration.enum.colorScheme.redUpGreenDown": "红涨绿跌（A股/国内传统金融盘面习惯）",
+  "configuration.enum.networkMode.directPreferred": "直连访问（默认，腾讯接口境内推荐直连，零延迟）",
+  "configuration.enum.networkMode.proxyForced": "强制走代理",
+  "configuration.enum.networkMode.proxyPreferred": "通过代理服务器访问（推荐，适用于特定网络环境）",
+  "configuration.enum.networkMode.directOnly": "直连访问，不走代理",
+  "configuration.enum.alertNotificationMode.notification": "右下角轻量弹窗浮窗",
+  "configuration.enum.alertNotificationMode.statusBarOnly": "仅底部状态栏静默提醒",
+  "configuration.enum.alertNotificationMode.both": "右下角浮窗与状态栏同时提醒",
+  "configuration.enum.portfolio.baseCurrency.CNY": "人民币 (¥)",
+  "configuration.enum.portfolio.baseCurrency.USD": "美元 ($)"
 }

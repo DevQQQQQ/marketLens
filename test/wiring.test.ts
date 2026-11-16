@@ -16,9 +16,10 @@ import {
 import { importSettingsFromFile, exportSettingsToFile } from "../src/utils/backupHelper.ts";
 import { WatchlistProvider, GroupItem, StockItem } from "../src/ui/watchlistProvider.ts";
 import { WatchlistOps } from "../src/watchlistOps.ts";
-import { setMaskSnapshotSource } from "../src/utils/feedback.ts";
+import { setMaskSnapshotSource, getMaskSnapshot } from "../src/utils/feedback.ts";
 import { setCachedIpoForTesting } from "../src/services/ipoService.ts";
 import { MASKED_TOOLTIP_TEXT } from "../src/utils/maskState.ts";
+import { isPortfolioHudVisible, closePortfolioHud } from "../src/ui/portfolioHud.ts";
 import { applyAlertRuleDelta, sanitizeAlerts } from "../src/utils/symbolHelper.ts";
 import { logger } from "../src/utils/logger.ts";
 import type { MarketItem } from "../src/types/index.ts";
@@ -142,12 +143,36 @@ void test("config - persistProxyToAllSections 与 persistStatusBarToAllSections 
   assert.strictEqual(affects3, false);
 });
 
+void test("P2-1 关闭单个板块不得把用户显式关闭的状态栏总控抬回开启", async () => {
+  (vscode as any).__resetMock();
+  const vcfg = vscode.workspace.getConfiguration("marketlens");
+  await vcfg.update("statusBar.enabled", false, vscode.ConfigurationTarget.Global);
+  assert.strictEqual(readConfig().statusBar.enabled, false, "前置：用户显式关闭总控");
+
+  // 6 个板块仍为默认开启；旧实现会按 anyActive=true 无条件反写 statusBar.enabled=true。
+  await persistSectionStatusBarAndRecompute(vcfg, "aShare.statusBar", false);
+  const cfg = readConfig();
+  assert.strictEqual(cfg.aShare.statusBar, false);
+  assert.strictEqual(
+    vcfg.get<boolean>("statusBar.enabled"),
+    false,
+    "总控是用户显式意图，关闭板块不得反写它"
+  );
+  assert.strictEqual(cfg.statusBar.enabled, false, "派生显示也必须继续保持关闭");
+
+  // 对照组：用户主动开启板块仍允许把总控抬回，保留「开一个即恢复轮播」的既有体验。
+  await persistSectionStatusBarAndRecompute(vcfg, "aShare.statusBar", true);
+  assert.strictEqual(readConfig().statusBar.enabled, true);
+});
+
 void test("backupHelper - exportSettingsToFile 与 importSettingsFromFile 全流程", async () => {
   (vscode as any).__resetMock();
 
   const mockConfig = readConfig();
   mockConfig.proxyPort = 9999;
   mockConfig.proxyUrl = "http://127.0.0.1:9999";
+  mockConfig.statusBar.compact = true;
+  mockConfig.portfolio = { baseCurrency: "USD", sidebarSummaryEnabled: false };
   mockConfig.watchlist = {
     "A股": [{ symbol: "sh600519", type: "A_SHARE", name: "贵州茅台" }]
   };
@@ -166,6 +191,8 @@ void test("backupHelper - exportSettingsToFile 与 importSettingsFromFile 全流
       callbackCalled = true;
       assert.strictEqual(backupData.settings.proxyPort, 9999);
       assert.strictEqual(backupData.settings.proxyUrl, "http://127.0.0.1:9999");
+      assert.strictEqual(backupData.settings.statusBarCompact, true);
+      assert.strictEqual(backupData.settings.portfolio?.baseCurrency, "USD");
     }
   });
 
@@ -176,6 +203,9 @@ void test("backupHelper - exportSettingsToFile 与 importSettingsFromFile 全流
   const reloadedCfg = readConfig();
   assert.strictEqual(reloadedCfg.proxyPort, 9999);
   assert.strictEqual(reloadedCfg.proxyUrl, "http://127.0.0.1:9999");
+  assert.strictEqual(reloadedCfg.statusBar.compact, true);
+  assert.strictEqual(reloadedCfg.portfolio.baseCurrency, "USD");
+  assert.strictEqual(reloadedCfg.portfolio.sidebarSummaryEnabled, false);
   assert.strictEqual(reloadedCfg.watchlist["A股"]?.[0]?.symbol, "sh600519");
   assert.strictEqual(reloadedCfg.alerts["sh600519"]?.above, 2000);
 });
@@ -419,6 +449,20 @@ void test("extension 与 commands - 扩展完整生命周期与命令分发集�
     true,
     "toggleMask 执行后 maskMode 必须切换为 true"
   );
+  // P2-2 回归①：命令落盘后必须立刻同步 statusBar 内存态，不等 50ms 防抖，
+  // 也不依赖配置变更事件（测试宿主根本不派发 onDidChangeConfiguration）。
+  assert.deepStrictEqual(
+    getMaskSnapshot(),
+    { bossKeyActive: false, maskMode: true },
+    "toggleMask 后脱敏快照必须立即反映新状态，不得存在 50ms 空窗"
+  );
+  // P2-2 回归②：连续切换时决议必须取内存单一真相，不能因 readConfig() 滞后而反向。
+  await vscode.commands.executeCommand("marketlens.toggleMask");
+  assert.strictEqual(vscode.workspace.getConfiguration("marketlens").get("maskMode"), false);
+  assert.strictEqual(getMaskSnapshot().maskMode, false);
+  await vscode.commands.executeCommand("marketlens.toggleMask");
+  assert.strictEqual(vscode.workspace.getConfiguration("marketlens").get("maskMode"), true);
+  assert.strictEqual(getMaskSnapshot().maskMode, true);
   await vscode.commands.executeCommand("marketlens.toggleColorNeutral");
   await vscode.commands.executeCommand("marketlens.openSettings");
   await vscode.commands.executeCommand("marketlens.refresh");
@@ -435,8 +479,8 @@ void test("extension 与 commands - 扩展完整生命周期与命令分发集�
   // 3.1 P1-1 回归：命令面板入口的 showLogs 必须与设置面板入口共用同一脱敏判定。
   //     此刻老板键已连按两次回到未激活，唯一生效的是 toggleMask 置起的 maskMode；
   //     旧实现只看老板键，命令面板就成了「简洁展示模式」下的漏网入口。
-  //     测试宿主的 onDidChangeConfiguration 不会随 cfg.update 派发，状态栏内存态收不到
-  //     这次落盘，故按 feedback.ts 的既有测试缝注入脱敏快照（与 P0-4 用例同一手法）。
+  //     P2-2 之后命令已会直接同步状态栏内存态；这里仍显式注入脱敏快照，
+  //     是为了把该用例与状态栏实例解耦，只验证 showLogs 守卫本身。
   let logPanelOpened = 0;
   const originalLoggerShow = logger.show;
   (logger as any).show = () => {
@@ -459,6 +503,42 @@ void test("extension 与 commands - 扩展完整生命周期与命令分发集�
     assert.strictEqual(logPanelOpened, 1, "常态下命令面板入口必须打开运行日志");
   } finally {
     (logger as any).show = originalLoggerShow;
+    setMaskSnapshotSource(() => ({ bossKeyActive: false, maskMode: false }));
+  }
+
+  // 3.3 持仓总账浮窗：脱敏态零 HUD + 留痕；解除脱敏后恢复放行；老板键激活时主动关闭
+  let bossKeyToggledOn = false;
+  closePortfolioHud();
+  try {
+    setMaskSnapshotSource(() => ({ bossKeyActive: false, maskMode: true }));
+    const refusedPortfolio = await withCapturedConsole(async () => {
+      await vscode.commands.executeCommand("marketlens.showPortfolioSummary");
+    });
+    assert.strictEqual(isPortfolioHudVisible(), false, "脱敏态下不得打开持仓总账浮窗");
+    assert.ok(
+      refusedPortfolio.join("\n").includes("拒绝打开持仓总账浮窗"),
+      "脱敏态拒绝打开总账浮窗必须留下脱敏守卫日志"
+    );
+
+    // 对照组：解除脱敏后同一命令必须恢复放行，守卫不能把功能封死
+    setMaskSnapshotSource(() => ({ bossKeyActive: false, maskMode: false }));
+    await vscode.commands.executeCommand("marketlens.showPortfolioSummary");
+    assert.strictEqual(isPortfolioHudVisible(), true, "常态下总账浮窗必须正常打开");
+
+    // 关键回归：HUD 已打开时激活老板键，浮窗必须同帧关闭（旧 showQuickPick 无句柄做不到）
+    await vscode.commands.executeCommand("marketlens.toggleBossKey");
+    bossKeyToggledOn = true;
+    assert.strictEqual(
+      isPortfolioHudVisible(),
+      false,
+      "老板键激活后已打开的总账 HUD 必须立即关闭，不得残留真实财务数据"
+    );
+  } finally {
+    // 复位老板键与 HUD，避免污染后续命令测试
+    if (bossKeyToggledOn) {
+      await vscode.commands.executeCommand("marketlens.toggleBossKey");
+    }
+    closePortfolioHud();
     setMaskSnapshotSource(() => ({ bossKeyActive: false, maskMode: false }));
   }
 

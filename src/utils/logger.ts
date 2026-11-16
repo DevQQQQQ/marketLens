@@ -37,10 +37,12 @@ const LONG_TOKEN_RE = /\b[0-9a-zA-Z,._-]{16,}\b/g;
  * 清洗任意外部文本（错误消息、堆栈、报文）后再进日志：
  * 整段 URL 与长标识串一律替换为不可逆标签。
  */
+export function scrubUrlsForLog(text: string): string {
+  return text.replace(URL_IN_TEXT_RE, (m) => describeForLog(m));
+}
+
 export function scrubForLog(text: string): string {
-  return text
-    .replace(URL_IN_TEXT_RE, (m) => describeForLog(m))
-    .replace(LONG_TOKEN_RE, (m) => describeForLog(m));
+  return scrubUrlsForLog(text).replace(LONG_TOKEN_RE, (m) => describeForLog(m));
 }
 
 /** 错误对象的日志表示：只保留错误名与清洗后的消息，不回显 URL 与标识 */
@@ -109,13 +111,20 @@ class LoggerService {
   /**
    * 唯一的落笔出口：OutputChannel 与 dev console 共用同一行已清洗文本，
    * 避免两个通道里出现「一份脱敏、一份明文」的双轨日志。
+   *
+   * message 通道也必须过一遍 URL 清洗：调用方常把 `err.message` 插进 message
+   * （如 network.ts 的网关失败日志），其中会原样带回 `q=sh600519,sz000001`
+   * 这类整批自选代码；过去只有 detail 走 formatDetailForLog，形成双轨。
+   * 这里刻意只清 URL、不做 LONG_TOKEN_RE，避免把 `showPortfolioSummary` 等
+   * 硬编码方法名也哈希成不可逆标签而毁掉日志可读性。
    */
   private emit(level: string, message: string, detail?: unknown): void {
     const timestamp = new Date().toLocaleTimeString();
+    const safeMessage = scrubUrlsForLog(message);
     const detailStr = detail === undefined || detail === null ? "" : ` => ${formatDetailForLog(detail)}`;
-    const line = `[${timestamp}] [${level}] ${message}${detailStr}`;
+    const line = `[${timestamp}] [${level}] ${safeMessage}${detailStr}`;
     this.channel?.appendLine(line);
-    console.log(`[MarketLens] ${message}`, detailStr);
+    console.log(`[MarketLens] ${safeMessage}`, detailStr);
   }
 
   public show(): void {

@@ -26,6 +26,7 @@ ml_*.txt
 *.vsix
 .workbuddy
 .workbuddy-ai
+.trae
 docs
 site
 AGENTS.md

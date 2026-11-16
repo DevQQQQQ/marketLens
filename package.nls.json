@@ -1,6 +1,6 @@
 {
-	"displayName": "MarketLens全球行情看板(A股/港股/美股/基金/加密货币)",
-	"description": "实时查看A股/港股/美股/基金/加密货币与链上DEX资产。Real-time stock, fund, crypto & DEX token tracker for developers with boss key stealth mode & status bar carousel.",
+	"displayName": "MarketLens-全球行情看板(A股/港股/美股/基金/加密货币)",
+	"description": "实时查看A股/港股/美股/基金/加密货币与链上DEX资产。Real-time stock, fund, crypto & DEX token tracker and portfolio PnL dashboard for developers with boss key stealth mode & status bar carousel.",
 	"command.openSettings": "MarketLens: Open Settings Panel",
 	"command.refresh": "MarketLens: Refresh Market Quotes",
 	"command.refreshGroup": "MarketLens: Refresh Group Quotes",
@@ -71,9 +71,23 @@
 	"command.checkTodayIpo": "MarketLens: Check Today's IPO & Subscription Calendar",
 	"command.toggleStatusBarItem": "MarketLens: Toggle Display in Status Bar",
 	"command.setAlias": "MarketLens: Set Symbol Alias / Short Name...",
+	"command.showPortfolioSummary": "MarketLens: Show Portfolio Summary (Alt+P)",
 	"configuration.statusBar.compact.description": "Status bar compact mode: omits real-time price and only displays symbol name and gain/loss percentage to save status bar width.",
 	"configuration.ipoReminder.enabled.description": "Whether to enable today's IPO and convertible bond subscription reminders on trading days (active between 09:15 and 15:00).",
 	"configuration.ipoReminder.includeAShare.description": "Whether to include A-share new stock subscription reminders.",
 	"configuration.ipoReminder.includeConvertibleBond.description": "Whether to include A-share convertible bond subscription reminders.",
-	"configuration.ipoReminder.includeHkShare.description": "Whether to include Hong Kong stock IPO subscription reminders."
+	"configuration.ipoReminder.includeHkShare.description": "Whether to include Hong Kong stock IPO subscription reminders.",
+	"configuration.portfolio.baseCurrency.description": "Base currency for the portfolio summary (total assets across A-share/HK/US/fund/crypto holdings). Requires both a cost price and a share quantity on each watchlist item (set via the right-click menu). Converted via live FX rates auto-refreshed roughly every 30 minutes, falling back to built-in static reference rates (USDT pegged to USD, may differ from live rates) when fetching fails or the snapshot is stale; the HUD and tooltip always show the effective rates and their source.",
+	"configuration.portfolio.sidebarSummaryEnabled.description": "Whether to show the pinned portfolio summary group at the top of the sidebar watchlist (total assets, today's P&L and per-section breakdown; auto-masked in boss key / disguise mode).",
+	"configuration.enum.colorScheme.greenUpRedDown": "Green up / Red down (international, crypto & US market convention; default)",
+	"configuration.enum.colorScheme.redUpGreenDown": "Red up / Green down (A-share / Chinese market convention)",
+	"configuration.enum.networkMode.directPreferred": "Direct connection (default; recommended for CN endpoints, zero latency)",
+	"configuration.enum.networkMode.proxyForced": "Always use the proxy",
+	"configuration.enum.networkMode.proxyPreferred": "Through a proxy server (recommended for restricted network environments)",
+	"configuration.enum.networkMode.directOnly": "Direct connection, no proxy",
+	"configuration.enum.alertNotificationMode.notification": "Lightweight popup notification (bottom-right)",
+	"configuration.enum.alertNotificationMode.statusBarOnly": "Status bar only (silent)",
+	"configuration.enum.alertNotificationMode.both": "Both popup and status bar",
+	"configuration.enum.portfolio.baseCurrency.CNY": "Chinese Yuan (¥)",
+	"configuration.enum.portfolio.baseCurrency.USD": "US Dollar ($)"
 }

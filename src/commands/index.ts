@@ -5,7 +5,17 @@ import { WatchlistOps } from "../watchlistOps.ts";
 import { StatusBar } from "../ui/statusBar.ts";
 import { WatchlistProvider, GroupItem, StockItem } from "../ui/watchlistProvider.ts";
 import { SettingsWebviewPanel } from "../ui/settingsWebview.ts";
-import { readConfig } from "../utils/config.ts";
+import { showPortfolioHud, setPortfolioHudContentProvider } from "../ui/portfolioHud.ts";
+import { readConfig, SECTION_DEFAULT_GROUP_NAMES } from "../utils/config.ts";
+import type { MarketSection } from "../types/index.ts";
+import {
+  formatPortfolioAmount,
+  formatFxSourceNote,
+  formatFxDetailNote,
+  deriveTodayProfitRate,
+  deriveTotalProfitRate,
+  type PortfolioSummary,
+} from "../utils/portfolio.ts";
 import { logger } from "../utils/logger.ts";
 import { canEmitUserFeedback, resolveMaskToggle, shouldBlockNodeCommand } from "../utils/maskState.ts";
 import { emitStatusMessage, isMasked, maskIfNeeded } from "../utils/feedback.ts";
@@ -42,6 +52,58 @@ export function registerCommands(
     logger.info(`检测到${reason}，已自动退出专注模式`);
     return true;
   };
+
+  /**
+   * 持仓总账 HUD 的唯一内容构造器：Alt+P 打开与后台在线汇率到位后的原地刷新共用，
+   * 避免两处各自拼装造成文案、盈亏率口径或汇率来源漂移。
+   */
+  const buildPortfolioHudItems = (summary: PortfolioSummary): vscode.QuickPickItem[] => {
+    const bSym = summary.base === "CNY" ? "¥" : "$";
+    const items: vscode.QuickPickItem[] = [];
+
+    if (summary.holdingsCount === 0) {
+      items.push({
+        label: "暂无有效持仓",
+        description: "在自选标的右键菜单中录入「成本价 + 持股数量」后即可汇总总账",
+      });
+      return items;
+    }
+
+    const tSign = summary.total.todayProfit >= 0 ? "+" : "-";
+    const todayRate = deriveTodayProfitRate(summary.total);
+    const fSign = summary.total.totalProfit >= 0 ? "+" : "-";
+    const totalRate = deriveTotalProfitRate(summary.total);
+    items.push({
+      label: `$(briefcase) 总资产: ${bSym}${formatPortfolioAmount(summary.total.marketVal)}`,
+      description: `${summary.holdingsCount} 只持仓 · 基准 ${summary.base}`,
+    });
+    items.push({
+      label: `今日盈亏: ${tSign}${bSym}${formatPortfolioAmount(summary.total.todayProfit)} (${tSign === "+" ? "+" : "-"}${Math.abs(todayRate).toFixed(2)}%)`,
+    });
+    items.push({
+      label: `累计浮盈: ${fSign}${bSym}${formatPortfolioAmount(summary.total.totalProfit)} (${fSign === "+" ? "+" : "-"}${Math.abs(totalRate).toFixed(2)}%)`,
+    });
+    for (const sec of Object.keys(summary.bySection) as MarketSection[]) {
+      const bucket = summary.bySection[sec];
+      if (!bucket || bucket.count === 0) continue;
+      const share = summary.total.marketVal > 0 ? (bucket.marketVal / summary.total.marketVal) * 100 : 0;
+      const sSign = bucket.todayProfit >= 0 ? "+" : "-";
+      items.push({
+        label: `$(folder) ${SECTION_DEFAULT_GROUP_NAMES[sec]}  ${bSym}${formatPortfolioAmount(bucket.marketVal)} (${share.toFixed(1)}%)`,
+        description: `今日 ${sSign}${bSym}${formatPortfolioAmount(bucket.todayProfit)} · ${bucket.count} 只`,
+      });
+    }
+    items.push({
+      label: `$(info) 汇率：${formatFxSourceNote(summary.fx)}（${formatFxDetailNote(summary.fx)}）`,
+    });
+    return items;
+  };
+
+  // 在线汇率是后台 fire-and-forget 拉取，常在 HUD 打开之后才到位。
+  // 注册重建器后 scheduler 能原地刷新浮窗，用户不必关掉重开才能看到实时牌价。
+  setPortfolioHudContentProvider(() =>
+    buildPortfolioHudItems(scheduler.getPortfolioSnapshot())
+  );
 
   context.subscriptions.push(
     // 打开设置界面（专属 Webview 控制台面板）
@@ -202,8 +264,9 @@ export function registerCommands(
 
     // 伪装摸鱼模式开关
     vscode.commands.registerCommand("marketlens.toggleMask", async () => {
-      const config = readConfig();
-      const plan = resolveMaskToggle(statusBar.isBossKeyActive(), config.maskMode);
+      // P2-2：决议输入取内存单一真相（statusBar），不读可能滞后一个防抖周期的磁盘快照；
+      // 连续两次 Alt+K 时 readConfig() 仍会返回上一次落盘值，导致决议反向。
+      const plan = resolveMaskToggle(statusBar.isBossKeyActive(), statusBar.isMaskModeActive());
 
       // 老板键激活期间 maskMode 被一票否决（见 isDisplayMasked）：若照常翻转并落盘，
       // 界面不会有任何变化，只会造成「配置已改、观感未变」的静默失效。
@@ -215,6 +278,12 @@ export function registerCommands(
           .getConfiguration("marketlens")
           .update("maskMode", plan.nextMaskMode, vscode.ConfigurationTarget.Global);
       }
+
+      // P2-2：配置变更事件走 50ms 防抖，落盘后立即把决议结果同步到内存单一写入口，
+      // 消除「磁盘已改、statusBar / treeProvider 仍旧」的空窗 —— 该窗口内
+      // isMasked() / canOpenPrompt() / 备份导出守卫都会读到过期的脱敏状态。
+      statusBar.setMaskMode(plan.nextMaskMode);
+      treeProvider.setMaskMode(plan.nextMaskMode);
 
       emitStatusMessage(
         exitedBossKey
@@ -374,6 +443,19 @@ export function registerCommands(
         return;
       }
       logger.show();
+    }),
+
+    // 持仓总资产总账浮窗（Alt+P）：即时快照 QuickPick HUD，ESC 关闭，无任何持久资源
+    vscode.commands.registerCommand("marketlens.showPortfolioSummary", () => {
+      // 脱敏守卫：总账浮窗是全账户真实财务数据的集中暴露点（总资产/盈亏/板块分布），
+      // 老板键或简洁展示模式激活期间打开等同于自曝，与 showLogs 同策略静默拒绝。
+      if (isMasked()) {
+        logger.info("脱敏模式激活期间拒绝打开持仓总账浮窗（打码守卫已生效）");
+        return;
+      }
+      // 经可持有句柄的 HUD 出口展示：脱敏状态激活时 StatusBar 能主动关闭浮窗。
+      // 旧实现用 showQuickPick()（无句柄），老板键按下后全账户真实财务数据会一直挂在屏幕上。
+      showPortfolioHud(buildPortfolioHudItems(scheduler.getPortfolioSnapshot()));
     }),
 
     // 复制标的代码 / 合约地址（支持 Tooltip 卡片一键复制链接与右键菜单统一复用）

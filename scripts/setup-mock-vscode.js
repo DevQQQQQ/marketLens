@@ -252,7 +252,10 @@ const window = {
       get onDidChangeActive() { return this._onDidChangeActive.event; },
       get onDidChangeSelection() { return this._onDidChangeSelection.event; },
       show() {
-        if (typeof window.showInputBox === "function") {
+        // 仅「输入型」QuickPick（watchlistOps 会设置 _validateInput）才桥接 showInputBox。
+        // 纯展示型 QuickPick（如持仓总账 HUD）在真实 VS Code 中不会弹输入框、也不会立刻 hide，
+        // 否则测试里 HUD 一打开就被 onDidHide 回收，无法验证脱敏联动关闭。
+        if (qp._validateInput && typeof window.showInputBox === "function") {
           Promise.resolve().then(async () => {
             const inputVal = await window.showInputBox({
               prompt: "输入股票代码 / 币对 / 合约地址",

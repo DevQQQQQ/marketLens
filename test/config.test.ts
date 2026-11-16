@@ -77,6 +77,32 @@ void test("config - recomputeStatusBarEnabled 聚合判定（含 fund 修复回�
   assert.strictEqual(dummyConfig.statusBar.enabled, true);
 });
 
+void test("P2-1 recomputeStatusBarEnabled 必须使用与 readConfig 同源的一票否决谓词", () => {
+  const dummyConfig: any = {
+    statusBar: { enabled: false },
+    fund: { statusBar: true },
+    aShare: { statusBar: true },
+    hkStock: { statusBar: true },
+    usStock: { statusBar: true },
+    binance: { statusBar: true },
+    alpha: { statusBar: true },
+  };
+
+  // 显式关闭总控时，即便 6 个板块全开，内存镜像也不得被板块写入抬回 true，
+  // 否则 50ms 防抖窗口内 scheduler.updateStatusBar(config) 会让状态栏闪现真实行情。
+  assert.strictEqual(recomputeStatusBarEnabled(dummyConfig, false), false);
+  assert.strictEqual(dummyConfig.statusBar.enabled, false);
+
+  // 用户主动开启板块（不传显式值 = 按聚合判定）仍可恢复轮播。
+  assert.strictEqual(recomputeStatusBarEnabled(dummyConfig, undefined), true);
+  assert.strictEqual(dummyConfig.statusBar.enabled, true);
+
+  // 显式 true 但所有板块都关，状态栏仍必须关闭。
+  for (const sec of MARKET_SECTIONS) dummyConfig[sec].statusBar = false;
+  assert.strictEqual(recomputeStatusBarEnabled(dummyConfig, true), false);
+  assert.strictEqual(dummyConfig.statusBar.enabled, false);
+});
+
 void test("config - affectsNetworkConfig 判定敏感配置变动（含 fund 修复回归）", () => {
   function makeMockEvent(changedKeys: string[]) {
     return {

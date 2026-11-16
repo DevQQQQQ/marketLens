@@ -139,6 +139,12 @@ export function readConfig(): MarketLensConfig {
       includeConvertibleBond: cfg.get<boolean>("ipoReminder.includeConvertibleBond", true),
       includeHkShare: cfg.get<boolean>("ipoReminder.includeHkShare", true),
     },
+
+    portfolio: {
+      // 消毒：仅接受 "USD"，其余非法值一律回落 "CNY"（§5.2 外部输入校验）
+      baseCurrency: cfg.get<string>("portfolio.baseCurrency") === "USD" ? "USD" : "CNY",
+      sidebarSummaryEnabled: cfg.get<boolean>("portfolio.sidebarSummaryEnabled", true),
+    },
   };
 }
 
@@ -223,12 +229,31 @@ export function applyProxyToAllSections(cfg: MarketLensConfig, proxyUrl: string,
 }
 
 /**
- * 内存配置同步：重新计算状态栏聚合总控开关
+ * 读取用户显式写入的状态栏总控值（含 package.json 默认值；undefined 表示完全未配置）。
+ *
+ * 板块级开关无权改写总控：总控是用户显式意图，派生显示一律由
+ * `computeStatusBarEnabled(explicit, anyTabs)` 计算，与 `readConfig()` 同源。
  */
-export function recomputeStatusBarEnabled(cfg: MarketLensConfig): boolean {
+export function readExplicitStatusBarEnabled(): boolean | undefined {
+  return getConfiguration("marketlens").get<boolean>("statusBar.enabled");
+}
+
+/**
+ * 内存配置同步：重新计算状态栏聚合总控开关
+ *
+ * @param explicitStatusBarEnabled 用户显式总控值；不传（或传 undefined）表示按板块聚合判定。
+ *   传入 false 时一票否决，与 `readConfig()` / `computeStatusBarEnabled` 使用同一谓词，
+ *   杜绝「内存即时态」与「磁盘派生态」在 50ms 配置防抖窗口内给出相反结论
+ *   （曾导致用户显式关总控后，板块写入让状态栏短暂闪现）。
+ */
+export function recomputeStatusBarEnabled(
+  cfg: MarketLensConfig,
+  explicitStatusBarEnabled?: boolean | undefined
+): boolean {
   const anyActive = MARKET_SECTIONS.some((sec) => cfg[sec]?.statusBar !== false);
-  cfg.statusBar.enabled = anyActive;
-  return anyActive;
+  const enabled = computeStatusBarEnabled(explicitStatusBarEnabled, anyActive);
+  cfg.statusBar.enabled = enabled;
+  return enabled;
 }
 
 /**
@@ -270,7 +295,13 @@ export async function persistStatusBarToAllSections(
 }
 
 /**
- * 磁盘持久化：写入单个板块状态栏开关并联动聚合计算 statusBar.enabled
+ * 磁盘持久化：写入单个板块状态栏开关，并按语义联动 statusBar.enabled
+ *
+ * P2-1：关闭单个板块时绝不把用户显式关闭的总控抬回开启。
+ * - `value === true`（用户主动开启板块）：按板块聚合派生，保留「开一个即恢复轮播」的既有体验；
+ * - `value === false`（用户关闭板块）：与 `readConfig()` 共用 `computeStatusBarEnabled`，
+ *   显式总控 false 一票否决，其余情况才按聚合结果同步磁盘值。
+ * 总控值未变化时跳过写盘，避免无谓的配置变更事件与树重建。
  */
 export async function persistSectionStatusBarAndRecompute(
   cfg: vscode.WorkspaceConfiguration,
@@ -278,14 +309,20 @@ export async function persistSectionStatusBarAndRecompute(
   value: boolean
 ): Promise<boolean> {
   const target = getGlobalTarget();
+  const explicitMaster = cfg.get<boolean>("statusBar.enabled");
   await cfg.update(sectionKey, value, target);
   const anyActive = MARKET_SECTIONS.some((sec) => {
     return `${sec}.statusBar` === sectionKey
       ? value
       : (cfg.get<boolean>(`${sec}.statusBar`) ?? true);
   });
-  await cfg.update("statusBar.enabled", anyActive, target);
-  return anyActive;
+  const nextMaster = value === true
+    ? anyActive
+    : computeStatusBarEnabled(explicitMaster, anyActive);
+  if (explicitMaster !== nextMaster) {
+    await cfg.update("statusBar.enabled", nextMaster, target);
+  }
+  return nextMaster;
 }
 
 /**

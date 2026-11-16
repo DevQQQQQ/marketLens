@@ -4,21 +4,23 @@
 import * as vscode from "vscode";
 import type { MarketItem } from "../types/index.ts";
 import { getProxyStatus } from "../services/network.ts";
-import { escapeMarkdownInline, toMarkdownCodeSpan, deriveTodayProfit, type HoldingItemQuote } from "../utils/symbolHelper.ts";
+import { escapeMarkdownInline, toMarkdownCodeSpan, type HoldingItemQuote } from "../utils/symbolHelper.ts";
 import { isDisplayMasked } from "../utils/maskState.ts";
+import { closePortfolioHud } from "./portfolioHud.ts";
+import {
+  aggregateHoldingsByCurrency,
+  formatFxSourceNote,
+  formatFxDetailNote,
+  formatPortfolioAmount,
+  deriveTodayProfitRate,
+  deriveTotalProfitRate,
+  type HoldingCurrencyBucket,
+  type PortfolioSummary,
+} from "../utils/portfolio.ts";
 
 // ────────────────────────────────────────────────────────────────
 //  常量与工具函数
 // ────────────────────────────────────────────────────────────────
-
-/** 单一币种的持仓聚合桶 */
-interface HoldingCurrencyBucket {
-  todayProfit: number;
-  totalProfit: number;
-  count: number;
-  marketVal: number;
-  costVal: number;
-}
 
 const CAMO_BRANCHES = ["main", "dev", "feat/ui", "fix/perf", "release/v2"];
 const CAMO_LABELS = [
@@ -43,21 +45,6 @@ function toDisplayPrice(price: number): string {
   if (price < 1)   return price.toFixed(4);
   if (price < 10)  return price.toFixed(3);
   return price.toFixed(2);
-}
-
-/** 格式化持仓盈亏数字（支持亿、万单位简写与千分位） */
-function formatHoldingProfit(val: number): string {
-  const abs = Math.abs(val);
-  if (abs >= 1e8) {
-    return `${(abs / 1e8).toFixed(2)}亿`;
-  }
-  if (abs >= 1e4) {
-    return `${(abs / 1e4).toFixed(2)}万`;
-  }
-  if (abs < 0.01 && abs > 0) {
-    return abs.toFixed(4);
-  }
-  return abs.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 /** 确定性 hash，用于把 symbol 稳定映射到伪装标签（不随机，保证同一资产标签一致） */
@@ -97,7 +84,11 @@ export class StatusBar implements vscode.Disposable {
   private holdingEnabled = true;
   private holdingInterval = 3;
   private holdingIndex = 0;
+  // 持仓总账（跨币种统一折算，由 scheduler 经单一计算出口推送）
+  private portfolioSummary: PortfolioSummary | undefined;
   private holdingTimer: ReturnType<typeof setInterval> | undefined;
+  /** 当前定时器采用的轮播间隔；间隔变化时必须重建，否则用户调整间隔不生效 */
+  private holdingTimerInterval: number | undefined;
 
   // 状态开关
   private maskMode: boolean;
@@ -197,12 +188,20 @@ export class StatusBar implements vscode.Disposable {
       ? Math.min(60, Math.max(1, Math.round(intervalSeconds)))
       : 3;
 
-    if (this.holdings.length === 0 || !this.holdingEnabled || this.displayMasked) {
+    if (!this.hasHoldingContent() || !this.holdingEnabled || this.displayMasked) {
       this.holdingIndex = 0;
       this.stopHoldingCarousel();
       this.holdingBarItem.text = "";
       this.holdingBarItem.tooltip = undefined;
       this.holdingBarItem.hide();
+      return;
+    }
+
+    if (this.holdings.length === 0) {
+      // 轮播子集为空但全量总账非空：只保留第 0 帧，不启动定时器，也不能 hide
+      this.holdingIndex = 0;
+      this.stopHoldingCarousel();
+      this.renderHolding();
       return;
     }
 
@@ -215,6 +214,33 @@ export class StatusBar implements vscode.Disposable {
     this.renderHolding();
   }
 
+  /**
+   * 是否存在可独立展示的第 0 帧「统一折算总账」。
+   *
+   * 总账取数口径（forPortfolio）与持仓轮播口径不同：前者忽略板块 statusBar 开关与
+   * 休市折叠，只看板块 enabled。因此「轮播标的为 0、总账非空」是合法且常见的状态
+   * （如关掉 A 股轮播、周末休市），此时第 0 帧仍必须显示，否则三入口缺一。
+   */
+  private hasPortfolioFrame(): boolean {
+    return !!this.portfolioSummary && this.portfolioSummary.total.count > 0;
+  }
+
+  /** 持仓条是否有可展示内容（明细帧或总账第 0 帧） */
+  private hasHoldingContent(): boolean {
+    return this.holdings.length > 0 || this.hasPortfolioFrame();
+  }
+
+  /**
+   * 更新持仓总账（跨币种统一折算）。scheduler 每轮刷新后推送；
+   * summary 为 undefined 表示清空（如全部持仓移除）。
+   */
+  setPortfolioSummary(summary: PortfolioSummary | undefined): void {
+    this.portfolioSummary = summary;
+    if (this.holdingIndex === 0) {
+      this.renderHolding();
+    }
+  }
+
   /** 显示状态栏 */
   show(): void {
     if (!this.bossKeyActive && this.quotes.length > 0) {
@@ -224,7 +250,7 @@ export class StatusBar implements vscode.Disposable {
       this.barItem.text = "";
       this.barItem.hide();
     }
-    if (this.holdingEnabled && !this.displayMasked && this.holdings.length > 0) {
+    if (this.holdingEnabled && !this.displayMasked && this.hasHoldingContent()) {
       this.restartHoldingCarousel();
       this.renderHolding();
     }
@@ -240,6 +266,9 @@ export class StatusBar implements vscode.Disposable {
   /** 切换伪装模式 */
   setMaskMode(enabled: boolean): void {
     this.maskMode = enabled;
+    // 这里是 maskMode 的唯一写入口（命令 / 设置面板 / 配置变更最终都落到这里）：
+    // 脱敏激活时必须同步收掉已打开的总账 HUD，否则真实财务数据会残留在屏幕上。
+    if (this.maskMode) closePortfolioHud();
     this.render();
     if (this.maskMode) {
       // 模式 B：摸鱼伪装模式下一票否决彻底隐藏持仓盈亏状态栏条目
@@ -248,7 +277,7 @@ export class StatusBar implements vscode.Disposable {
       this.holdingBarItem.tooltip = undefined;
       this.holdingBarItem.hide();
     } else {
-      if (this.holdingEnabled && !this.displayMasked && this.holdings.length > 0) {
+      if (this.holdingEnabled && !this.displayMasked && this.hasHoldingContent()) {
         this.restartHoldingCarousel();
         this.renderHolding();
       }
@@ -285,6 +314,9 @@ export class StatusBar implements vscode.Disposable {
    */
   toggleBossKey(forceState?: boolean): boolean {
     this.bossKeyActive = forceState !== undefined ? forceState : !this.bossKeyActive;
+    // 老板键一票否决所有真实数据展示：已打开的总账 HUD 必须同帧关闭。
+    // 这里是 bossKeyActive 的唯一写入口，覆盖 Alt+M、设置面板自动退出等全部路径。
+    if (this.bossKeyActive) closePortfolioHud();
     if (this.bossKeyActive) {
       this.stopCarousel();
       this.stopHoldingCarousel();
@@ -298,7 +330,7 @@ export class StatusBar implements vscode.Disposable {
       this.barItem.show();
       this.restartCarousel();
       this.render();
-      if (this.holdingEnabled && !this.displayMasked && this.holdings.length > 0) {
+      if (this.holdingEnabled && !this.displayMasked && this.hasHoldingContent()) {
         this.restartHoldingCarousel();
         this.renderHolding();
       }
@@ -500,35 +532,32 @@ export class StatusBar implements vscode.Disposable {
   // ── 持仓轮播与渲染 ──────────────────────────────────────────────
 
   /**
-   * 按币种聚合持仓（今日盈亏经 `deriveTodayProfit` 单一出口，AGENTS.md §5.5）。
-   * 持仓条第 0 帧概览与持仓看板 Tooltip 共用本方法，禁止在两处各写一份累加逻辑。
+   * 按币种聚合持仓——委托 `portfolio.ts` 的共享出口（AGENTS.md §5.5 禁止两处累加逻辑）。
+   * 持仓条第 0 帧概览与持仓看板 Tooltip 共用本方法。
    */
   private aggregateHoldings(): Array<[string, HoldingCurrencyBucket]> {
-    const currencyMap: Record<string, HoldingCurrencyBucket> = {};
-    for (const h of this.holdings) {
-      const cur = h.currency || "CNY";
-      if (!currencyMap[cur]) {
-        currencyMap[cur] = { todayProfit: 0, totalProfit: 0, count: 0, marketVal: 0, costVal: 0 };
-      }
-      const data = currencyMap[cur];
-      data.count++;
-      data.costVal += h.cost * h.shares;
-      data.marketVal += h.price * h.shares;
-      data.totalProfit += (h.price - h.cost) * h.shares;
-      data.todayProfit += deriveTodayProfit(h, h.shares);
-    }
-    return Object.entries(currencyMap);
+    return Array.from(aggregateHoldingsByCurrency(this.holdings).entries());
   }
 
   private restartHoldingCarousel(): void {
-    this.stopHoldingCarousel();
     if (this.displayMasked || !this.holdingEnabled || this.holdings.length === 0) {
+      this.stopHoldingCarousel();
       return;
     }
-    const totalFrames = this.holdings.length + 1;
-    if (totalFrames > 1) {
+    // 每轮行情刷新都会走 setHoldings() → 本方法。旧实现无条件重建定时器，计时基准每次归零：
+    // refreshInterval < holdingInterval 时定时器永远来不及触发，持仓条冻结在第 0 帧；
+    // 即便前者更大，实际轮播周期也被拉成刷新间隔而非用户设定值。与行情轮播
+    // restartCarousel() 一致：只在定时器缺失或间隔变化时重建。
+    if (this.holdingTimer !== undefined && this.holdingTimerInterval === this.holdingInterval) {
+      return;
+    }
+    this.stopHoldingCarousel();
+    if (this.holdings.length + 1 > 1) {
+      this.holdingTimerInterval = this.holdingInterval;
       this.holdingTimer = setInterval(() => {
-        this.holdingIndex = (this.holdingIndex + 1) % totalFrames;
+        // 帧数动态取当前持仓数：持仓增减后无需重建定时器，闭包也不会残留旧 totalFrames
+        const frames = this.holdings.length + 1;
+        this.holdingIndex = frames > 0 ? (this.holdingIndex + 1) % frames : 0;
         this.renderHolding();
       }, this.holdingInterval * 1000);
     }
@@ -539,10 +568,11 @@ export class StatusBar implements vscode.Disposable {
       clearInterval(this.holdingTimer);
       this.holdingTimer = undefined;
     }
+    this.holdingTimerInterval = undefined;
   }
 
   private renderHolding(): void {
-    if (this.displayMasked || !this.holdingEnabled || this.holdings.length === 0) {
+    if (this.displayMasked || !this.holdingEnabled || !this.hasHoldingContent()) {
       this.holdingBarItem.text = "";
       this.holdingBarItem.tooltip = undefined;
       this.holdingBarItem.hide();
@@ -552,21 +582,44 @@ export class StatusBar implements vscode.Disposable {
     this.holdingBarItem.show();
 
     if (this.holdingIndex === 0) {
-      // ── 第 0 帧：全账户总持仓概览 ──
+      // ── 第 0 帧：全账户总持仓概览（优先统一折算总账，无总账时回退原生币种格式） ──
+      if (this.portfolioSummary && this.portfolioSummary.total.count > 0) {
+        const sum = this.portfolioSummary;
+        const bSym = sum.base === "CNY" ? "¥" : "$";
+        const mFmt = formatPortfolioAmount(sum.total.marketVal);
+        const todayRate = deriveTodayProfitRate(sum.total);
+        const rSign = sum.total.todayProfit >= 0 ? "+" : "-";
+        // 第 0 帧升级为总账后仍保留今日盈亏金额；紧凑模式下让位给宽度
+        const todayAmount = this.compactMode
+          ? ""
+          : ` ｜ 今日 ${rSign}${bSym}${formatPortfolioAmount(sum.total.todayProfit)}`;
+        this.holdingBarItem.text = `$(briefcase) 总资产: ${bSym}${mFmt} (${rSign}${Math.abs(todayRate).toFixed(2)}%)${todayAmount}`;
+        this.applyHoldingColor(sum.total.todayProfit > 0, Math.abs(sum.total.todayProfit) < 0.01);
+        this.holdingBarItem.tooltip = this._buildHoldingBarTooltip();
+        return;
+      }
+
       const entries = this.aggregateHoldings().sort((a, b) => b[1].count - a[1].count);
+      if (entries.length === 0) {
+        // 理论上只在「总账被清空但 holdings 尚未同步」的瞬态出现，保持不渲染脏帧
+        this.holdingBarItem.text = "";
+        this.holdingBarItem.tooltip = undefined;
+        this.holdingBarItem.hide();
+        return;
+      }
       const [primaryCur, primaryData] = entries[0];
       const pSym = primaryCur === "CNY" ? "¥" : primaryCur === "HKD" ? "HK$" : "$";
       const tSign = primaryData.todayProfit >= 0 ? "+" : "-";
       const fSign = primaryData.totalProfit >= 0 ? "+" : "-";
-      const tFmt = formatHoldingProfit(primaryData.todayProfit);
-      const fFmt = formatHoldingProfit(primaryData.totalProfit);
+      const tFmt = formatPortfolioAmount(primaryData.todayProfit);
+      const fFmt = formatPortfolioAmount(primaryData.totalProfit);
 
       let text = `$(briefcase) 今日: ${tSign}${pSym}${tFmt} ｜ 浮盈: ${fSign}${pSym}${fFmt}`;
       if (entries.length > 1) {
         const extras = entries.slice(1).map(([c, d]) => {
           const s = c === "CNY" ? "¥" : c === "HKD" ? "HK$" : "$";
           const sign = d.totalProfit >= 0 ? "+" : "-";
-          return `${sign}${s}${formatHoldingProfit(d.totalProfit)}`;
+          return `${sign}${s}${formatPortfolioAmount(d.totalProfit)}`;
         });
         text += ` (${extras.join(", ")})`;
       }
@@ -586,7 +639,7 @@ export class StatusBar implements vscode.Disposable {
       const profitRate = ((h.price - h.cost) / h.cost) * 100;
       const pSign = profit >= 0 ? "+" : "-";
       const rSign = profitRate >= 0 ? "+" : "-";
-      const pFmt = formatHoldingProfit(profit);
+      const pFmt = formatPortfolioAmount(profit);
       const rFmt = Math.abs(profitRate).toFixed(2);
 
       this.holdingBarItem.text = `$(briefcase) ${h.name}: ${pSign}${curSym}${pFmt} (${rSign}${rFmt}%) [${this.holdingIndex}/${this.holdings.length}]`;
@@ -604,16 +657,18 @@ export class StatusBar implements vscode.Disposable {
     const entries = this.aggregateHoldings();
 
     md.appendMarkdown(`### 💼 持仓盈亏独立对账看板\n\n`);
-    if (entries.length === 1) {
+    if (entries.length === 0) {
+      md.appendMarkdown(`_当前没有标的参与状态栏轮播（板块轮播开关或休市折叠已过滤），本看板与下方明细为空。_\n\n`);
+    } else if (entries.length === 1) {
       const [cur, d] = entries[0];
       const s = cur === "CNY" ? "¥" : cur === "HKD" ? "HK$" : "$";
       const tSign = d.todayProfit >= 0 ? "+" : "-";
       const fSign = d.totalProfit >= 0 ? "+" : "-";
-      const tFmt = formatHoldingProfit(d.todayProfit);
-      const fFmt = formatHoldingProfit(d.totalProfit);
-      const mFmt = formatHoldingProfit(d.marketVal);
-      const cFmt = formatHoldingProfit(d.costVal);
-      const totalRate = d.costVal > 0 ? ((d.totalProfit / d.costVal) * 100) : 0;
+      const tFmt = formatPortfolioAmount(d.todayProfit);
+      const fFmt = formatPortfolioAmount(d.totalProfit);
+      const mFmt = formatPortfolioAmount(d.marketVal);
+      const cFmt = formatPortfolioAmount(d.costVal);
+      const totalRate = deriveTotalProfitRate(d);
       const rSign = totalRate >= 0 ? "+" : "-";
 
       md.appendMarkdown(`| 统计指标 | 数值表现 |\n| :--- | :--- |\n`);
@@ -627,10 +682,10 @@ export class StatusBar implements vscode.Disposable {
         const s = cur === "CNY" ? "¥" : cur === "HKD" ? "HK$" : "$";
         const tSign = d.todayProfit >= 0 ? "+" : "-";
         const fSign = d.totalProfit >= 0 ? "+" : "-";
-        const tFmt = formatHoldingProfit(d.todayProfit);
-        const fFmt = formatHoldingProfit(d.totalProfit);
-        const mFmt = formatHoldingProfit(d.marketVal);
-        const cFmt = formatHoldingProfit(d.costVal);
+        const tFmt = formatPortfolioAmount(d.todayProfit);
+        const fFmt = formatPortfolioAmount(d.totalProfit);
+        const mFmt = formatPortfolioAmount(d.marketVal);
+        const cFmt = formatPortfolioAmount(d.costVal);
         const label =
           cur === "CNY" ? "人民币 (¥)" :
           cur === "HKD" ? "港币 (HK$)" :
@@ -640,7 +695,23 @@ export class StatusBar implements vscode.Disposable {
       md.appendMarkdown(`\n`);
     }
 
-    md.appendMarkdown(`---\n**持仓明细（共 ${this.holdings.length} 只标的，当前轮播: ${this.holdingIndex === 0 ? "总览" : `${this.holdingIndex}/${this.holdings.length}`}）**：\n\n`);
+    // 统一折算总账（跨币种合并为基准货币）
+    if (this.portfolioSummary && this.portfolioSummary.total.count > 0) {
+      const sum = this.portfolioSummary;
+      const s = sum.base === "CNY" ? "¥" : "$";
+      const baseLabel = sum.base === "CNY" ? "人民币 (¥)" : "美元 ($)";
+      const tSign = sum.total.todayProfit >= 0 ? "+" : "-";
+      const fSign = sum.total.totalProfit >= 0 ? "+" : "-";
+      const totalRate = deriveTotalProfitRate(sum.total);
+      const rSign = totalRate >= 0 ? "+" : "-";
+      md.appendMarkdown(`**🌐 统一折算总账（基准 ${baseLabel}）**\n\n`);
+      md.appendMarkdown(`| 总市值 | 今日盈亏 | 累计浮盈 |\n| :--- | :--- | :--- |\n`);
+      md.appendMarkdown(`| ${s}${formatPortfolioAmount(sum.total.marketVal)} | ${tSign}${s}${formatPortfolioAmount(sum.total.todayProfit)} | ${fSign}${s}${formatPortfolioAmount(sum.total.totalProfit)} (${rSign}${Math.abs(totalRate).toFixed(2)}%) |\n\n`);
+      md.appendMarkdown(`> 汇率：${formatFxSourceNote(sum.fx)}（${formatFxDetailNote(sum.fx)}）。\n\n`);
+      md.appendMarkdown(`> 口径说明：上方总账为**全量持仓**（忽略板块状态栏开关与休市折叠），下方对账看板与明细仅含**当前参与状态栏轮播**的标的，两项标的数量可能不一致。\n\n`);
+    }
+
+    md.appendMarkdown(`---\n**持仓明细（状态栏轮播口径 · 共 ${this.holdings.length} 只标的，当前轮播: ${this.holdingIndex === 0 ? "总览" : `${this.holdingIndex}/${this.holdings.length}`}）**：\n\n`);
     for (let i = 0; i < this.holdings.length; i++) {
       const h = this.holdings[i];
       const s = h.currency === "CNY" ? "¥" : h.currency === "HKD" ? "HK$" : "$";
@@ -648,7 +719,7 @@ export class StatusBar implements vscode.Disposable {
       const profitRate = ((h.price - h.cost) / h.cost) * 100;
       const pSign = profit >= 0 ? "+" : "-";
       const rSign = profitRate >= 0 ? "+" : "-";
-      const pFmt = formatHoldingProfit(profit);
+      const pFmt = formatPortfolioAmount(profit);
       const rFmt = Math.abs(profitRate).toFixed(2);
       const currentIndicator = this.holdingIndex === i + 1 ? " 👈" : "";
       md.appendMarkdown(`- **${escapeMarkdownInline(h.name)}** (${toMarkdownCodeSpan(h.symbol)}): 成本 ${s}${toDisplayPrice(h.cost)} ｜ 现价 ${s}${toDisplayPrice(h.price)} ｜ 浮盈: **${pSign}${s}${pFmt} (${rSign}${rFmt}%)**${currentIndicator}\n`);
@@ -681,6 +752,7 @@ export class StatusBar implements vscode.Disposable {
   dispose(): void {
     this.stopCarousel();
     this.stopHoldingCarousel();
+    closePortfolioHud();
     if (this.flashAlertTimer !== undefined) {
       clearTimeout(this.flashAlertTimer);
       this.flashAlertTimer = undefined;

@@ -1453,6 +1453,8 @@ export interface HoldingItemQuote {
   change?: number | undefined;
   open?: number | undefined;
   prevClose?: number | undefined;
+  // 条目归属业务板块（经 resolveItemSection 单一出口解析，§5.3）；undefined = 中立分组
+  section?: MarketSection | undefined;
 }
 
 /** 提取持仓行情过滤选项 */
@@ -1460,6 +1462,12 @@ export interface ExtractHoldingQuotesOptions {
   statusBarEnabled?: boolean;
   autoCollapseClosedGroups?: boolean;
   now?: Date;
+  /**
+   * 持仓总账口径：忽略状态栏总控与分板块 statusBar 开关，保留休市标的
+   * （沿用缓存收盘价，§5.5），仅按板块 enabled 过滤。
+   * 状态栏持仓条与总账展示口径不同，总账必须覆盖全量有效持仓。
+   */
+  forPortfolio?: boolean;
   fund?: { enabled?: boolean; statusBar?: boolean };
   aShare?: { enabled?: boolean; statusBar?: boolean };
   hkStock?: { enabled?: boolean; statusBar?: boolean };
@@ -1477,7 +1485,9 @@ export function extractHoldingQuotes(
   quoteCache: Map<string, MarketItem>,
   options?: ExtractHoldingQuotesOptions
 ): HoldingItemQuote[] {
-  if (options && options.statusBarEnabled === false) {
+  const forPortfolio = options?.forPortfolio === true;
+
+  if (!forPortfolio && options && options.statusBarEnabled === false) {
     return [];
   }
 
@@ -1496,6 +1506,8 @@ export function extractHoldingQuotes(
     if (!sec) return true;
     const conf = resolvedSections[sec];
     if (!conf) return true;
+    // 总账口径只看板块 enabled，不受状态栏展示开关影响（§5.3）
+    if (forPortfolio) return conf.enabled !== false;
     return conf.enabled !== false && conf.statusBar !== false;
   };
 
@@ -1521,14 +1533,18 @@ export function extractHoldingQuotes(
       if (options) {
         const assetType = resolveItemAssetType(conf, groupName);
         if (isFundGroup) {
-          if (options.fund?.enabled === false || options.fund?.statusBar === false) {
+          if (
+            options.fund?.enabled === false ||
+            (!forPortfolio && options.fund?.statusBar === false)
+          ) {
             continue;
           }
         } else if (!isSectionActive(assetType)) {
           continue;
         }
 
-        if (options.autoCollapseClosedGroups) {
+        // 总账口径保留休市标的（沿用缓存收盘价，§5.5），不做休市过滤
+        if (!forPortfolio && options.autoCollapseClosedGroups) {
           const checkNow = options.now || new Date();
           if (isItemMarketClosed(conf, groupName, checkNow)) {
             continue;
@@ -1540,7 +1556,10 @@ export function extractHoldingQuotes(
       if (seenSymbols.has(normKey)) continue;
 
       const q = quoteCache.get(normKey) || quoteCache.get(conf.symbol);
-      if (!q || q.price === undefined || q.price <= 0) continue;
+      // 行情报价来自外部报文解析：NaN / Infinity 既不满足 `<= 0`，又会顺着
+      // `price * shares` 污染原生币种桶，而折算进 total 时被 toBaseCurrency 静默归零，
+      // 造成「明细市值 Infinity、总账少算、两者对不上」。必须和 cost/shares 同口径消毒。
+      if (!q || q.price === undefined || !Number.isFinite(q.price) || q.price <= 0) continue;
 
       seenSymbols.add(normKey);
 
@@ -1557,6 +1576,7 @@ export function extractHoldingQuotes(
         change: q.change,
         open: q.open,
         prevClose: q.prevClose,
+        section: resolveItemSection(conf, groupName),
       });
     }
   }

@@ -1,14 +1,14 @@
-# MarketLens is a financial market ticker, crypto watchlist, and stealth productivity tool for developers. It unifies Funds, A-Shares, Hong Kong Stocks, US Stocks, Binance Crypto, and on-chain DEX tokens, keeping you informed of market fluctuations while coding.
+# MarketLens is a financial market ticker, portfolio PnL tracker, and stealth productivity tool for developers. It unifies Funds, Market Indices, A-Shares, Hong Kong Stocks, US Stocks, Binance Crypto, and on-chain DEX tokens, keeping you informed of market fluctuations while coding.
 
 <p align="center">
-  <b>📊 Professional real-time market dashboard and stealth productivity tool built for developers</b><br>
-  Real-time tracking of Exchange-Traded Funds (ETFs) & Feeder Funds, A-Shares (SSE / SZSE / BSE), Hong Kong Stocks (HKEX), US Stocks (NASDAQ / S&P 500 / NYSE), Binance mainstream crypto, and all-chain DEX tokens (Solana / BSC / Base / Ethereum, etc.).
+  <b>📊 Professional real-time market dashboard, portfolio tracker, and stealth productivity tool built for developers</b><br>
+  Real-time tracking of Exchange-Traded Funds (ETFs) & Feeder Funds, Market Indices, A-Shares (SSE / SZSE / BSE), Hong Kong Stocks (HKEX), US Stocks (NASDAQ / S&P 500 / NYSE), Binance mainstream crypto, and all-chain DEX tokens (Solana / BSC / Base / Ethereum, etc.), with multi-currency portfolio valuation.
 </p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/VS_Code-^1.85.0-007ACC?logo=visualstudiocode" alt="VS Code Version">
   <img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License">
-  <img src="https://img.shields.io/badge/Release-v1.3.7-blue.svg" alt="Version">
+  <img src="https://img.shields.io/badge/Release-v1.3.8-blue.svg" alt="Version">
   <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-orange" alt="Platform">
 </p>
 
@@ -21,10 +21,13 @@ As developers, while focusing on writing code, we often need to keep an eye on o
 **MarketLens** deeply integrates multi-market tickers and productivity alerts directly into VS Code:
 
 - 🌲 **6-in-1 Unified Market Coverage**: On-field ETFs/funds, A-Shares, HK stocks, US stocks, Binance crypto, and Alpha DEX tokens all in one place—say goodbye to multi-app switching.
+- 🎯 **Trading Day IPO & Subscription Calendar**: Intelligent reminders for today's A-share IPOs, convertible bonds, and HK IPOs during trading hours, one-click copy to clipboard with zero-spam protection.
 - ⚡ **Price Alerts & Volatility Monitoring**: Real-time notifications for breaking upper resistance, falling below stop-loss, or sharp intraday swings—no need to stare at charts all day.
-- 🖱️ **Multi-Select Batch Drag & Drop Reordering**: Hold `Shift` or `Ctrl` / `Cmd` to select multiple assets and reorder them in a single batch move.
-- 🕶️ **Ultimate Stealth & Safety**: Equipped with one-click Boss Key hiding, disguised compilation terminal logs, Color-Neutral Mode, and closed-market auto throttling.
-- 📊 **Smooth Status Bar Carousel**: Bottom status bar ticker scrolls smoothly on demand, with independent section toggle controls.
+- 🔍 **Smart Chinese & Pinyin Fuzzy Search**: Search stocks directly by name (e.g., "贵州茅台", "腾讯") or Pinyin acronym ("GZMT", "TC") without memorizing numeric codes.
+- 🖱️ **Multi-Select Batch Drag & Drop & Multi-Dimensional Sorting**: Hold `Shift` or `Ctrl` / `Cmd` to reorder items in batches, and sort groups by change %, price, or Pinyin with one click.
+- 🏷️ **Custom Aliases & Granular Status Bar Controls**: Assign custom nicknames/disguises to any asset, and independently toggle whether each individual item appears on the status bar.
+- 🕶️ **Ultimate Stealth & Safety**: Equipped with one-click Boss Key hiding, disguised compilation terminal logs, Color-Neutral Mode, and closed-market auto collapsing & throttling.
+- 📊 **Smooth Status Bar Carousel**: Bottom status bar ticker scrolls smoothly on demand, with per-section & per-symbol toggle controls and space-saving compact mode.
 - 🧹 **Active-Set Pruning & Ultra-Low Memory Usage**: Automatically reclaims dead cache and aligns memory. Incremental heap usage stays stably below 15MB~25MB with zero memory leaks.
 - 🛡️ **Enterprise Privacy & Security**: Direct connections to compliant domestic financial sources, with mandatory local proxy routing for Web3 requests to avoid company gateway logs.
 
@@ -59,7 +62,24 @@ As developers, while focusing on writing code, we often need to keep an eye on o
 
 ---
 
-### 2. ⚡ Price Threshold & Volatility Alert System
+### 2. 🎯 Trading Day IPO & Subscription Calendar (A-Shares / Convertible Bonds / HK IPOs)
+
+A specialized companion for A-share and HK market participants—no more manually browsing financial sites for IPO dates:
+
+- **Smart Time-Window Auto-Detection**:
+    - Automatically checks for new subscriptions only during trading day hours (09:15 ~ 15:00 Beijing Time);
+    - Aggregates official A-share IPOs, A-share convertible bond placements, and Hong Kong public offerings;
+    - **Single-Alert Anti-Distraction**: Triggers at most once per trading day. If there are no active offerings today, the plugin stays completely silent.
+- **One-Click QuickPick Copy**:
+    - Click "View Details" on the bottom-right toast to bring up a persistent QuickPick dropdown at the top center of the editor;
+    - Displays asset type, security code, **online subscription code**, issue price, allocation limits, and underlying stock;
+    - Press `Enter` or click on any offering to **instantly copy formatted subscription info to your clipboard** for seamless pasting into your trading terminal;
+- **Stealth Guard Suppression**:
+    - During Boss Key stealth mode or disguise mode, IPO notifications are completely silenced to prevent accidental exposure.
+
+---
+
+### 3. ⚡ Price Threshold & Volatility Alert System
 
 Stay focused on your code without watching tickers constantly. Receive accurate, timely alerts when assets hit key levels:
 
@@ -84,7 +104,7 @@ Stay focused on your code without watching tickers constantly. Receive accurate,
 
 ---
 
-### 3. 💾 One-Click Configuration Export & Import (Backup & Sharing)
+### 4. 💾 One-Click Configuration Export & Import (Backup & Sharing)
 
 - **📤 One-Click Backup Export (JSON)**:
     - Export all active watchlist symbols (Funds, A-Shares, HK Stocks, US Stocks, Binance, Alpha), custom aliases, reordered positions, price alert rules, and personal preferences into a standard JSON backup file;
@@ -97,13 +117,21 @@ Stay focused on your code without watching tickers constantly. Receive accurate,
 
 ---
 
-### 4. 🖱️ Watchlist Management & Batch Reordering
+### 5. 🔀 Flexible Reordering, Multi-Dimensional Sorting & Custom Aliases
 
 - **Multi-Select Batch Drag & Drop**:
     - Hold `Shift` (range selection) or `Ctrl` / `Cmd` (discrete selection) to select multiple symbols;
     - Drag and drop them together to a new position while preserving relative order;
     - **Strict Group Boundary Isolation**: Items can only be reordered within their own group, preventing accidental cross-market misplacement;
     - **Atomic Persistence**: Batch operations trigger disk write only once, eliminating high-frequency I/O races.
+- **Group Multi-Dimensional Sorting (`sortGroup`)**:
+    - Click the sort icon on any group header to switch between 6 sorting modes: **Default custom drag-and-drop order, Daily Change % Descending, Change % Ascending, Price Descending, Price Ascending, and Alphabetical/Pinyin Ascending**;
+    - Each group remembers its sort mode independently.
+- **Custom Display Aliases (`setAlias`)**:
+    - Right-click any asset and select "Set Display Alias..." to assign a personalized label;
+    - Synchronized across the sidebar tree, tooltip cards, and the status bar ticker (e.g., shorten long crypto token names or disguise assets as development modules at work).
+- **Auto-Collapse Closed Groups (`autoCollapseClosedGroups`)**:
+    - Automatically collapses A-Share, HK Stock, and US Stock groups during non-trading hours and weekends, keeping your sidebar clean and focused on active 24/7 markets.
 - **Pin to Top**: Right-click any asset or run **🔝 Pin to Top** to move it to the top of its section;
 - **Quick Alerts & Deletion**: Hover to click the **`🔔` Alert** button or the **`🗑️` Delete** icon;
 - **Clear All Watchlist Assets**: Clear pre-populated default symbols in one click while preserving group structure;
@@ -111,7 +139,7 @@ Stay focused on your code without watching tickers constantly. Receive accurate,
 
 ---
 
-### 5. 💼 Portfolio Cost & Real-Time Floating P&L
+### 6. 💼 Portfolio Cost & Real-Time Floating P&L
 
 - **Cost Price & Holding Quantity Entry**:
     - Configure holding cost price and position quantity for any watched asset (supports share counts, token balances, and fractional decimals);
@@ -127,7 +155,7 @@ Stay focused on your code without watching tickers constantly. Receive accurate,
 
 ---
 
-### 6. 📈 One-Click Global Market Benchmark Indices Import
+### 7. 📈 One-Click Global Market Benchmark Indices Import
 
 - **One-Click Benchmark Aggregation**:
     - Aggregates core benchmarks across A-Shares (SSE Index `sh000001`, SZSE Component `sz399001`, ChiNext `sz399006`), HK Stocks (Hang Seng Index `hkHSI`, Hang Seng TECH `hkHSTECH`), US Stocks (Nasdaq `.IXIC`, S&P 500 `.INX`, Dow Jones `.DJI`), and Crypto (Bitcoin `BTCUSDT`);
@@ -138,22 +166,34 @@ Stay focused on your code without watching tickers constantly. Receive accurate,
 
 ---
 
-### 7. 📊 Smooth Status Bar Carousel
+### 8. 📊 Smooth Status Bar Carousel
 
 - **Seamless Scrolling**: Quote fetching is decoupled from the carousel timer, preventing stuttering and resets;
 - **Global Status Bar Switch**: Toggle the status bar ticker on or off globally under General Settings;
 - **Independent Section Toggles**:
     - Choose which sections participate in the status bar ticker (`Funds`, `A-Shares`, `HK Stocks`, `US Stocks`, `Binance`, `Alpha`);
     - Example: View all assets in the sidebar, but cycle only US stocks or crypto in the status bar.
+- **Per-Symbol Independent Status Bar Toggle (`toggleStatusBarItem`)**:
+    - Right-click any individual asset and select "Show / Hide in Status Bar" to precisely control whether that single asset appears in the carousel;
+    - Items in the sidebar display an `👁️` indicator to clearly show their status bar visibility.
+- **Status Bar Compact Mode (`statusBar.compact`)**:
+    - Toggle compact mode in Settings to omit the live price and display only the asset name and change percentage (e.g., `Tencent +1.85%`);
+    - Saves up to 50% of horizontal status bar space in VS Code.
 - **💼 Dedicated Portfolio Floating P&L Carousel Ticker**:
     - Dedicated position ticker item positioned to the right of market quotes (priority 99), supporting smart hybrid cycling (Frame 0: account-wide total equity & aggregate P&L summary + Frame 1..N: per-asset real-time floating P&L rotation);
     - Hovering reveals the full Markdown portfolio reconciliation card, clicking brings up the Settings center;
     - **Mode B Privacy Guard**: Fully hidden with carousel timers immediately destroyed under stealth disguise mode or boss key;
     - **Customizable Interval**: Enable/disable portfolio rotation and configure cycling interval between 1~60 seconds (default 3s) in Settings.
+- **🌐 Portfolio Summary (Cross-Market Unified Valuation)**:
+    - **Prerequisite**: set both **Cost Price** and **Share Quantity** on a watchlist item via its right-click menu first; only items with both values are included. With no holdings recorded, `Alt + P` shows the setup guidance and the sidebar group / status-bar Frame 0 show no summary data.
+    - A-share / HK / US / fund / crypto holdings are consolidated into a single base currency (CNY or USD, selectable) via live FX rates (auto-refreshed roughly every 30 minutes) — total assets, today's P&L and cumulative P&L at a glance. When fetching fails, the data is malformed, or the snapshot is older than 24 hours, built-in static reference rates are used (USDT pegged to USD; may differ from live rates). The effective rates and their source are always shown in the HUD / tooltip rather than hard-coded in the docs;
+    - Frame 0 upgraded to the unified valuation scope: covers all enabled holdings across sections; closed-market assets keep their last cached closing price, so positions no longer vanish from the summary overnight. Today's P&L rate uses previous-close market value as denominator, while cumulative P&L rate uses cost basis;
+    - **Three entry points**: `Alt + P` HUD (total assets / today's P&L / per-section breakdown), the pinned "💼 Portfolio" summary group atop the sidebar (toggleable in Settings), and Frame 0 of the status-bar holding ticker (also shows today's P&L amount unless compact mode is on);
+    - Fully masked or silently rejected under boss key / stealth disguise mode; an already-open HUD is closed automatically when either mode is activated. The summary tooltip / HUD always labels the FX source (live rates with update time, or static-reference fallback).
 
 ---
 
-### 8. 🕶️ Stealth Productivity & Privacy Features
+### 9. 🕶️ Stealth Productivity & Privacy Features
 
 - 🕶️ **Boss Key Instant Hide / Restore (`Ctrl + Alt + M` / `Alt + M`)**:
     - Instantly hides the sidebar watchlist, empties the status bar ticker, and closes the settings panel;
@@ -171,7 +211,7 @@ Stay focused on your code without watching tickers constantly. Receive accurate,
 
 ---
 
-### 9. 🧹 Active-Set Pruning & Dynamic Memory Reclamation
+### 10. 🧹 Active-Set Pruning & Dynamic Memory Reclamation
 
 - **Zero Memory Leaks**:
     - Traditional extensions often retain dead cache entries and active timers after symbols are deleted;
@@ -180,7 +220,7 @@ Stay focused on your code without watching tickers constantly. Receive accurate,
 
 ---
 
-### 10. 🛡️ Network Architecture, Sources & Privacy
+### 11. 🛡️ Network Architecture, Sources & Privacy
 
 Designed for corporate network environments with firewall audits, DPI, and DNS logging:
 
@@ -211,7 +251,7 @@ Designed for corporate network environments with firewall audits, DPI, and DNS l
 
 ---
 
-### 11. ⚙️ Dedicated Graphical Settings Panel
+### 12. ⚙️ Dedicated Graphical Settings Panel
 
 Click the **`⚙️`** gear icon at the top of the watchlist sidebar to open the modern Webview configuration panel:
 
@@ -230,6 +270,7 @@ Click the **`⚙️`** gear icon at the top of the watchlist sidebar to open the
 | **Boss Key (Hide / Restore)** | `Ctrl + Alt + M`  | `Alt + M`          | `Cmd + Alt + M`   | Instantly hide or restore all sidebars and tickers |
 | **Disguise Stealth Mode**     | `Ctrl + Alt + K`  | `Alt + K`          | `Cmd + Alt + K`   | Disguise ticker as build logs / Git branch info |
 | **Color-Neutral Mode**        | `Ctrl + Alt + L`  | `Alt + L`          | `Cmd + Alt + L`   | Remove red/green indicators for neutral colors   |
+| **Portfolio Summary HUD**     | `Alt + P`         | -                  | `Alt + P`         | Cross-market total assets, today's P&L and per-section breakdown |
 | **Configure Shortcuts**       | -                 | -                  | -                 | Click `[⌨️ Configure Shortcuts]` in Settings     |
 
 ---
@@ -238,8 +279,9 @@ Click the **`⚙️`** gear icon at the top of the watchlist sidebar to open the
 
 ### 1. Adding Watchlist Assets
 
-Click the **`+`** icon at the top of the sidebar. The input box intelligently parses multiple formats:
+Click the **`+`** icon at the top of the sidebar. The input box intelligently parses multiple formats and supports live Smartbox fuzzy suggestions:
 
+- **🔍 Smart Chinese & Pinyin Fuzzy Search (Smartbox)**: No need to remember 6-digit stock codes. Type Chinese company names directly (e.g., `贵州茅台`, `宁德时代`, `招商银行`) or Pinyin acronyms (e.g., `GZMT`, `NDSD`, `ZSYH`), and an instant dropdown list with live suggestions will appear—select with arrow keys and press `Enter` to add;
 - **Funds / ETFs**: Enter 6-digit codes (e.g., `510050` SSE 50 ETF, `159915` ChiNext ETF, `588000` STAR 50 ETF, `161725` Baijiu LOF) with or without prefixes (`sh510050`, `sz159915`);
 - **A-Shares**: Enter 6 digits (e.g., `600519` Kweichow Moutai, `sh600519`, `sz000001`);
 - **Hong Kong Stocks**: Enter 5 digits or prefixes (e.g., `00700` Tencent, `hk03690` Meituan);
@@ -266,6 +308,20 @@ Hover over any asset to view professional market metrics with one-click copy sup
 - **Basic Quotes**: Open, Previous Close, High, Low; Volume, Turnover (stocks & indices);
 - **On-chain DEX Metrics**: DEX liquidity pool depth, 24H volume, and FDV;
 - **One-Click Code & Contract Copy**: Click `[📋 Copy]` directly within the hover tooltip card or right-click to choose "Copy Ticker / Contract Code".
+
+### 5. 🖱️ Right-Click Context Menu Operations
+
+Right-click any item in the watchlist sidebar to access a full suite of productivity operations:
+
+| Menu Item | Command ID | Description |
+| :--- | :--- | :--- |
+| **🔝 Pin to Top** | `marketlens.pinToTop` | Instantly move the symbol to row 1 of its group |
+| **🔔 Set Price Alert...** | `marketlens.setAlert` | Wizard-style configuration for price ceiling, floor, or daily move alerts |
+| **💼 Set Holding Cost and Shares...** | `marketlens.setHolding` | Record holding cost basis & shares for floating P&L and portfolio summary |
+| **🏷️ Set Display Alias...** | `marketlens.setAlias` | Set custom alias across tree, tooltips, and status bar ticker |
+| **👁️ Show / Hide in Status Bar** | `marketlens.toggleStatusBarItem` | Independently toggle whether this asset scrolls on the status bar |
+| **📋 Copy Symbol / Contract Address** | `marketlens.copyCode` | Copy ticker code or contract address directly to clipboard |
+| **🗑️ Remove** | `marketlens.removeItem` | Safely remove the symbol and clean up memory cache & alert rules |
 
 ---
 

@@ -13,11 +13,13 @@ import {
   applyProxyToAllSections,
   applyStatusBarToAllSections,
   recomputeStatusBarEnabled,
+  readExplicitStatusBarEnabled,
   affectsNetworkConfig,
   isMarketSection,
   sanitizeAlerts,
 } from "./utils/config.ts";
 import { RefreshScheduler } from "./scheduler.ts";
+import { fetchLiveFxRates } from "./services/fxRateService.ts";
 import { WatchlistOps } from "./watchlistOps.ts";
 import { registerCommands } from "./commands/index.ts";
 import { SettingsWebviewPanel } from "./ui/settingsWebview.ts";
@@ -82,6 +84,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     statusBar,
     treeView,
     globalState: context.globalState,
+    fxRateFetcher: fetchLiveFxRates,
   });
   _scheduler = scheduler;
   SettingsWebviewPanel.getQuoteCache = () => scheduler.quoteCache;
@@ -235,6 +238,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       config.autoRefresh = !!value;
       if (!config.autoRefresh) {
         scheduler.stop();
+      } else {
+        scheduler.start();
       }
     } else if (key === "refreshInterval") {
       config.refreshInterval = Number(value) || 5000;
@@ -279,6 +284,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       else if (sub === "includeConvertibleBond") config.ipoReminder.includeConvertibleBond = !!value;
       else if (sub === "includeHkShare") config.ipoReminder.includeHkShare = !!value;
       resetIpoCache();
+    } else if (key.startsWith("portfolio.")) {
+      // 消毒口径与 readConfig 一致：baseCurrency 仅接受 "USD"，其余回落 "CNY"（§5.2）
+      if (!config.portfolio) {
+        config.portfolio = { baseCurrency: "CNY", sidebarSummaryEnabled: true };
+      }
+      const sub = key.replace("portfolio.", "");
+      if (sub === "baseCurrency") {
+        config.portfolio.baseCurrency = value === "USD" ? "USD" : "CNY";
+      } else if (sub === "sidebarSummaryEnabled") {
+        config.portfolio.sidebarSummaryEnabled = value !== false;
+      }
     }
 
     const dotIndex = key.indexOf(".");
@@ -298,7 +314,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             scheduler.clearProxySuspensions();
           }
           if (field === "statusBar") {
-            recomputeStatusBarEnabled(config);
+            // P2-1：与 persistSectionStatusBarAndRecompute 对齐 ——
+            // 开启板块按聚合判定（允许恢复总控），关闭板块必须尊重用户显式总控的一票否决；
+            // 否则 50ms 防抖窗口内内存镜像会把用户已关闭的状态栏重新点亮。
+            const explicit = value === true ? undefined : readExplicitStatusBarEnabled();
+            recomputeStatusBarEnabled(config, explicit);
           }
         }
       }
@@ -376,6 +396,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration("marketlens")) {
+        // P2-2：脱敏状态是隐私防线，不进 50ms 防抖。原生设置 / 备份导入等绕过
+        // 设置面板的入口一旦落盘，立即同步到内存单一写入口，避免这段窗口内
+        // isMasked() / canOpenPrompt() 放行本应被拒绝的敏感操作。
+        if (e.affectsConfiguration("marketlens.maskMode")) {
+          const nextMaskMode = vscode.workspace
+            .getConfiguration("marketlens")
+            .get<boolean>("maskMode", false);
+          if (statusBar.isMaskModeActive() !== nextMaskMode) {
+            statusBar.setMaskMode(nextMaskMode);
+            treeProvider.setMaskMode(nextMaskMode);
+          }
+        }
         if (baselineFingerprint === undefined) {
           baselineFingerprint = getWatchlistFingerprint(config.watchlist);
         }

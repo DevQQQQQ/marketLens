@@ -65,6 +65,9 @@ const GLOSSARY_MAP = [
 	[/免责声明/g, 'Disclaimer'],
 	[/为什么选择 MarketLens？/g, 'Why Choose MarketLens?'],
 	[/核心功能与特性/g, 'Key Features & Capabilities'],
+	[/持仓总资产总账（跨市场统一折算）/g, 'Portfolio Summary (Cross-Market Unified Valuation)'],
+	[/前置条件/g, 'Prerequisite'],
+	[/成本价 \+ 持股数量/g, 'Cost Price + Share Quantity'],
 ];
 
 /**

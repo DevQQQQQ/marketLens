@@ -1,16 +1,19 @@
 // src/scheduler.ts
 import * as vscode from "vscode";
 import { MarketManager } from "./services/marketManager.ts";
-import { WatchlistProvider, GroupItem, StockItem } from "./ui/watchlistProvider.ts";
+import { WatchlistProvider, GroupItem } from "./ui/watchlistProvider.ts";
+import type { WatchlistTreeElement } from "./ui/watchlistProvider.ts";
 import { StatusBar } from "./ui/statusBar.ts";
 import type { MarketLensConfig, MarketItem, WatchlistConfig, AssetType } from "./types/index.ts";
 import { GLOBAL_STATE_QUOTE_CACHE_KEY } from "./types/index.ts";
 import { normalizeSymbolKey, isFundGroupName } from "./utils/symbolHelper.ts";
 import { logger, describeForLog } from "./utils/logger.ts";
-import { isAShareMarketOpen, isHKMarketOpen, isUSMarketOpen, evaluateAdaptiveThrottle, shouldSkipMarketPolling } from "./utils/marketHours.ts";
+import { isAShareMarketOpen, isHKMarketOpen, isUSMarketOpen, evaluateAdaptiveThrottle, shouldSkipMarketPolling, isHolidayCalendarReliable } from "./utils/marketHours.ts";
 import { readConfig } from "./utils/config.ts";
 
 import { extractTargetsFromWatchlist, extractStatusBarQuotes, pruneQuoteCache, extractHoldingQuotes, resolveGroupSection } from "./utils/symbolHelper.ts";
+import { computePortfolioSummary, setLiveFxRates, type PortfolioSummary, type LiveFxRates } from "./utils/portfolio.ts";
+import { refreshPortfolioHudIfVisible } from "./ui/portfolioHud.ts";
 import { AlertManager } from "./services/alertManager.ts";
 import { canEmitUserFeedback } from "./utils/maskState.ts";
 import { checkAndTriggerIpoReminder } from "./services/ipoService.ts";
@@ -19,8 +22,13 @@ export interface SchedulerContext {
   marketManager: MarketManager;
   treeProvider: WatchlistProvider;
   statusBar: StatusBar;
-  treeView: vscode.TreeView<GroupItem | StockItem>;
+  treeView: vscode.TreeView<WatchlistTreeElement>;
   globalState?: vscode.Memento | undefined;
+  /**
+   * 在线实时汇率拉取出口（可选注入；测试环境不注入即保持封闭）。
+   * 由 fxRateService 提供；未注入或拉取失败时，总账自动沿用 portfolio.ts 静态参考值。
+   */
+  fxRateFetcher?: (() => Promise<LiveFxRates | undefined>) | undefined;
 }
 
 export class RefreshScheduler implements vscode.Disposable {
@@ -54,13 +62,18 @@ export class RefreshScheduler implements vscode.Disposable {
   private readonly proxySuspendedSections = new Set<"binance" | "alpha">();
   private readonly consecutiveProxyFailures: Record<"binance" | "alpha", number> = { binance: 0, alpha: 0 };
 
+  // 在线实时汇率低频后台刷新（TTL 内只拉一次；失败也计入 TTL，避免离线时每次刷新都打网）
+  private readonly fxRateFetcher?: (() => Promise<LiveFxRates | undefined>) | undefined;
+  private lastFxFetchAt = 0;
+  public readonly FX_REFRESH_TTL_MS = 30 * 60 * 1000;
+
   public readonly quoteCache = new Map<string, MarketItem>();
   public readonly alertManager: AlertManager;
 
   private readonly marketManager: MarketManager;
   private readonly treeProvider: WatchlistProvider;
   private readonly statusBar: StatusBar;
-  private readonly treeView: vscode.TreeView<GroupItem | StockItem>;
+  private readonly treeView: vscode.TreeView<WatchlistTreeElement>;
   private readonly globalState?: vscode.Memento | undefined;
 
   constructor(context: SchedulerContext) {
@@ -69,7 +82,46 @@ export class RefreshScheduler implements vscode.Disposable {
     this.statusBar = context.statusBar;
     this.treeView = context.treeView;
     this.globalState = context.globalState;
+    this.fxRateFetcher = context.fxRateFetcher;
     this.alertManager = new AlertManager(this.statusBar);
+  }
+
+  /**
+   * 低频后台刷新在线实时汇率（fire-and-forget，绝不阻塞行情刷新主链路）。
+   *
+   * - 未注入 fetcher（测试环境）时直接返回，保持测试封闭；
+   * - TTL 内只拉一次，失败也计入 TTL，避免离线时随刷新周期高频打网；
+   * - 成功后注入 setLiveFxRates，并立即用新汇率重算总账展示；
+   * - 任何失败静默回退静态参考值，不弹窗打断用户。
+   *
+   * 由三处触发（TTL 统一节流，多入口不会放大请求量）：
+   * ① refresh() 开头（早于资源节流早退，保证后台周期刷新）；
+   * ② getPortfolioSnapshot()（Alt+P / autoRefresh=false 时仍能刷新）；
+   * ③ 汇率成功后 updateStatusBar 只重算展示，不递归触发拉取。
+   */
+  private maybeRefreshFxRates(): void {
+    if (!this.fxRateFetcher || this.disposed) return;
+    const now = Date.now();
+    if (now - this.lastFxFetchAt < this.FX_REFRESH_TTL_MS) return;
+    this.lastFxFetchAt = now;
+
+    void this.fxRateFetcher()
+      .then((rates) => {
+        if (!rates || this.disposed) return;
+        setLiveFxRates(rates);
+        // 新汇率生效后立即重算总账，不等下一个刷新周期
+        try {
+          this.updateStatusBar(readConfig());
+          // Alt+P 浮窗可能已在静态兜底牌价下打开；原地刷新其 items，避免用户看到过期汇率。
+          // 未打开 / 未注册重建器时为空操作，HUD 未打开不会反向触发任何取数。
+          refreshPortfolioHudIfVisible();
+        } catch (err) {
+          logger.warn("[RefreshScheduler] 汇率刷新后重算总账失败", err);
+        }
+      })
+      .catch((err) => {
+        logger.warn("[RefreshScheduler] 在线汇率后台刷新失败，沿用既有汇率回退", err);
+      });
   }
 
   public isProxySuspended(section: "binance" | "alpha"): boolean {
@@ -99,12 +151,17 @@ export class RefreshScheduler implements vscode.Disposable {
     specificGroupName?: string,
     forceAll: boolean = false
   ) {
+    // 每轮只算一次日历可靠性并显式透传：shouldSkipMarketPolling 的默认值虽能自算，
+    // 但四个板块各算一遍会重复走时区格式化；更重要的是让「日历越界时一律不跳过」
+    // 成为调度层的显式决策，可被契约测试直接验证。
+    const holidayCalendarReliable = isHolidayCalendarReliable();
     const skipHK = shouldSkipMarketPolling({
       stopOnMarketClosed: config.hkStock.stopOnMarketClosed,
       isMarketOpen: isHKMarketOpen(),
       hasLoadedInitialQuotes: this.hasLoadedInitialQuotes,
       forceAll,
       specificGroupName,
+      holidayCalendarReliable,
     });
     const skipUS = shouldSkipMarketPolling({
       stopOnMarketClosed: config.usStock.stopOnMarketClosed,
@@ -112,6 +169,7 @@ export class RefreshScheduler implements vscode.Disposable {
       hasLoadedInitialQuotes: this.hasLoadedInitialQuotes,
       forceAll,
       specificGroupName,
+      holidayCalendarReliable,
     });
     const skipFund = shouldSkipMarketPolling({
       stopOnMarketClosed: config.fund?.stopOnMarketClosed ?? true,
@@ -119,6 +177,7 @@ export class RefreshScheduler implements vscode.Disposable {
       hasLoadedInitialQuotes: this.hasLoadedInitialQuotes,
       forceAll,
       specificGroupName,
+      holidayCalendarReliable,
     });
     const skipA = shouldSkipMarketPolling({
       stopOnMarketClosed: config.aShare.stopOnMarketClosed,
@@ -126,6 +185,7 @@ export class RefreshScheduler implements vscode.Disposable {
       hasLoadedInitialQuotes: this.hasLoadedInitialQuotes,
       forceAll,
       specificGroupName,
+      holidayCalendarReliable,
     });
     const skipBinance = !forceAll && !specificGroupName && this.isProxySuspended("binance");
     const skipAlpha = !forceAll && !specificGroupName && this.isProxySuspended("alpha");
@@ -356,6 +416,45 @@ export class RefreshScheduler implements vscode.Disposable {
       isStatusBarActive && (config.statusBar?.holdingEnabled ?? true),
       config.statusBar?.holdingInterval ?? 3
     );
+
+    // ── 持仓总账：跨币种统一折算，独立于状态栏总控（侧边栏总览组不随状态栏关闭消失） ──
+    const portfolioQuotes = extractHoldingQuotes(config.watchlist, this.quoteCache, {
+      autoCollapseClosedGroups: config.autoCollapseClosedGroups ?? true,
+      now: new Date(),
+      fund: config.fund,
+      aShare: config.aShare,
+      hkStock: config.hkStock,
+      usStock: config.usStock,
+      binance: config.binance,
+      alpha: config.alpha,
+      forPortfolio: true,
+    });
+    const summary = portfolioQuotes.length > 0
+      ? computePortfolioSummary(portfolioQuotes, config.portfolio?.baseCurrency ?? "CNY")
+      : undefined;
+    this.statusBar.setPortfolioSummary?.(summary);
+    this.treeProvider.setPortfolioSummary?.(summary, config.portfolio?.sidebarSummaryEnabled ?? true);
+  }
+
+  /**
+   * 即时计算当前持仓总账快照（QuickPick 总账浮窗取数出口）。
+   * 与周期推送同源：extractHoldingQuotes + computePortfolioSummary 单一计算链。
+   */
+  public getPortfolioSnapshot(): PortfolioSummary {
+    // Alt+P 是「主动查看总账」的显式信号：即便 autoRefresh=false、状态栏关闭或侧边栏不可见，
+    // 也要趁这个入口触发一次在线汇率刷新（TTL 节流、fire-and-forget，不阻塞 HUD 打开）。
+    this.maybeRefreshFxRates();
+    const config = readConfig();
+    const holdings = extractHoldingQuotes(config.watchlist, this.quoteCache, {
+      fund: config.fund,
+      aShare: config.aShare,
+      hkStock: config.hkStock,
+      usStock: config.usStock,
+      binance: config.binance,
+      alpha: config.alpha,
+      forPortfolio: true,
+    });
+    return computePortfolioSummary(holdings, config.portfolio?.baseCurrency ?? "CNY");
   }
 
   public isAdaptiveThrottled(): boolean {
@@ -372,6 +471,9 @@ export class RefreshScheduler implements vscode.Disposable {
     if (this.disposed) {
       return;
     }
+    // 汇率刷新必须早于下方的「资源节流早退」：状态栏关闭 + 侧边栏不可见时 refresh 仍会被
+    // 调度执行，若把触发点放在早退之后，在线汇率将永不更新，总账会静默停在静态兜底。
+    this.maybeRefreshFxRates();
     const config = readConfig();
     if (customWatchlist) {
       config.watchlist = customWatchlist;

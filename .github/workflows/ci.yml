@@ -32,6 +32,11 @@ jobs:
       - name: Type check (TypeScript)
         run: npm run typecheck
 
+      # 版本号 / CHANGELOG / README 徽章的漂移必须在 CI 拦截，否则 package 步骤的
+      # prepackage 会静默改写 CHANGELOG，产出的 VSIX 与提交的文档不一致。
+      - name: Verify version & docs sync
+        run: npm run sync-version:check
+
       - name: Security audit (npm audit)
         run: npm audit --audit-level=high
         continue-on-error: true

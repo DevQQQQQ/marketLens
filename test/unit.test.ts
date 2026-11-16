@@ -75,15 +75,31 @@ void test("nls - package.json 占位符与语言包契约一致性", () => {
   const orphans = Object.keys(en).filter((k) => !placeholders.has(k));
   assert.deepStrictEqual(orphans, [], `语言包中存在未被 package.json 引用的死键：${orphans.join(", ")}`);
 
-  // 5. 全部配置描述必须走占位符，不得残留中文字面量
-  const configProps = pkg.contributes.configuration.properties as Record<string, { description: string }>;
+  // 5. 全部配置描述与枚举项说明必须走占位符，不得残留中文字面量（P2-3）
+  const configProps = pkg.contributes.configuration.properties as Record<
+    string,
+    { description: string; enumDescriptions?: string[] }
+  >;
+  let enumDescriptionCount = 0;
   for (const key of Object.keys(configProps)) {
     assert.match(
       String(configProps[key].description),
       /^%[^%]+%$/,
       `配置项 ${key} 的 description 必须使用 %key% 占位符，以便多语言环境正确显示`
     );
+    for (const desc of configProps[key].enumDescriptions ?? []) {
+      enumDescriptionCount++;
+      assert.match(
+        String(desc),
+        /^%[^%]+%$/,
+        `配置项 ${key} 的 enumDescriptions 必须使用 %key% 占位符，以便非中文环境正确显示`
+      );
+    }
   }
+  assert.ok(
+    enumDescriptionCount >= 19,
+    `9 处 enumDescriptions 共 19 条文案必须全部保留并走 NLS，当前仅 ${enumDescriptionCount} 条`
+  );
 
   // 6. 命令标题与顶层元信息同样必须接线到 NLS
   const commands = pkg.contributes.commands as Array<{ command: string; title: string }>;
@@ -2894,7 +2910,6 @@ void test("backupHelper - 配置导出与导入校验契约", () => {
     maskMode: false,
     colorNeutral: false,
     colorScheme: "redUpGreenDown",
-    statusBar: { enabled: true },
     autoCollapseClosedGroups: true,
     proxyPort: 7890,
     proxyUrl: "http://127.0.0.1:7890",
@@ -2918,6 +2933,8 @@ void test("backupHelper - 配置导出与导入校验契约", () => {
     },
     alertNotificationMode: "notification",
     alertCooldownMinutes: 15,
+    statusBar: { enabled: true, compact: true, holdingEnabled: true, holdingInterval: 5 },
+    portfolio: { baseCurrency: "USD", sidebarSummaryEnabled: true },
   };
 
   const sampleSortModes: any = {
@@ -2934,6 +2951,8 @@ void test("backupHelper - 配置导出与导入校验契约", () => {
   assert.strictEqual(backup.settings.refreshInterval, 6000);
   assert.strictEqual(backup.settings.colorScheme, "redUpGreenDown");
   assert.strictEqual(backup.settings.proxyPort, 7890);
+  assert.strictEqual(backup.settings.statusBarCompact, true);
+  assert.strictEqual(backup.settings.portfolio?.baseCurrency, "USD");
   assert.strictEqual(backup.settings.watchlist?.["A股"]?.length, 2);
   assert.strictEqual(backup.settings.alerts?.["sh600519"]?.above, 2000);
   assert.strictEqual(backup.groupSortModes?.["A股"], "changeDesc");
@@ -2945,6 +2964,8 @@ void test("backupHelper - 配置导出与导入校验契约", () => {
   assert.strictEqual(val1.summary?.groupCount, 2);
   assert.strictEqual(val1.summary?.alertCount, 1);
   assert.strictEqual(val1.data?.settings.colorScheme, "redUpGreenDown");
+  assert.strictEqual(val1.data?.settings.statusBarCompact, true);
+  assert.strictEqual(val1.data?.settings.portfolio?.baseCurrency, "USD");
   assert.strictEqual(val1.data?.groupSortModes?.["A股"], "changeDesc");
 
   // 3. 校验平铺结构（无 settings 包装，直接顶层配置）兼容
@@ -4024,6 +4045,156 @@ void test("F3: 状态栏持仓盈亏独立轮播条 (方案3智能混合模式 +
   assert.ok(html.includes("持仓盈亏独立轮播条"), "设置面板必须包含持仓盈亏独立轮播条标题");
 });
 
+void test("Portfolio Summary - 状态栏第 0 帧升级、侧边栏总览组与配置链路回归", async () => {
+  const { StatusBar } = await import("../src/ui/statusBar.ts");
+  const { WatchlistProvider, PortfolioSummaryItem } = await import("../src/ui/watchlistProvider.ts");
+  const { computePortfolioSummary, formatPortfolioAmount } = await import("../src/utils/portfolio.ts");
+  const { readConfig } = await import("../src/utils/config.ts");
+  const { getSettingsWebviewHtml } = await import("../src/ui/settingsHtml.ts");
+  const { ALLOWED_CONFIG_KEYS } = await import("../src/ui/settingsWebview.ts");
+
+  const holdings = [
+    { name: "贵州茅台", symbol: "sh600519", currency: "CNY" as const, cost: 1600, shares: 100, price: 1800, changePercent: 1.25, change: 22.5, section: "aShare" as const },
+    { name: "AAPL", symbol: "AAPL", currency: "USD" as const, cost: 200, shares: 10, price: 210, changePercent: 5, change: 10, section: "usStock" as const },
+  ];
+
+  // 1. 状态栏第 0 帧：仅有 setHoldings（启动时序）时回退旧原生币种格式
+  const bar = new StatusBar({ maskMode: false, colorNeutral: false, colorScheme: "greenUpRedDown" });
+  try {
+    bar.setHoldings(holdings, true, 3);
+    const holdingItem = (bar as any).holdingBarItem;
+    assert.ok(holdingItem.text.includes("今日:"), "未推送总账时应回退旧的原生币种总览格式");
+
+    // 2. 推送统一折算总账后第 0 帧升级为「总资产」格式
+    const summary = computePortfolioSummary(holdings, "CNY");
+    bar.setPortfolioSummary(summary);
+    assert.ok(holdingItem.text.includes("总资产"), "推送总账后第 0 帧应展示统一折算总资产");
+    assert.ok(holdingItem.text.includes("¥"), "基准 CNY 应展示人民币符号");
+    assert.ok(holdingItem.text.includes("%"), "第 0 帧应展示今日盈亏比");
+    // 第 0 帧升级为总账后不得只剩百分比，今日盈亏金额必须一并保留
+    assert.ok(holdingItem.text.includes("｜ 今日"), "第 0 帧应保留今日盈亏金额");
+    assert.ok(
+      holdingItem.text.includes(formatPortfolioAmount(summary.total.todayProfit)),
+      `今日盈亏金额应走统一格式化出口: ${holdingItem.text}`
+    );
+
+    // 2b. 紧凑模式让位给宽度：省略金额段，但总资产与百分比仍在
+    bar.setCompact(true);
+    bar.setPortfolioSummary(summary);
+    assert.ok(holdingItem.text.includes("总资产"), "紧凑模式下总资产仍应展示");
+    assert.ok(!holdingItem.text.includes("｜ 今日"), "紧凑模式应省略今日盈亏金额以节省宽度");
+    bar.setCompact(false);
+    bar.setPortfolioSummary(summary);
+
+    // 3. Tooltip 应追加统一折算总账汇总行
+    const tooltip = holdingItem.tooltip?.value || String(holdingItem.tooltip || "");
+    assert.ok(tooltip.includes("统一折算总账"), "Tooltip 应包含统一折算总账区块");
+
+    // 4. 脱敏一票否决：既有守卫必须覆盖新格式
+    bar.setMaskMode(true);
+    assert.strictEqual(holdingItem.text, "", "简洁展示模式下总账第 0 帧必须清空");
+    bar.setMaskMode(false);
+
+    // 5. 清空总账回退：移除全部持仓后应恢复空静默
+    bar.setHoldings([], true, 3);
+    bar.setPortfolioSummary(undefined);
+    assert.strictEqual(holdingItem.text, "", "清空持仓与总账后持仓条应静默隐藏");
+  } finally {
+    bar.dispose();
+  }
+
+  // 6. 侧边栏总览组：getChildren 首位插入、开关关闭移除、脱敏打码
+  const provider = new WatchlistProvider(false, false, "greenUpRedDown");
+  const quoteMap = new Map<string, MarketItem>();
+  provider.buildTree(
+    { "A股": [{ symbol: "sh600519", type: "A_SHARE", name: "贵州茅台" }] },
+    quoteMap,
+    { aShare: true, fund: true, hkStock: true, usStock: true, binance: true, alpha: true }
+  );
+  const summary = computePortfolioSummary(holdings, "CNY");
+
+  provider.setPortfolioSummary(summary, true);
+  let rootChildren = await provider.getChildren();
+  assert.ok(rootChildren && rootChildren[0] instanceof PortfolioSummaryItem, "总览组必须位于树顶部首位");
+  const summaryNode = rootChildren[0] as InstanceType<typeof PortfolioSummaryItem>;
+  assert.ok(String(summaryNode.label).includes("总资产"), "总览组 label 应包含总资产");
+  assert.strictEqual(summaryNode.id, PortfolioSummaryItem.NODE_ID, "总览组节点必须使用稳定常量 id");
+  assert.notStrictEqual(summaryNode.id, undefined, "总览组节点 id 不得为空，避免展开记忆串号");
+  const summaryRows = (await provider.getChildren(summaryNode))!;
+  assert.strictEqual(summaryRows.length, 2, "子节点应按板块分桶（A股 + 美股）");
+
+  provider.setPortfolioSummary(summary, false);
+  rootChildren = await provider.getChildren();
+  assert.ok(!rootChildren!.some((n) => n instanceof PortfolioSummaryItem), "sidebarSummaryEnabled=false 时不得插入总览组");
+
+  provider.setPortfolioSummary(summary, true);
+  provider.setMaskMode(true);
+  const maskedNode = (await provider.getChildren())![0] as InstanceType<typeof PortfolioSummaryItem>;
+  assert.ok(String(maskedNode.label).includes("****"), "脱敏态总览组 label 必须打码");
+  const maskedTooltip =
+    maskedNode.tooltip && typeof maskedNode.tooltip === "object"
+      ? String((maskedNode.tooltip as { value?: string }).value ?? "")
+      : String(maskedNode.tooltip ?? "");
+  assert.ok(!maskedTooltip.includes("1800"), "脱敏态 Tooltip 不得暴露任何真实金额");
+  provider.setMaskMode(false);
+
+  // 7. 配置链路：默认值、非法值消毒、白名单与设置面板控件
+  const cfg = readConfig();
+  assert.strictEqual(cfg.portfolio.baseCurrency, "CNY", "baseCurrency 默认应为 CNY");
+  assert.strictEqual(cfg.portfolio.sidebarSummaryEnabled, true, "sidebarSummaryEnabled 默认应为 true");
+
+  assert.ok(ALLOWED_CONFIG_KEYS.has("portfolio.baseCurrency"), "设置更新白名单必须包含 portfolio.baseCurrency");
+  assert.ok(ALLOWED_CONFIG_KEYS.has("portfolio.sidebarSummaryEnabled"), "设置更新白名单必须包含 portfolio.sidebarSummaryEnabled");
+
+  const html = getSettingsWebviewHtml("test-nonce", "1.2.6", "vscode-resource://", {} as any);
+  assert.ok(html.includes("portfolioBaseCurrency"), "设置面板必须包含基准货币下拉");
+  assert.ok(html.includes("portfolioSidebarSummaryEnabled"), "设置面板必须包含侧边栏总览组开关");
+  assert.ok(html.includes("Alt + P"), "设置面板快捷键速查必须包含 Alt + P");
+  assert.ok(
+    html.includes("成本价 + 持股数量"),
+    "设置面板必须明示总账前置条件，避免默认无持仓时用户以为功能失效"
+  );
+  assert.ok(!html.includes("USD/CNY 7.23"), "设置面板不得写死已校准的旧静态牌价");
+});
+
+void test("Portfolio HUD - 总账浮窗句柄与脱敏状态联动（回归：showQuickPick 无法主动关闭）", async () => {
+  const { StatusBar } = await import("../src/ui/statusBar.ts");
+  const {
+    showPortfolioHud,
+    closePortfolioHud,
+    isPortfolioHudVisible,
+  } = await import("../src/ui/portfolioHud.ts");
+
+  const bar = new StatusBar({ maskMode: false, colorNeutral: false, colorScheme: "greenUpRedDown" });
+  try {
+    // 基线：纯展示型 QuickPick 打开后保持可见，不会被误当成 ESC 关闭
+    showPortfolioHud([{ label: "💼 总资产" }]);
+    assert.strictEqual(isPortfolioHudVisible(), true, "HUD 打开后应持有可见句柄");
+
+    // 老板键激活 → 同帧关闭（老板键是一票否决，覆盖 maskMode 任意取值）
+    assert.strictEqual(bar.toggleBossKey(true), true);
+    assert.strictEqual(isPortfolioHudVisible(), false, "老板键激活必须关闭已打开的 HUD");
+
+    // 解除老板键后重新打开 → 简洁展示模式激活也必须关闭
+    bar.toggleBossKey(false);
+    showPortfolioHud([{ label: "💼 总资产" }]);
+    assert.strictEqual(isPortfolioHudVisible(), true, "解除老板键后应能重新打开 HUD");
+    bar.setMaskMode(true);
+    assert.strictEqual(isPortfolioHudVisible(), false, "maskMode 激活必须关闭已打开的 HUD");
+    bar.setMaskMode(false);
+
+    // 关闭幂等；重复 Alt+P 走单例替换，不叠加窗口
+    closePortfolioHud();
+    assert.strictEqual(isPortfolioHudVisible(), false);
+    showPortfolioHud([{ label: "A" }]);
+    showPortfolioHud([{ label: "B" }]);
+    assert.strictEqual(isPortfolioHudVisible(), true, "重复打开应替换旧窗口而非叠加");
+  } finally {
+    closePortfolioHud();
+    bar.dispose();
+  }
+});
+
 void test("P-12 ~ P-15: 状态栏持仓总控/板块过滤、Tooltip安全基线、order去冲突与边界钳制防线", async () => {
   const { extractHoldingQuotes } = await import("../src/utils/symbolHelper.ts");
   const { StatusBar } = await import("../src/ui/statusBar.ts");
@@ -4888,11 +5059,13 @@ void test("ipoService - QuickPick 详情展示与剪贴板复制及脱敏守卫"
 
   let quickPickShown = false;
   let clipboardText = "";
+  let lastQuickPickOptions: any = undefined;
   const origShowQuickPick = vscode.window.showQuickPick;
   const origWriteClipboard = vscode.env.clipboard.writeText;
 
-  (vscode.window as any).showQuickPick = (items: any[]) => {
+  (vscode.window as any).showQuickPick = (items: any[], options?: any) => {
     quickPickShown = true;
+    lastQuickPickOptions = options;
     return Promise.resolve(items[0]);
   };
   (vscode.env.clipboard as any).writeText = (text: string) => {
@@ -4914,6 +5087,7 @@ void test("ipoService - QuickPick 详情展示与剪贴板复制及脱敏守卫"
       () => false
     );
     assert.strictEqual(quickPickShown, true, "正常状态下应展示 QuickPick");
+    assert.strictEqual(lastQuickPickOptions?.ignoreFocusOut, true, "QuickPick 必须设置 ignoreFocusOut 以防失去焦点被自动关闭");
     assert.strictEqual(clipboardText, "浦发银行 (600000) 申购代码: 730000 发行价: 10元", "剪贴板内容应格式化正确且不出现 undefined");
     assert.match(lastInfoMsg, /已复制申购信息至剪贴板/, "应弹出复制成功提示");
 

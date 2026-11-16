@@ -9,6 +9,8 @@ esbuild.js
 *.vsix
 .workbuddy/**
 .workbuddy-ai/**
+.trae/**
+.screenshots/**
 test/**
 .eslintrc.json
 .github/**

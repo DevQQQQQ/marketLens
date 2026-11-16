@@ -36,6 +36,8 @@ const GLOBAL_CONFIG_KEYS = [
   "ipoReminder.includeAShare",
   "ipoReminder.includeConvertibleBond",
   "ipoReminder.includeHkShare",
+  "portfolio.baseCurrency",
+  "portfolio.sidebarSummaryEnabled",
 ] as const;
 
 const COMMON_SECTION_PROPERTIES = [
@@ -67,6 +69,86 @@ export const ALLOWED_CONFIG_KEYS = new Set<string>([
 export const SECTION_STATUS_BAR_KEYS = new Set<string>(
   MARKET_SECTIONS.map((sec) => `${sec}.statusBar`)
 );
+
+/**
+ * 数值型配置的 [最小值, 最大值]，与 package.json `configuration.properties` 的
+ * minimum/maximum 对齐；非法输入一律「拒绝写入」而不是悄悄替换成默认值，
+ * 避免把用户已保存的值改掉。契约测试会拿清单元数据反查本表。
+ */
+export const NUMERIC_CONFIG_RANGES: Readonly<Record<string, readonly [number, number]>> = {
+  proxyPort: [1, 65535],
+  refreshInterval: [1000, 300000],
+  "statusBar.holdingInterval": [1, 60],
+  alertCooldownMinutes: [1, 1440],
+};
+
+/** 枚举型配置的合法字面量，与 package.json 的 enum 对齐 */
+export const ENUM_CONFIG_VALUES: Readonly<Record<string, readonly string[]>> = {
+  colorScheme: ["greenUpRedDown", "redUpGreenDown"],
+  alertNotificationMode: ["notification", "statusBarOnly", "both"],
+  "portfolio.baseCurrency": ["CNY", "USD"],
+};
+
+const NETWORK_MODE_VALUES = ["direct", "proxy"] as const;
+
+/** 布尔型配置键，由 MARKET_SECTIONS / MARKET_CLOSING_SECTIONS 派生，新增板块不会漏项 */
+export const BOOLEAN_CONFIG_KEYS = new Set<string>([
+  "autoRefresh",
+  "maskMode",
+  "colorNeutral",
+  "statusBar.enabled",
+  "statusBar.holdingEnabled",
+  "statusBar.compact",
+  "autoCollapseClosedGroups",
+  "ipoReminder.enabled",
+  "ipoReminder.includeAShare",
+  "ipoReminder.includeConvertibleBond",
+  "ipoReminder.includeHkShare",
+  "portfolio.sidebarSummaryEnabled",
+  ...MARKET_SECTIONS.flatMap((sec) => [`${sec}.enabled`, `${sec}.statusBar`]),
+  ...MARKET_CLOSING_SECTIONS.map((sec) => `${sec}.stopOnMarketClosed`),
+]);
+
+export type CoercedConfigValue =
+  | { ok: true; value: string | number | boolean }
+  | { ok: false };
+
+/**
+ * 设置面板消息值的唯一消毒出口（内存镜像与磁盘写入共用）。
+ *
+ * 背景：Webview 的 `onDidReceiveMessage` 是 `Event<any>`，前端脚本可发任意 value。
+ * 旧实现在 else 兜底分支直接 `cfg.update(key, value)`，只有内存侧 `onDidUpdateSetting`
+ * 做过 `Number(value) || 5000` 之类的局部纠偏，形成「内存已消毒、settings.json 仍是
+ * `"abc"`」双轨：重启后 `setTimeout(NaN)` 变成 0ms 全速轮询，`"false"` 字符串还会
+ * 因为 truthy 让自动刷新关不掉。
+ */
+export function coerceConfigValue(key: string, raw: unknown): CoercedConfigValue {
+  if (!ALLOWED_CONFIG_KEYS.has(key)) return { ok: false };
+
+  const enumValues = ENUM_CONFIG_VALUES[key] ?? (key.endsWith(".networkMode") ? NETWORK_MODE_VALUES : undefined);
+  if (enumValues) {
+    return typeof raw === "string" && (enumValues as readonly string[]).includes(raw)
+      ? { ok: true, value: raw }
+      : { ok: false };
+  }
+
+  const range = NUMERIC_CONFIG_RANGES[key];
+  if (range) {
+    if (typeof raw !== "number" || !Number.isFinite(raw)) return { ok: false };
+    return { ok: true, value: Math.min(range[1], Math.max(range[0], raw)) };
+  }
+
+  if (key === "proxyUrl" || key.endsWith(".proxyUrl")) {
+    return typeof raw === "string" ? { ok: true, value: raw } : { ok: false };
+  }
+
+  if (BOOLEAN_CONFIG_KEYS.has(key)) {
+    return typeof raw === "boolean" ? { ok: true, value: raw } : { ok: false };
+  }
+
+  // 白名单内出现尚未分类的新键时保守拒绝，并由契约测试立刻判红
+  return { ok: false };
+}
 
 function isAllowedUrl(urlString: string): boolean {
   try {
@@ -173,9 +255,18 @@ export class SettingsWebviewPanel {
             break;
           case "updateSetting":
             if (message.key && ALLOWED_CONFIG_KEYS.has(message.key)) {
+              // 内存镜像与磁盘写入必须消费同一份已消毒值：否则「内存已纠偏、settings.json
+              // 仍是非法值」会在重启后绕过所有运行时消毒（见 coerceConfigValue 注释）。
+              const coerced = coerceConfigValue(message.key, message.value);
+              if (!coerced.ok) {
+                logger.warn(`拦截到类型或取值非法的设置项写入: ${message.key}`);
+                break;
+              }
+              const value = coerced.value;
+
               // 1. 立即同步触发内存配置更新（0ms 响应，立即刷新状态栏与看板，无需等待磁盘写入）
               try {
-                SettingsWebviewPanel.onDidUpdateSetting?.(message.key, message.value);
+                SettingsWebviewPanel.onDidUpdateSetting?.(message.key, value);
               } catch (syncErr) {
                 logger.error(`即时内存配置更新异常: ${message.key}`, syncErr);
               }
@@ -185,7 +276,7 @@ export class SettingsWebviewPanel {
                 const cfg = vscode.workspace.getConfiguration("marketlens");
                 if (message.key === "proxyPort") {
                   resetProxyCache();
-                  const port = parseInt(message.value, 10);
+                  const port = value as number;
                   if (port >= 1 && port <= 65535) {
                     const currentUrl = cfg.get<string>("proxyUrl") || DEFAULT_PROXY_URL;
                     let pUrl = `http://127.0.0.1:${port}`;
@@ -203,7 +294,7 @@ export class SettingsWebviewPanel {
                   resetProxyCache();
                   // 与请求侧 parseProxy、备份导入共用同一规范化出口：
                   // socks5://、纯端口、https:// 等异形输入必须先规整，否则内存段与磁盘段会写成两种形态。
-                  const normalizedProxyUrl = normalizeProxyInput(message.value);
+                  const normalizedProxyUrl = normalizeProxyInput(value);
                   const pUrl =
                     typeof normalizedProxyUrl === "string" && normalizedProxyUrl !== ""
                       ? normalizedProxyUrl
@@ -218,15 +309,15 @@ export class SettingsWebviewPanel {
                   await persistProxyToAllSections(cfg, pUrl, port);
                   this.sendCurrentSettings();
                 } else if (message.key === "statusBar.enabled") {
-                  const enableAll = !!message.value;
+                  const enableAll = value === true;
                   await persistStatusBarToAllSections(cfg, enableAll);
                   this.sendCurrentSettings();
                 } else if (SECTION_STATUS_BAR_KEYS.has(message.key)) {
-                  await persistSectionStatusBarAndRecompute(cfg, message.key, !!message.value);
+                  await persistSectionStatusBarAndRecompute(cfg, message.key, value === true);
                   this.sendCurrentSettings();
                 } else if (message.key === "colorScheme") {
                   await Promise.all([
-                    cfg.update("colorScheme", message.value, vscode.ConfigurationTarget.Global),
+                    cfg.update("colorScheme", value, vscode.ConfigurationTarget.Global),
                     cfg.update("colorNeutral", false, vscode.ConfigurationTarget.Global),
                   ]);
                   this.sendCurrentSettings();
@@ -234,11 +325,11 @@ export class SettingsWebviewPanel {
                   // 板块级代理地址与全局代理共用规范化出口，避免「同一次导入后各板块代理形态不一致」
                   await cfg.update(
                     message.key,
-                    normalizeProxyInput(message.value),
+                    normalizeProxyInput(value),
                     vscode.ConfigurationTarget.Global
                   );
                 } else {
-                  await cfg.update(message.key, message.value, vscode.ConfigurationTarget.Global);
+                  await cfg.update(message.key, value, vscode.ConfigurationTarget.Global);
                 }
               } catch (err) {
                 logger.error(`更新设置项失败: ${message.key}`, err);
@@ -535,6 +626,7 @@ export class SettingsWebviewPanel {
       // 总控开关直接采用全局 statusBar.enabled 语义（未显式关闭即为开启）。
       // 此前用五个板块 statusBar 的逻辑与判定，会导致「只关掉 A 股轮播」时总控开关被误显示为关闭。
       statusBarEnabled:         config.statusBar.enabled,
+      statusBarCompact:         config.statusBar.compact ?? false,
       statusBarHoldingEnabled:  config.statusBar.holdingEnabled ?? true,
       statusBarHoldingInterval: config.statusBar.holdingInterval ?? 3,
       autoCollapseClosedGroups: config.autoCollapseClosedGroups ?? true,
@@ -569,6 +661,8 @@ export class SettingsWebviewPanel {
       ipoReminderIncludeAShare: config.ipoReminder?.includeAShare ?? true,
       ipoReminderIncludeConvertibleBond: config.ipoReminder?.includeConvertibleBond ?? true,
       ipoReminderIncludeHkShare: config.ipoReminder?.includeHkShare ?? true,
+      portfolioBaseCurrency:    config.portfolio?.baseCurrency ?? "CNY",
+      portfolioSidebarSummaryEnabled: config.portfolio?.sidebarSummaryEnabled ?? true,
       watchlist:                (() => {
         const rawWatchlist = config.watchlist || {};
         const quoteCache = SettingsWebviewPanel.getQuoteCache?.();

@@ -40,6 +40,12 @@ let _fetchGeneration = 0;
 
 /** 在途中单例任务锁：彻底杜绝激活瞬间多入口并发重复弹窗 (IPO-13) */
 let _inFlightCheck: Promise<void> | null = null;
+/**
+ * 手动「今日打新」的独立在途锁。
+ * 自动检查与手动命令不能共用同一把锁：自动分支受窗口期 / 当日频次 / 老板键约束，
+ * 复用它的 Promise 会让用户点击命令后「什么也没发生」。
+ */
+let _manualInFlightCheck: Promise<void> | null = null;
 
 /** 重置缓存（供测试、配置变更与手动刷新使用） */
 export function resetIpoCache(): void {
@@ -383,6 +389,7 @@ export async function showIpoDetailQuickPick(
     placeHolder: `今日共有 ${items.length} 只标的可申购（回车可复制标的信息）`,
     matchOnDescription: true,
     matchOnDetail: true,
+    ignoreFocusOut: true,
   });
 
   if (selected) {
@@ -409,10 +416,26 @@ export async function checkAndTriggerIpoReminder(
   manual: boolean = false,
   now: Date = new Date()
 ): Promise<void> {
+  if (manual) {
+    // 手动入口独立取锁、独立执行：即便此刻自动检查正在网络在途，也要保证
+    // showIpoDetailQuickPick（或「今日暂无」提示）一定到达用户。
+    if (_manualInFlightCheck) {
+      return _manualInFlightCheck;
+    }
+    const manualTask = doCheckAndTriggerIpoReminder(globalState, isBossKeyOrMaskActive, true, now);
+    _manualInFlightCheck = manualTask;
+    try {
+      await manualTask;
+    } finally {
+      _manualInFlightCheck = null;
+    }
+    return;
+  }
+
   if (_inFlightCheck) {
     return _inFlightCheck;
   }
-  _inFlightCheck = doCheckAndTriggerIpoReminder(globalState, isBossKeyOrMaskActive, manual, now);
+  _inFlightCheck = doCheckAndTriggerIpoReminder(globalState, isBossKeyOrMaskActive, false, now);
   try {
     await _inFlightCheck;
   } finally {

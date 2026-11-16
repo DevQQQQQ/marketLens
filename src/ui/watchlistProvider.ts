@@ -1,9 +1,17 @@
 import * as vscode from "vscode";
 import type { MarketItem, WatchlistConfig, WatchConfigItem, PriceAlertItem, AlertsConfig, GroupSortMode, MarketSection } from "../types/index.ts";
 import { normalizeSymbolKey, stripMarketPrefix, resolveItemAssetType, resolveItemDisplayName, resolveTrendColors, type ColorScheme, isFundGroupName, resolveItemSection, resolveGroupSection, deriveTodayProfit, escapeMarkdownInline, toMarkdownCodeSpan, isGroupMarketClosed, buildGroupNodeId, isItemMarketClosed, resolveQuoteCurrency } from "../utils/symbolHelper.ts";
-import { isDisplayMasked, resolveStockTooltip } from "../utils/maskState.ts";
+import { isDisplayMasked, resolveStockTooltip, MASKED_TOOLTIP_TEXT } from "../utils/maskState.ts";
 import { DEFAULT_PROXY_PORT, getProxyStatus } from "../services/network.ts";
 import { logger, describeErrorNameForLog } from "../utils/logger.ts";
+import type { PortfolioSummary } from "../utils/portfolio.ts";
+import {
+  formatPortfolioAmount,
+  formatFxSourceNote,
+  formatFxDetailNote,
+  deriveTodayProfitRate,
+} from "../utils/portfolio.ts";
+import { SECTION_DEFAULT_GROUP_NAMES } from "../utils/config.ts";
 
 /**
  * 智能格式化价格
@@ -570,10 +578,114 @@ export class StockItem extends vscode.TreeItem {
   }
 }
 
+/** 总览组下的板块明细行节点（只读展示，不参与拖拽/菜单） */
+export class PortfolioSummaryRowItem extends vscode.TreeItem {
+  constructor(label: string, description: string) {
+    super(label, vscode.TreeItemCollapsibleState.None);
+    this.description = description;
+    this.contextValue = "portfolioSummaryRow";
+  }
+}
+
+/** 树视图元素联合类型（provider / TreeView / 事件签名单一出口） */
+export type WatchlistTreeElement =
+  | GroupItem
+  | StockItem
+  | PortfolioSummaryItem
+  | PortfolioSummaryRowItem;
+
+/**
+ * 侧边栏顶部常驻「💼 持仓总资产总览」节点。
+ *
+ * 独立于 GroupItem：使用稳定常量 id，不参与休市折叠会话失效机制——
+ * VS Code 对本节点记住的用户手动展开/折叠是期望行为（§5.6）；
+ * contextValue 不匹配任何 `viewItem ==` 菜单子句，天然无右键/inline 菜单，
+ * 拖拽目标落入 handleDrop 的 instanceof 链之外被默认拒绝。
+ * 数据由 scheduler 经 portfolio.ts 单一计算出口推送，本类只做展示。
+ */
+export class PortfolioSummaryItem extends vscode.TreeItem {
+  public static readonly NODE_ID = "portfolio-summary-root";
+
+  /** 子节点：各板块只读明细行（随 refresh 重建） */
+  public summaryChildren: PortfolioSummaryRowItem[] = [];
+
+  constructor() {
+    super("💼 持仓总资产", vscode.TreeItemCollapsibleState.Expanded);
+    this.id = PortfolioSummaryItem.NODE_ID;
+    this.contextValue = "portfolioSummaryItem";
+    this.iconPath = new vscode.ThemeIcon("briefcase");
+  }
+
+  /** 按最新总账与脱敏态刷新节点展示（masked 一票否决，只留收敛文案） */
+  refresh(summary: PortfolioSummary, masked: boolean): void {
+    if (masked) {
+      this.label = "💼 总资产 ****";
+      this.description = "";
+      this.tooltip = MASKED_TOOLTIP_TEXT;
+      this.summaryChildren = [];
+      this.collapsibleState = vscode.TreeItemCollapsibleState.None;
+      return;
+    }
+
+    const bSym = summary.base === "CNY" ? "¥" : "$";
+    const todayRate = deriveTodayProfitRate(summary.total);
+    const tSign = summary.total.todayProfit >= 0 ? "+" : "-";
+    const rSign = todayRate >= 0 ? "+" : "-";
+
+    this.label = `💼 总资产: ${bSym}${formatPortfolioAmount(summary.total.marketVal)} (${rSign}${Math.abs(todayRate).toFixed(2)}%)`;
+    this.description = `今日 ${tSign}${bSym}${formatPortfolioAmount(summary.total.todayProfit)}`;
+    this.collapsibleState = vscode.TreeItemCollapsibleState.Expanded;
+
+    // ── 子节点：板块分布明细行 ──
+    const totalMarketVal = summary.total.marketVal;
+    const children: PortfolioSummaryRowItem[] = [];
+    for (const sec of Object.keys(summary.bySection) as MarketSection[]) {
+      const bucket = summary.bySection[sec];
+      if (!bucket || bucket.count === 0) continue;
+      const share = totalMarketVal > 0 ? (bucket.marketVal / totalMarketVal) * 100 : 0;
+      const sSign = bucket.todayProfit >= 0 ? "+" : "-";
+      const fSign = bucket.totalProfit >= 0 ? "+" : "-";
+      children.push(
+        new PortfolioSummaryRowItem(
+          `${SECTION_DEFAULT_GROUP_NAMES[sec]}  ${bSym}${formatPortfolioAmount(bucket.marketVal)} (${share.toFixed(1)}%)`,
+          `今日 ${sSign}${bSym}${formatPortfolioAmount(bucket.todayProfit)} · 浮盈 ${fSign}${bSym}${formatPortfolioAmount(bucket.totalProfit)}`
+        )
+      );
+    }
+    this.summaryChildren = children;
+
+    // ── Tooltip：板块分桶 + 原生币种对账（Markdown，不可信 HTML，外控文本走转义出口） ──
+    const md = new vscode.MarkdownString();
+    md.isTrusted = false;
+    md.supportHtml = false;
+    md.appendMarkdown(`### 💼 持仓总资产总账（基准 ${summary.base === "CNY" ? "人民币 ¥" : "美元 $"}）\n\n`);
+    md.appendMarkdown(`| 板块 | 市值 | 占比 | 今日盈亏 | 累计浮盈 |\n| :--- | :--- | :--- | :--- | :--- |\n`);
+    for (const sec of Object.keys(summary.bySection) as MarketSection[]) {
+      const bucket = summary.bySection[sec];
+      if (!bucket) continue;
+      const share = totalMarketVal > 0 ? (bucket.marketVal / totalMarketVal) * 100 : 0;
+      const sSign = bucket.todayProfit >= 0 ? "+" : "-";
+      const fSign = bucket.totalProfit >= 0 ? "+" : "-";
+      md.appendMarkdown(`| ${SECTION_DEFAULT_GROUP_NAMES[sec]} | ${bSym}${formatPortfolioAmount(bucket.marketVal)} | ${share.toFixed(1)}% | ${sSign}${bSym}${formatPortfolioAmount(bucket.todayProfit)} | ${fSign}${bSym}${formatPortfolioAmount(bucket.totalProfit)} |\n`);
+    }
+    const curEntries = Object.entries(summary.byCurrency);
+    if (curEntries.length > 1) {
+      md.appendMarkdown(`\n**原生币种对账**：\n\n`);
+      for (const [cur, d] of curEntries) {
+        const s = cur === "CNY" ? "¥" : cur === "HKD" ? "HK$" : "$";
+        const fSign = d.totalProfit >= 0 ? "+" : "-";
+        md.appendMarkdown(`- ${escapeMarkdownInline(cur)}: 市值 ${s}${formatPortfolioAmount(d.marketVal)} · 浮盈 ${fSign}${s}${formatPortfolioAmount(d.totalProfit)}\n`);
+      }
+    }
+    md.appendMarkdown(`\n> 汇率：${formatFxSourceNote(summary.fx)}（${formatFxDetailNote(summary.fx)}）。`);
+    this.tooltip = md;
+  }
+}
+
 export class WatchlistProvider
   implements
-    vscode.TreeDataProvider<GroupItem | StockItem>,
-    vscode.TreeDragAndDropController<GroupItem | StockItem>
+    vscode.TreeDataProvider<WatchlistTreeElement>,
+    vscode.TreeDragAndDropController<WatchlistTreeElement>
 {
   readonly dropMimeTypes = ["application/vnd.code.tree.marketlens.watchlist"];
   readonly dragMimeTypes = ["application/vnd.code.tree.marketlens.watchlist"];
@@ -585,12 +697,16 @@ export class WatchlistProvider
   ) => void | Promise<void>;
 
   private _onDidChangeTreeData = new vscode.EventEmitter<
-    GroupItem | StockItem | undefined | void
+    WatchlistTreeElement | undefined | void
   >();
   readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
 
   private groups: GroupItem[] = [];
   private stockMap = new Map<string, StockItem[]>();
+  /** 顶部常驻持仓总览节点（scheduler 推送总账时创建，开关关闭或无持仓时移除） */
+  private portfolioSummaryItem: PortfolioSummaryItem | undefined;
+  /** 最近一次推送的总账（脱敏态切换时用于重渲染总览节点） */
+  private lastPortfolioSummary: PortfolioSummary | undefined;
   private alertsConfig: AlertsConfig = {};
   private groupSortModes = new Map<string, GroupSortMode>();
   public autoCollapseClosedGroups: boolean = true;
@@ -839,7 +955,7 @@ export class WatchlistProvider
   }
 
   handleDrag(
-    source: readonly (GroupItem | StockItem)[],
+    source: readonly WatchlistTreeElement[],
     treeDataTransfer: vscode.DataTransfer,
     _token: vscode.CancellationToken
   ): void | Thenable<void> {
@@ -862,7 +978,7 @@ export class WatchlistProvider
   }
 
   async handleDrop(
-    target: GroupItem | StockItem | undefined,
+    target: WatchlistTreeElement | undefined,
     dataTransfer: vscode.DataTransfer,
     _token: vscode.CancellationToken
   ): Promise<void> {
@@ -972,20 +1088,48 @@ export class WatchlistProvider
     return this.groups.length === 0;
   }
 
-  getTreeItem(element: GroupItem | StockItem): vscode.TreeItem {
+  getTreeItem(element: WatchlistTreeElement): vscode.TreeItem {
     return element;
   }
 
   getChildren(
-    element?: GroupItem | StockItem
-  ): vscode.ProviderResult<(GroupItem | StockItem)[]> {
+    element?: WatchlistTreeElement
+  ): vscode.ProviderResult<WatchlistTreeElement[]> {
     if (!element) {
-      return this.groups;
+      return this.portfolioSummaryItem ? [this.portfolioSummaryItem, ...this.groups] : this.groups;
     }
     if (element instanceof GroupItem) {
       return element.children;
     }
+    if (element instanceof PortfolioSummaryItem) {
+      return element.summaryChildren;
+    }
     return [];
+  }
+
+  /**
+   * 更新顶部持仓总览组：scheduler 每轮刷新后推送统一折算总账。
+   * enabled 关闭或无有效持仓（summary 为 undefined）时移除节点。
+   */
+  setPortfolioSummary(summary: PortfolioSummary | undefined, enabled: boolean): void {
+    this.lastPortfolioSummary = summary;
+    const shouldShow = !!summary && summary.total.count > 0 && enabled;
+    if (shouldShow) {
+      if (!this.portfolioSummaryItem) {
+        this.portfolioSummaryItem = new PortfolioSummaryItem();
+      }
+      this.portfolioSummaryItem.refresh(summary, this.isMasked());
+    } else {
+      this.portfolioSummaryItem = undefined;
+    }
+    this._onDidChangeTreeData.fire();
+  }
+
+  /** 老板键/脱敏态切换时，按最近一次推送的总账重渲染总览节点的遮蔽形态 */
+  private refreshPortfolioSummaryMask(): void {
+    if (this.portfolioSummaryItem && this.lastPortfolioSummary) {
+      this.portfolioSummaryItem.refresh(this.lastPortfolioSummary, this.isMasked());
+    }
   }
 
   buildTree(
@@ -1212,6 +1356,7 @@ export class WatchlistProvider
     for (const node of this.getAllUniqueNodes()) {
       node.refresh(node.item, this.isMasked(), this.colorNeutral, undefined, undefined, this.colorScheme);
     }
+    this.refreshPortfolioSummaryMask();
     this._onDidChangeTreeData.fire();
   }
 
@@ -1228,6 +1373,7 @@ export class WatchlistProvider
     for (const node of this.getAllUniqueNodes()) {
       node.refresh(node.item, this.isMasked(), this.colorNeutral, undefined, undefined, this.colorScheme);
     }
+    this.refreshPortfolioSummaryMask();
     this._onDidChangeTreeData.fire();
   }
 

@@ -2,7 +2,7 @@
 import { smartNetworkGet } from "./network.ts";
 import { readConfig } from "../utils/config.ts";
 import { decodeGbk, isContractAddress } from "../utils/symbolHelper.ts";
-import { logger } from "../utils/logger.ts";
+import { logger, describeForLog } from "../utils/logger.ts";
 
 /** 搜索命中结果条目 */
 export interface SearchResultItem {
@@ -215,7 +215,8 @@ export async function searchSymbols(
 
     return items;
   } catch (err: unknown) {
-    logger.debug(`[symbolSearchService] search failed for query "${trimmed}":`, err);
+    // 用户搜索词属于外部输入，不得原样进 OutputChannel（showLogs 是官方反馈渠道，贴 issue 即外发）
+    logger.debug(`[symbolSearchService] search failed for query ${describeForLog(trimmed)}:`, err);
     return [];
   }
 }

@@ -144,6 +144,9 @@ export interface MarketLensConfig {
 
   // ── 今日打新与申购提醒 ──
   ipoReminder: IpoReminderConfig;
+
+  // ── 持仓总账 ──
+  portfolio: { baseCurrency: "CNY" | "USD"; sidebarSummaryEnabled: boolean };
 }
 
 export type IpoType = "A_SHARE" | "CONVERTIBLE_BOND" | "HK_STOCK";

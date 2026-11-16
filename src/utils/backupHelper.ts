@@ -3,9 +3,9 @@ import * as vscode from "vscode";
 import type { MarketLensConfig, GroupSortMode, WatchConfigItem, PriceAlertItem } from "../types/index.ts";
 import { GROUP_SORT_MODES, MARKET_SECTIONS, isClosingSection } from "./config.ts";
 import { logger } from "./logger.ts";
-import { sanitizeWatchlist } from "./symbolHelper.ts";
+import { sanitizeWatchlist, sanitizeAlerts } from "./symbolHelper.ts";
 import { validateAndNormalizeProxyUrl } from "../services/network.ts";
-import { isBossKeyActive, showInfoMessage } from "./feedback.ts";
+import { isMasked, showInfoMessage } from "./feedback.ts";
 
 /** MarketLens 标准备份数据结构 */
 export interface MarketLensBackupData {
@@ -22,6 +22,9 @@ export interface MarketLensBackupData {
     colorNeutral?: boolean | undefined;
     colorScheme?: "greenUpRedDown" | "redUpGreenDown" | undefined;
     statusBarEnabled?: boolean | undefined;
+    statusBarCompact?: boolean | undefined;
+    statusBarHoldingEnabled?: boolean | undefined;
+    statusBarHoldingInterval?: number | undefined;
     autoCollapseClosedGroups?: boolean | undefined;
     proxyPort?: number | undefined;
     proxyUrl?: string | undefined;
@@ -42,6 +45,10 @@ export interface MarketLensBackupData {
       includeAShare?: boolean | undefined;
       includeConvertibleBond?: boolean | undefined;
       includeHkShare?: boolean | undefined;
+    } | undefined;
+    portfolio?: {
+      baseCurrency?: "CNY" | "USD" | undefined;
+      sidebarSummaryEnabled?: boolean | undefined;
     } | undefined;
   };
   groupSortModes?: Record<string, GroupSortMode>;
@@ -79,6 +86,9 @@ export function generateBackupData(
       colorNeutral: config.colorNeutral,
       colorScheme: config.colorScheme,
       statusBarEnabled: config.statusBar?.enabled ?? true,
+      statusBarCompact: config.statusBar?.compact ?? false,
+      statusBarHoldingEnabled: config.statusBar?.holdingEnabled ?? true,
+      statusBarHoldingInterval: config.statusBar?.holdingInterval ?? 3,
       autoCollapseClosedGroups: config.autoCollapseClosedGroups ?? true,
       proxyPort: config.proxyPort,
       proxyUrl: config.proxyUrl,
@@ -89,6 +99,8 @@ export function generateBackupData(
       usStock: config.usStock ? { ...config.usStock } : undefined,
       binance: config.binance ? { ...config.binance } : undefined,
       alpha: config.alpha ? { ...config.alpha } : undefined,
+
+      portfolio: config.portfolio ? { ...config.portfolio } : undefined,
 
       watchlist: config.watchlist ? JSON.parse(JSON.stringify(config.watchlist)) : {},
       alerts: config.alerts ? JSON.parse(JSON.stringify(config.alerts)) : {},
@@ -161,25 +173,13 @@ export function validateBackupData(raw: unknown): ValidationResult {
       return { valid: false, error: "alerts 字段结构非法，必须为预警字典对象" };
     }
 
-    normalizedAlerts = {};
-    const rawAlerts = settingsCandidate.alerts as Record<string, unknown>;
-    for (const [key, rule] of Object.entries(rawAlerts)) {
-      if (rule && typeof rule === "object") {
-        const r = rule as Record<string, unknown>;
-        if (typeof r.symbol === "string" && r.symbol.trim() !== "") {
-          alertCount += 1;
-          normalizedAlerts[key] = {
-            symbol: r.symbol.trim(),
-            name: typeof r.name === "string" ? r.name.trim() : undefined,
-            above: typeof r.above === "number" ? r.above : undefined,
-            below: typeof r.below === "number" ? r.below : undefined,
-            changePercent: typeof r.changePercent === "number" ? r.changePercent : undefined,
-            enabled: typeof r.enabled === "boolean" ? r.enabled : true,
-          };
-        }
-      }
-      // 缺少有效 symbol 的预警规则直接丢弃
-    }
+    // 与运行时 cfg.get("alerts") 消费路径共用唯一消毒出口。
+    // 旧的手写归一化只判 typeof === "number"，会把 NaN / Infinity / 负阈值原样写回，
+    // 且未过滤 __proto__ 等危险键；导入后 AlertManager 拿非有限阈值比较会永久静默。
+    // Object.fromEntries 把 sanitizeAlerts 的 null 原型对象收敛回普通对象，保持备份结构一致。
+    const sanitized = sanitizeAlerts(settingsCandidate.alerts);
+    normalizedAlerts = Object.fromEntries(Object.entries(sanitized)) as Record<string, PriceAlertItem>;
+    alertCount = Object.keys(normalizedAlerts).length;
   }
 
   // 校验 groupSortModes 结构
@@ -205,6 +205,13 @@ export function validateBackupData(raw: unknown): ValidationResult {
       colorNeutral: typeof settingsCandidate.colorNeutral === "boolean" ? settingsCandidate.colorNeutral : undefined,
       colorScheme: settingsCandidate.colorScheme === "redUpGreenDown" ? "redUpGreenDown" : settingsCandidate.colorScheme === "greenUpRedDown" ? "greenUpRedDown" : undefined,
       statusBarEnabled: typeof settingsCandidate.statusBarEnabled === "boolean" ? settingsCandidate.statusBarEnabled : undefined,
+      statusBarCompact: typeof settingsCandidate.statusBarCompact === "boolean" ? settingsCandidate.statusBarCompact : undefined,
+      statusBarHoldingEnabled: typeof settingsCandidate.statusBarHoldingEnabled === "boolean" ? settingsCandidate.statusBarHoldingEnabled : undefined,
+      statusBarHoldingInterval:
+        typeof settingsCandidate.statusBarHoldingInterval === "number" &&
+        Number.isFinite(settingsCandidate.statusBarHoldingInterval)
+          ? Math.min(60, Math.max(1, Math.round(settingsCandidate.statusBarHoldingInterval)))
+          : undefined,
       autoCollapseClosedGroups: typeof settingsCandidate.autoCollapseClosedGroups === "boolean" ? settingsCandidate.autoCollapseClosedGroups : undefined,
       proxyPort: typeof settingsCandidate.proxyPort === "number" ? settingsCandidate.proxyPort : undefined,
       // 备份里的代理地址与设置面板、请求侧共用同一规范化出口：
@@ -253,6 +260,21 @@ export function validateBackupData(raw: unknown): ValidationResult {
                   : undefined,
             }
           : undefined,
+      portfolio:
+        settingsCandidate.portfolio && typeof settingsCandidate.portfolio === "object"
+          ? {
+              baseCurrency:
+                (settingsCandidate.portfolio as Record<string, unknown>).baseCurrency === "USD"
+                  ? "USD"
+                  : (settingsCandidate.portfolio as Record<string, unknown>).baseCurrency === "CNY"
+                  ? "CNY"
+                  : undefined,
+              sidebarSummaryEnabled:
+                typeof (settingsCandidate.portfolio as Record<string, unknown>).sidebarSummaryEnabled === "boolean"
+                  ? ((settingsCandidate.portfolio as Record<string, unknown>).sidebarSummaryEnabled as boolean)
+                  : undefined,
+            }
+          : undefined,
     },
     groupSortModes: normalizedGroupSortModes,
   };
@@ -277,8 +299,10 @@ export async function exportSettingsToFile(
   version?: string
 ): Promise<boolean> {
   // 守卫下沉（AGENTS.md §5.4）：备份文件是含真实自选、成本价与预警阈值的明文 JSON，
-  // 且 showSaveDialog 属系统对话框——老板键激活时必须完全静默，连对话框与回执都不出现。
-  if (isBossKeyActive()) {
+  // 且 showSaveDialog 属系统对话框——任一脱敏态激活时都必须完全静默，连对话框与回执都不出现。
+  // 与 showLogs / 总账浮窗共用 isMasked() 同一谓词：只判老板键会让「简洁展示模式」下
+  // 仍能导出明文持仓成本、数量与代理凭据。
+  if (isMasked()) {
     return false;
   }
   try {
@@ -327,8 +351,8 @@ export async function importSettingsFromFile(options: {
   onSuccess?: (backupData: MarketLensBackupData) => Promise<void> | void;
   globalState?: vscode.Memento | undefined;
 }): Promise<boolean> {
-  // 同 exportSettingsToFile：导入流程会弹出明文备份内容与标的数量，老板键激活时静默拒绝。
-  if (isBossKeyActive()) {
+  // 同 exportSettingsToFile：导入流程会弹出明文备份内容与标的数量，任一脱敏态激活时静默拒绝。
+  if (isMasked()) {
     return false;
   }
   try {
@@ -414,8 +438,23 @@ export async function importSettingsFromFile(options: {
     if (data.settings.statusBarEnabled !== undefined) {
       await cfg.update("statusBar.enabled", data.settings.statusBarEnabled, target);
     }
+    if (data.settings.statusBarCompact !== undefined) {
+      await cfg.update("statusBar.compact", data.settings.statusBarCompact, target);
+    }
+    if (data.settings.statusBarHoldingEnabled !== undefined) {
+      await cfg.update("statusBar.holdingEnabled", data.settings.statusBarHoldingEnabled, target);
+    }
+    if (data.settings.statusBarHoldingInterval !== undefined) {
+      await cfg.update("statusBar.holdingInterval", data.settings.statusBarHoldingInterval, target);
+    }
     if (data.settings.autoCollapseClosedGroups !== undefined) {
       await cfg.update("autoCollapseClosedGroups", data.settings.autoCollapseClosedGroups, target);
+    }
+    if (data.settings.portfolio?.baseCurrency !== undefined) {
+      await cfg.update("portfolio.baseCurrency", data.settings.portfolio.baseCurrency, target);
+    }
+    if (data.settings.portfolio?.sidebarSummaryEnabled !== undefined) {
+      await cfg.update("portfolio.sidebarSummaryEnabled", data.settings.portfolio.sidebarSummaryEnabled, target);
     }
     if (data.settings.alertNotificationMode !== undefined) {
       await cfg.update("alertNotificationMode", data.settings.alertNotificationMode, target);

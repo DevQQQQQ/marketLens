@@ -4,7 +4,7 @@ import * as https from "https";
 import * as net from "net";
 import * as zlib from "zlib";
 import { URL } from "url";
-import { logger } from "../utils/logger.ts";
+import { logger, scrubForLog } from "../utils/logger.ts";
 
 export interface CryptoNetworkOptions {
   mode: "proxy" | "direct";
@@ -664,7 +664,7 @@ export async function smartNetworkGet<T = unknown>(
       isGatewayProxyActive = false;
       lastGatewayProbeResult = false;
       lastGatewayProbeTime = 0;
-      logger.warn(`[smartNetworkGet] 软路由网关连接中断，已自动退回本地代理与端口探测流程: ${String((err as Error)?.message || err)}`);
+      logger.warn(`[smartNetworkGet] 软路由网关连接中断，已自动退回本地代理与端口探测流程: ${scrubForLog(String((err as Error)?.message || err))}`);
     }
   }
 
@@ -765,7 +765,7 @@ export async function smartNetworkGet<T = unknown>(
             isGatewayProxyActive = true;
             throw gatewayErr;
           }
-          logger.warn(`[smartNetworkGet] 网关探活成功但实际业务请求连接失败: ${String((gatewayErr as Error)?.message || gatewayErr)}`);
+          logger.warn(`[smartNetworkGet] 网关探活成功但实际业务请求连接失败: ${scrubForLog(String((gatewayErr as Error)?.message || gatewayErr))}`);
         }
       }
     }

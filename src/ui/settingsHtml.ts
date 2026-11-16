@@ -12,6 +12,7 @@ export interface SettingsFormData {
 	colorNeutral?: boolean;
 	colorScheme?: 'greenUpRedDown' | 'redUpGreenDown';
 	statusBarEnabled?: boolean;
+	statusBarCompact?: boolean;
 	statusBarHoldingEnabled?: boolean;
 	statusBarHoldingInterval?: number;
 	autoCollapseClosedGroups?: boolean;
@@ -46,6 +47,8 @@ export interface SettingsFormData {
 	ipoReminderIncludeAShare?: boolean;
 	ipoReminderIncludeConvertibleBond?: boolean;
 	ipoReminderIncludeHkShare?: boolean;
+	portfolioBaseCurrency?: string;
+	portfolioSidebarSummaryEnabled?: boolean;
 	watchlist?: WatchlistConfig;
 }
 
@@ -65,6 +68,8 @@ export function getSettingsWebviewHtml(
 		colorScheme: initialData.colorScheme || 'greenUpRedDown',
 		statusBarEnabled:
 			initialData.statusBarEnabled !== undefined ? initialData.statusBarEnabled : true,
+		statusBarCompact:
+			initialData.statusBarCompact !== undefined ? initialData.statusBarCompact : false,
 		statusBarHoldingEnabled:
 			initialData.statusBarHoldingEnabled !== undefined ? initialData.statusBarHoldingEnabled : true,
 		statusBarHoldingInterval:
@@ -126,6 +131,9 @@ export function getSettingsWebviewHtml(
 			initialData.ipoReminderIncludeConvertibleBond !== undefined ? initialData.ipoReminderIncludeConvertibleBond : true,
 		ipoReminderIncludeHkShare:
 			initialData.ipoReminderIncludeHkShare !== undefined ? initialData.ipoReminderIncludeHkShare : true,
+		portfolioBaseCurrency: initialData.portfolioBaseCurrency === 'USD' ? 'USD' : 'CNY',
+		portfolioSidebarSummaryEnabled:
+			initialData.portfolioSidebarSummaryEnabled !== undefined ? initialData.portfolioSidebarSummaryEnabled : true,
 		watchlist: initialData.watchlist || {},
 	};
 
@@ -553,6 +561,14 @@ export function getSettingsWebviewHtml(
 
         <div class="card">
           <div class="card-info">
+            <div class="card-title">⚡ 状态栏紧凑模式</div>
+            <div class="card-desc">仅在底部状态栏展示涨跌符号与幅度（如「↑ +2.34%」），隐藏标的名称与现价，更适合窄状态栏或极简摸鱼场景。</div>
+          </div>
+          <label class="switch"><input type="checkbox" id="statusBarCompact" ${d.statusBarCompact ? 'checked' : ''}><span class="slider"></span></label>
+        </div>
+
+        <div class="card">
+          <div class="card-info">
             <div class="card-title">🌙 休市自动折叠与停止轮播</div>
             <div class="card-desc">当某板块处于收盘休市时（如 15:05 后的 A 股/基金、周末节假日），左侧自选分组将自动折叠收起，且底部状态栏自动剔除休市标的；当关注的全部标的均休市时，底部状态栏静默隐藏。</div>
           </div>
@@ -573,6 +589,25 @@ export function getSettingsWebviewHtml(
             <div class="card-desc">持仓盈亏条目在全账户总账与各单标的之间轮播切换的时间间隔（推荐 1 ~ 60 秒，默认 3 秒）。</div>
           </div>
           <input type="number" id="statusBarHoldingInterval" min="1" max="60" step="1" value="${d.statusBarHoldingInterval}" style="width: 110px;">
+        </div>
+
+        <div class="card">
+          <div class="card-info">
+            <div class="card-title">🌐 持仓总账基准货币</div>
+            <div class="card-desc">跨市场持仓总资产统一折算的基准货币。<strong>需先在自选标的右键菜单中录入「成本价 + 持股数量」</strong>，仅同时具备这两项的标的会计入总账（未录入时总览组与状态栏第 0 帧不会出现数据，按 Alt + P 可查看引导）。汇率默认在线实时获取（约每 30 分钟刷新一次），拉取失败、数值失真或快照过期时自动回退内置静态参考值（USDT 锚定 USD，可能与实时牌价存在偏差）；实际生效牌价与来源见总账浮窗 / Tooltip。</div>
+          </div>
+          <select id="portfolioBaseCurrency" class="select-box" style="padding: 6px 12px; border-radius: 4px; background: var(--input-bg); color: var(--input-fg); border: 1px solid var(--card-border); font-size: 13px;">
+            <option value="CNY" ${d.portfolioBaseCurrency !== 'USD' ? 'selected' : ''}>¥ 人民币 (CNY，默认)</option>
+            <option value="USD" ${d.portfolioBaseCurrency === 'USD' ? 'selected' : ''}>$ 美元 (USD)</option>
+          </select>
+        </div>
+
+        <div class="card">
+          <div class="card-info">
+            <div class="card-title">💼 侧边栏持仓总资产总览组</div>
+            <div class="card-desc">在侧边栏自选列表顶部常驻展示统一折算后的总资产、今日盈亏与各板块资产占比（需已录入持仓；快捷键 <code>Alt + P</code> 可随时打开总账浮窗；老板键/简洁展示模式下自动打码隐藏，已打开的浮窗也会自动关闭）。</div>
+          </div>
+          <label class="switch"><input type="checkbox" id="portfolioSidebarSummaryEnabled" ${d.portfolioSidebarSummaryEnabled ? 'checked' : ''}><span class="slider"></span></label>
         </div>
 
         <div class="card">
@@ -1009,6 +1044,7 @@ export function getSettingsWebviewHtml(
               • <b>老板键一键隐蔽/恢复</b>: <code>Ctrl + Alt + M</code> 或 <code>Alt + M</code> (Mac: <code>Cmd + Alt + M</code>)<br>
               • <b>伪装摸鱼模式开关</b>: <code>Ctrl + Alt + K</code> 或 <code>Alt + K</code> (Mac: <code>Cmd + Alt + K</code>)<br>
               • <b>颜色脱敏模式开关</b>: <code>Ctrl + Alt + L</code> 或 <code>Alt + L</code> (Mac: <code>Cmd + Alt + L</code>)<br>
+              • <b>持仓总资产总账浮窗</b>: <code>Alt + P</code> (Mac: <code>Alt + P</code>)，随时查看跨市场统一折算的总资产、今日盈亏与板块分布<br>
               • <b>专注模式期间保持完全静默</b>: 不弹出任何状态栏提示、通知与设置面板；此期间按下 <code>Alt + K</code> 会先自动退出专注模式再关闭打码，点击活动栏图标重新打开看板同样会自动退出专注模式。<br>
               • <b>悬停详情卡片</b>: 鼠标放至任意资产上，即可查看今开、昨收、高低、涨跌与成交额。
             </div>
@@ -1476,6 +1512,10 @@ export function getSettingsWebviewHtml(
         sendUpdate('statusBar.enabled', checked);
         showToast(checked ? '✅ 已开启全部标的参与底部轮播' : '⚪ 已关闭全部标的参与底部轮播');
       });
+      on('statusBarCompact', 'change', function() {
+        sendUpdate('statusBar.compact', this.checked);
+        showToast(this.checked ? '⚡ 已开启状态栏紧凑模式' : '⚪ 已关闭状态栏紧凑模式');
+      });
       on('autoCollapseClosedGroups', 'change', function() {
         sendUpdate('autoCollapseClosedGroups', this.checked);
         showToast(this.checked ? '🌙 已开启休市自动折叠与停止轮播' : '⚪ 已关闭休市自动折叠与停止轮播');
@@ -1491,16 +1531,26 @@ export function getSettingsWebviewHtml(
           showToast('⏱️ 持仓盈亏轮播间隔已更新为 ' + val + ' 秒');
         }
       });
+      on('portfolioBaseCurrency', 'change', function() {
+        var val = this.value === 'USD' ? 'USD' : 'CNY';
+        sendUpdate('portfolio.baseCurrency', val);
+        showToast(val === 'USD' ? '💼 持仓总账基准货币已切换为美元 ($)' : '💼 持仓总账基准货币已切换为人民币 (¥)');
+      });
+      on('portfolioSidebarSummaryEnabled', 'change', function() {
+        sendUpdate('portfolio.sidebarSummaryEnabled', this.checked);
+        showToast(this.checked ? '💼 已开启侧边栏持仓总资产总览组' : '⚪ 已关闭侧边栏持仓总资产总览组');
+      });
 
       function syncMasterSwitch() {
+        var master = document.getElementById('statusBarEnabled');
+        // P2-1：总控是用户显式意图，板块级开关只能把它从「开」降级为「关」，
+        // 绝不能把用户显式关闭的总控抬回开启（后端 persistSectionStatusBarAndRecompute 同样一票否决）。
+        if (!master || !master.checked) { return; }
         var anyChecked = subIds.some(function(id) {
           var el = document.getElementById(id);
           return el && el.checked;
         });
-        var master = document.getElementById('statusBarEnabled');
-        if (master) {
-          master.checked = !!anyChecked;
-        }
+        if (!anyChecked) { master.checked = false; }
       }
       on('autoRefresh', 'change', function() {
         sendUpdate('autoRefresh', this.checked);
@@ -1705,6 +1755,9 @@ export function getSettingsWebviewHtml(
           setChecked('colorNeutral',     d.colorNeutral);
           setValue('colorScheme',        d.colorScheme || 'greenUpRedDown');
           setChecked('statusBarEnabled', d.statusBarEnabled);
+          setChecked('statusBarCompact', d.statusBarCompact);
+          setChecked('statusBarHoldingEnabled', d.statusBarHoldingEnabled !== false);
+          setValue('statusBarHoldingInterval', d.statusBarHoldingInterval !== undefined ? d.statusBarHoldingInterval : 3);
           setChecked('autoCollapseClosedGroups', d.autoCollapseClosedGroups);
           var portVal = d.proxyPort || ${DEFAULT_PROXY_PORT};
           setValue('globalProxyPort', portVal);
@@ -1784,6 +1837,8 @@ export function getSettingsWebviewHtml(
           setChecked('ipoReminder.includeAShare', d.ipoReminderIncludeAShare !== false);
           setChecked('ipoReminder.includeConvertibleBond', d.ipoReminderIncludeConvertibleBond !== false);
           setChecked('ipoReminder.includeHkShare', d.ipoReminderIncludeHkShare !== false);
+          setValue('portfolioBaseCurrency', d.portfolioBaseCurrency === 'USD' ? 'USD' : 'CNY');
+          setChecked('portfolioSidebarSummaryEnabled', d.portfolioSidebarSummaryEnabled !== false);
           if (d.alerts !== undefined && !hasAlertDirty()) currentAlerts = d.alerts || {};
           if (d.watchlist !== undefined) currentWatchlist = d.watchlist || {};
           renderAlertTable(currentWatchlist, currentAlerts);

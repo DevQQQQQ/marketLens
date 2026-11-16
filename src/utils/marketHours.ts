@@ -219,6 +219,21 @@ export function isUSHoliday(date: Date = new Date()): boolean {
 }
 
 /**
+ * 当前日期是否落在已知节假日日历的覆盖范围内。
+ *
+ * `checkHolidayCoverage()` 在超出 MAX_COVERED_HOLIDAY_YEAR 时只告警、返回 false，
+ * 而三个 isXXXHoliday 都丢弃该返回值继续查空表 → 法定假日会被误判为普通交易日。
+ * 依赖休市判定的「闭市停止轮询」等优化必须在日历不可靠时保守关闭，宁可多轮询，
+ * 也不能在春节/国庆整天停掉行情。
+ */
+export function isHolidayCalendarReliable(date: Date = new Date()): boolean {
+  return (
+    checkHolidayCoverage(date, beijingDateFormatter) &&
+    checkHolidayCoverage(date, newYorkDateFormatter)
+  );
+}
+
+/**
  * 校验当前是否处于 A 股交易时段（严格按北京时间 Asia/Shanghai 判定）：
  * - 排除周末与法定休市日
  * - 周一至周五 9:15 ~ 11:30, 13:00 ~ 15:05
@@ -375,17 +390,23 @@ export interface MarketPollingSkipOptions {
    * `exactOptionalPropertyTypes` 下必须如实允许（§5.5 三条休市链路的粒度判定依赖此默认值语义）。
    */
   specificGroupName?: string | undefined;
+  /** 节假日日历是否覆盖当前日期；false 时保守禁用「闭市停止轮询」 */
+  holidayCalendarReliable?: boolean | undefined;
 }
 
 /**
  * 判定当前板块在调度轮询时是否应当因闭市而跳过网络请求
  *
- * 跳过必须同时满足以下 5 项条件：
- * 1. 用户配置了「闭市时停止轮询」stopOnMarketClosed === true
- * 2. 当前板块已处于休市或法定节假日（!isMarketOpen）
- * 3. 插件已至少成功完成过一轮首次行情拉取（hasLoadedInitialQuotes === true），保证闭市时启动不会盘面全空白
- * 4. 非全局强制刷新（!forceAll）
- * 5. 非单组定向刷新（!specificGroupName）
+ * 跳过必须同时满足以下 6 项条件：
+ * 1. 当前日期落在已知节假日日历覆盖范围内（holidayCalendarReliable）
+ * 2. 用户配置了「闭市时停止轮询」stopOnMarketClosed === true
+ * 3. 当前板块已处于休市或法定节假日（!isMarketOpen）
+ * 4. 插件已至少成功完成过一轮首次行情拉取（hasLoadedInitialQuotes === true），保证闭市时启动不会盘面全空白
+ * 5. 非全局强制刷新（!forceAll）
+ * 6. 非单组定向刷新（!specificGroupName）
+ *
+ * 条件 1 是保守护栏：日历越界时 isXXXHoliday() 查的是空表，会把春节/国庆误判成正常交易日，
+ * 此时若仍按「休市」跳过轮询，行情会整天不更新。宁可多轮询，也不能静默停摆。
  */
 export function shouldSkipMarketPolling(options: MarketPollingSkipOptions): boolean {
   const {
@@ -394,9 +415,11 @@ export function shouldSkipMarketPolling(options: MarketPollingSkipOptions): bool
     hasLoadedInitialQuotes,
     forceAll = false,
     specificGroupName,
+    holidayCalendarReliable = isHolidayCalendarReliable(),
   } = options;
 
   return !!(
+    holidayCalendarReliable &&
     stopOnMarketClosed &&
     !isMarketOpen &&
     hasLoadedInitialQuotes &&
