@@ -38,13 +38,20 @@ function toCamoPrice(price: number): string {
   return price.toFixed(1);
 }
 
-/** 把实际价格格式化用于正常显示 */
-function toDisplayPrice(price: number): string {
-  if (price === 0) return "0.00";
-  if (price < 0.0001) return price.toExponential(3);
-  if (price < 1)   return price.toFixed(4);
-  if (price < 10)  return price.toFixed(3);
-  return price.toFixed(2);
+/** 把实际价格格式化用于正常显示（方案 A：微小单价展开，小于 1e-8 才回退科学计数法） */
+export function toDisplayPrice(price: number): string {
+  if (!Number.isFinite(price) || price === 0) return "0.00";
+  const prefix = price < 0 ? "-" : "";
+  const abs = Math.abs(price);
+  if (abs < 1e-8) return `${prefix}${abs.toExponential(3)}`;
+  if (abs < 0.0001) {
+    const parts = abs.toFixed(8).split(".");
+    const dec = parts[1]!.replace(/0+$/, "");
+    return `${prefix}${parts[0]}.${dec}`;
+  }
+  if (abs < 1)   return `${prefix}${abs.toFixed(4)}`;
+  if (abs < 10)  return `${prefix}${abs.toFixed(3)}`;
+  return `${prefix}${abs.toFixed(2)}`;
 }
 
 /** 确定性 hash，用于把 symbol 稳定映射到伪装标签（不随机，保证同一资产标签一致） */

@@ -31,6 +31,8 @@ import {
   showIpoDetailQuickPick,
   GLOBAL_STATE_LAST_IPO_REMIND_KEY,
 } from "../src/services/ipoService.ts";
+import { formatPrice, StockItem } from "../src/ui/watchlistProvider.ts";
+import { toDisplayPrice } from "../src/ui/statusBar.ts";
 import "./config.test.ts";
 
 void test("nls - package.json 占位符与语言包契约一致性", () => {
@@ -5653,6 +5655,222 @@ void test("RefreshScheduler - 离线行情缓存持久化与冷启动秒开恢�
   scheduler.dispose();
   assert.strictEqual(scheduler.isDisposed(), true);
 });
+
+void test("方案 A - formatPrice 与 toDisplayPrice 微小单价格式化与去尾零", () => {
+  // 1. 微小单价（如 DONKEY 等 Alpha Meme 代币）：展开为定点小数，绝不显示为科学计数法
+  assert.strictEqual(formatPrice(0.00009045), "$0.00009045");
+  assert.strictEqual(toDisplayPrice(0.00009045), "0.00009045");
+
+  // 2. 0.0001 ~ 1 区间保持既有精度契约（侧边栏 6 位、状态栏 4 位）
+  assert.strictEqual(formatPrice(0.0003), "$0.000300");
+  assert.strictEqual(toDisplayPrice(0.0003), "0.0003");
+  assert.strictEqual(formatPrice(0.4715), "$0.471500");
+  assert.strictEqual(toDisplayPrice(0.4715), "0.4715");
+
+  // 3. 正常区间价格保持格式与至少2位小数
+  assert.strictEqual(formatPrice(581.7), "$581.70");
+  assert.strictEqual(toDisplayPrice(581.7), "581.70");
+  assert.strictEqual(formatPrice(9.876), "$9.876");
+  assert.strictEqual(toDisplayPrice(9.876), "9.876");
+  assert.strictEqual(formatPrice(0.5), "$0.500000");
+  assert.strictEqual(toDisplayPrice(0.5), "0.5000");
+
+  // 4. 8位内微小单价
+  assert.strictEqual(formatPrice(0.00000012), "$0.00000012");
+  assert.strictEqual(toDisplayPrice(0.00000012), "0.00000012");
+
+  // 5. 极端微小价格（< 1e-8）优雅回退至科学计数法
+  assert.strictEqual(formatPrice(1.2e-9), "$1.2000e-9");
+  assert.strictEqual(toDisplayPrice(1e-9), "1.000e-9");
+
+  // 6. 零与非法值保底
+  assert.strictEqual(formatPrice(0), "0.00");
+  assert.strictEqual(toDisplayPrice(0), "0.00");
+  assert.strictEqual(formatPrice(Number.NaN), "0.00");
+  assert.strictEqual(toDisplayPrice(Number.NaN), "0.00");
+
+  // 7. 货币符号（CNY / HKD / USDT）
+  assert.strictEqual(formatPrice(12.345, "CNY"), "¥12.35");
+  assert.strictEqual(formatPrice(0.00009045, "HKD"), "HK$0.00009045");
+  assert.strictEqual(formatPrice(0.00009045, "USDT"), "$0.00009045");
+});
+
+void test("港股服务 (HKStockService) 深度量价与估值指标解析（PE/PB/市值/换手/振幅/均价）", () => {
+  const service = new HKStockService();
+
+  // 1. 实测腾讯黄金样本：腾讯控股 00700
+  const sampleTencent =
+    'v_r_hk00700="100~腾讯控股~00700~354.000~372.800~361.800~18406891.0~0~0~354.000~0~0~0~0~0~0~0~0~0~354.000~0~0~0~0~0~0~0~0~0~18406891.0~2026/11/19 09:58:56~-18.800~-5.04~365.000~351.800~354.000~18406891.0~6587445573.800~0~12.93~~0~0~3.54~32187.9627~32187.9627~TENCENT~1.50~633.700~351.800~8.39~52.77~0~0~0~0~0~11.71~2.28~0.20~100~-40.37~-11.23~GP~19.38~10.24~-17.75~-7.43~-19.91~9092644829.00~9092644829.00~11.66~5.315~357.879~-30.95~HKD~1~30";';
+
+  const items = service.parseResponse(sampleTencent);
+  assert.strictEqual(items.length, 1);
+  const q = items[0]!;
+
+  assert.strictEqual(q.name, "腾讯控股");
+  assert.strictEqual(q.symbol, "00700");
+  assert.strictEqual(q.price, 354);
+  assert.strictEqual(q.turnover, 6587445573.8);
+  assert.strictEqual(q.peTtm, 12.93);
+  assert.strictEqual(q.pb, 2.28);
+  assert.strictEqual(q.amplitude, 3.54);
+  assert.strictEqual(q.totalMarketValue, 32187.9627 * 1e8);
+  assert.strictEqual(q.circulationMarketValue, 32187.9627 * 1e8);
+  assert.strictEqual(q.turnoverRate, 0.2);
+  assert.strictEqual(q.avgPrice, 357.879);
+  assert.strictEqual(q.currency, "HKD");
+
+  // 2. 字段不足守卫与缺失字段防伪装为 0
+  const sampleShort = 'v_r_hk00700="100~腾讯控股~00700~354.000~372.800~361.800~18406891.0~0~0~354.000~0~0~0~0~0~0~0~0~0~354.000~0~0~0~0~0~0~0~0~0~18406891.0~2026/11/19 09:58:56~-18.800~-5.04~365.000~351.800";';
+  const shortItems = service.parseResponse(sampleShort);
+  assert.strictEqual(shortItems.length, 1);
+  const shortQ = shortItems[0]!;
+  assert.strictEqual(shortQ.peTtm, undefined, "守卫外缺失字段必须为 undefined，禁止伪装为 0");
+  assert.strictEqual(shortQ.pb, undefined);
+  assert.strictEqual(shortQ.totalMarketValue, undefined);
+  assert.strictEqual(shortQ.circulationMarketValue, undefined);
+  assert.strictEqual(shortQ.turnoverRate, undefined);
+});
+
+void test("美股服务 (USStockService) 深度量价与估值指标解析（PE/PB/市值/换手/振幅/均价）", () => {
+  const service = new USStockService();
+
+  // 1. 实测腾讯黄金样本：苹果 AAPL
+  const sampleAAPL =
+    'v_usAAPL="200~苹果~AAPL.OQ~352.45~351.91~351.94~34209928~0~0~354.64~80~0~0~0~0~0~0~0~0~355.00~5640~0~0~0~0~0~0~0~0~~2026-11-18 16:00:01~0.54~0.15~356.42~351.47~USD~34209928~12083450236~0.24~39.25~~39.25~~1.41~51186.70429~51218.67546~Apple Inc.~8.98~360.83~242.57~-5560~45.69~0.30~51218.67546~30.10~-0.81~GP~142.26~34.61~0.92~2.54~13.82~14532182000~14523110878~0.88~39.25~1.07~353.21~~~~~";';
+
+  const items = service.parseResponse(sampleAAPL);
+  assert.strictEqual(items.length, 1);
+  const q = items[0]!;
+
+  assert.strictEqual(q.name, "苹果");
+  assert.strictEqual(q.symbol, "AAPL");
+  assert.strictEqual(q.price, 352.45);
+  assert.strictEqual(q.turnover, 12083450236);
+  assert.strictEqual(q.peTtm, 39.25);
+  assert.strictEqual(q.pb, 34.61);
+  assert.strictEqual(q.amplitude, 1.41);
+  assert.strictEqual(q.totalMarketValue, 51218.67546 * 1e8);
+  assert.strictEqual(q.circulationMarketValue, 51186.70429 * 1e8);
+  assert.strictEqual(q.turnoverRate, 0.24);
+  assert.strictEqual(q.avgPrice, 353.21);
+  assert.strictEqual(q.currency, "USD");
+
+  // 2. 字段不足守卫
+  const sampleShort = 'v_usAAPL="200~苹果~AAPL.OQ~352.45~351.91~351.94~34209928~0~0~354.64~80~0~0~0~0~0~0~0~0~355.00~5640~0~0~0~0~0~0~0~0~~2026-11-18 16:00:01~0.54~0.15~356.42~351.47";';
+  const shortItems = service.parseResponse(sampleShort);
+  assert.strictEqual(shortItems.length, 1);
+  const shortQ = shortItems[0]!;
+  assert.strictEqual(shortQ.peTtm, undefined);
+  assert.strictEqual(shortQ.pb, undefined);
+  assert.strictEqual(shortQ.totalMarketValue, undefined);
+});
+
+void test("Alpha 链上多周期涨跌幅 (DexScreener) 解析与 Tooltip 呈现契约", () => {
+  const itemAlpha: MarketItem = {
+    id: "0x73b84f7e3901f39fc29f3704a03126d317ab4444",
+    name: "DONKEY",
+    symbol: "DONKEY",
+    type: "ALPHA_TOKEN",
+    price: 0.00009045,
+    changePercent: -13.44,
+    chain: "BSC",
+    dex: "PancakeSwap",
+    liquidity: 500000,
+    turnover: 1200000,
+    currency: "USDT",
+    priceChangeMulti: {
+      m5: 0.85,
+      h1: -2.34,
+      h6: 5.67,
+      h24: -13.44,
+    },
+  };
+
+  // Alpha 专属节点测试
+  const node = new StockItem(
+    itemAlpha,
+    "Alpha",
+    itemAlpha.id,
+    false,
+    false,
+    undefined,
+    undefined,
+    "greenUpRedDown"
+  );
+
+  const tooltip = (node.tooltip as any)?.value || String(node.tooltip || "");
+  assert.ok(tooltip.includes("多周期涨跌"), "Alpha 卡片必须包含多周期涨跌行");
+  assert.ok(tooltip.includes("5m: **+0.85%**"), "必须展示 5m 涨跌幅");
+  assert.ok(tooltip.includes("1h: **-2.34%**"), "必须展示 1h 涨跌幅");
+  assert.ok(tooltip.includes("6h: **+5.67%**"), "必须展示 6h 涨跌幅");
+  assert.ok(tooltip.includes("$0.00009045"), "必须展示方案 A 展开格式价格");
+});
+
+void test("港股与美股卡片 Tooltip 深度指标（PE/PB/市值/换手率）渲染验证", () => {
+  // 1. 港股腾讯卡片
+  const itemHK: MarketItem = {
+    id: "hk00700",
+    name: "腾讯控股",
+    symbol: "00700",
+    type: "HK_STOCK",
+    price: 354,
+    changePercent: -5.04,
+    currency: "HKD",
+    peTtm: 12.93,
+    pb: 2.28,
+    amplitude: 3.54,
+    totalMarketValue: 32187.9627 * 1e8,
+    circulationMarketValue: 32187.9627 * 1e8,
+    turnoverRate: 0.20,
+    avgPrice: 357.879,
+  };
+  const nodeHK = new StockItem(itemHK, "港股", itemHK.id, false, false, undefined, undefined, "greenUpRedDown");
+  const tooltipHK = (nodeHK.tooltip as any)?.value || String(nodeHK.tooltip || "");
+  assert.ok(tooltipHK.includes("市盈 / 市净"), "港股卡片必须包含市盈/市净指标");
+  assert.ok(tooltipHK.includes("12.93 / 2.28"), "必须展示正确的 PE 与 PB");
+  assert.ok(tooltipHK.includes("流通 / 总市值"), "港股卡片必须包含流通与总市值");
+  assert.ok(tooltipHK.includes("换手 / 量比"), "港股卡片必须包含换手率指标");
+  assert.ok(tooltipHK.includes("0.20%"), "必须展示正确的换手率");
+
+  // 2. 美股苹果卡片
+  const itemUS: MarketItem = {
+    id: "usAAPL",
+    name: "苹果",
+    symbol: "AAPL",
+    type: "US_STOCK",
+    price: 352.45,
+    changePercent: 0.15,
+    currency: "USD",
+    peTtm: 39.25,
+    pb: 34.61,
+    amplitude: 1.41,
+    totalMarketValue: 51218.67546 * 1e8,
+    circulationMarketValue: 51186.70429 * 1e8,
+    turnoverRate: 0.24,
+    avgPrice: 353.21,
+  };
+  const nodeUS = new StockItem(itemUS, "美股", itemUS.id, false, false, undefined, undefined, "greenUpRedDown");
+  const tooltipUS = (nodeUS.tooltip as any)?.value || String(nodeUS.tooltip || "");
+  assert.ok(tooltipUS.includes("市盈 / 市净"), "美股卡片必须包含市盈/市净指标");
+  assert.ok(tooltipUS.includes("39.25 / 34.61"), "必须展示正确的 PE 与 PB");
+  assert.ok(tooltipUS.includes("流通 / 总市值"), "美股卡片必须包含流通与总市值");
+  assert.ok(tooltipUS.includes("0.24%"), "必须展示美股换手率");
+});
+
+void test("B-1 回归 - scheduler 源码契约：schedulePersistQuoteCache 不得连续双重调用", () => {
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+  const schedulerCode = fs.readFileSync(path.join(repoRoot, "src", "scheduler.ts"), "utf-8");
+
+  // 拦截形如重复调用的模式：schedulePersistQuoteCache 后紧跟另一个 schedulePersistQuoteCache
+  const doubleCallPattern = /this\.schedulePersistQuoteCache\(\);\s*\}\s*if\s*\([^)]*\)\s*\{\s*this\.schedulePersistQuoteCache\(\);/;
+  assert.strictEqual(
+    doubleCallPattern.test(schedulerCode),
+    false,
+    "scheduler.ts 中不得存在复制残留的连续 schedulePersistQuoteCache 调用"
+  );
+});
+
+
 
 
 

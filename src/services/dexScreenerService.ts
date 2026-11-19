@@ -56,9 +56,10 @@ function formatDexName(dexId: string | undefined): string {
 
 function pickBestPair(pairs: DexPair[]): DexPair | null {
   if (!pairs?.length) { return null; }
+  // pairs[0] 经上方守卫确保非空，使用 pairs[0]! 防御下标越界并满足类型安全
   return pairs.reduce((best, cur) =>
     (cur.liquidity?.usd ?? 0) > (best.liquidity?.usd ?? 0) ? cur : best
-  , pairs[0]);
+  , pairs[0]!);
 }
 
 export class DexScreenerService {
@@ -240,6 +241,13 @@ export class DexScreenerService {
           estimatedOpen = priceUsd / (1 + changeH24 / 100);
         }
 
+        const priceChangeMulti = best.priceChange ? {
+          m5: typeof best.priceChange.m5 === "number" && Number.isFinite(best.priceChange.m5) ? best.priceChange.m5 : undefined,
+          h1: typeof best.priceChange.h1 === "number" && Number.isFinite(best.priceChange.h1) ? best.priceChange.h1 : undefined,
+          h6: typeof best.priceChange.h6 === "number" && Number.isFinite(best.priceChange.h6) ? best.priceChange.h6 : undefined,
+          h24: typeof best.priceChange.h24 === "number" && Number.isFinite(best.priceChange.h24) ? best.priceChange.h24 : undefined,
+        } : undefined;
+
         items.push({
           id:            targetAddr,
           name:          best.baseToken?.name   || best.baseToken?.symbol || "Unknown",
@@ -253,6 +261,7 @@ export class DexScreenerService {
           liquidity:     best.liquidity?.usd ?? 0,
           chain:         formatChainName(best.chainId),
           dex:           formatDexName(best.dexId),
+          priceChangeMulti,
           // 链上标的与币安同为 U 本位口径（价源自 priceUsd，稳定币计价）
           currency:      "USDT",
         });

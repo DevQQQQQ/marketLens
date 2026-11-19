@@ -604,9 +604,6 @@ export class RefreshScheduler implements vscode.Disposable {
       if (quotes.length > 0) {
         this.schedulePersistQuoteCache();
       }
-      if (quotes.length > 0) {
-        this.schedulePersistQuoteCache();
-      }
 
       // 评估休市与自适应降频状态
       const has24HourCrypto =

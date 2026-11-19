@@ -20,6 +20,13 @@ const F = {
   HIGH:        33, // 今日最高
   LOW:         34, // 今日最低
   TURNOVER:    37, // 成交额 (美元)
+  TURNOVER_RATE: 38, // 换手率 %
+  PE_TTM:      39, // 市盈率 (TTM)
+  AMPLITUDE:   43, // 振幅 %
+  CIRC_MV:     44, // 流通市值 (亿美元)
+  TOTAL_MV:    45, // 总市值 (亿美元)
+  PB:          58, // 市净率
+  AVG_PRICE:   67, // 日内成交均价 (美元)
 } as const;
 
 export class USStockService extends TencentBaseService {
@@ -64,6 +71,25 @@ export class USStockService extends TencentBaseService {
       // ⚠ `F.TURNOVER` = 37 落在上方 `f.length < MIN_TENCENT_FIELDS` 守卫的覆盖范围之外，
       // 必须走可选解析出口，禁止用 `|| 0` 把「上游未供数」伪装成「成交额为 0」（§5.5）。
       const turnover  = parseOptionalFloat(f[F.TURNOVER]);
+
+      // ── 深度量价与估值指标解析（具备防越界与无效数据防御） ──
+      const turnoverRate = parseOptionalFloat(f[F.TURNOVER_RATE]);
+      const peTtm        = parseOptionalFloat(f[F.PE_TTM]);
+      const amplitude    = parseOptionalFloat(f[F.AMPLITUDE]);
+
+      const rawCircMv    = parseOptionalFloat(f[F.CIRC_MV]);
+      // 腾讯返回单位为亿美元，转换为基准货币“元/美元”
+      const circulationMarketValue = (rawCircMv !== undefined && rawCircMv > 0) ? rawCircMv * 1e8 : undefined;
+
+      const rawTotalMv   = parseOptionalFloat(f[F.TOTAL_MV]);
+      const totalMarketValue = (rawTotalMv !== undefined && rawTotalMv > 0) ? rawTotalMv * 1e8 : undefined;
+
+      const rawPb        = parseOptionalFloat(f[F.PB]);
+      const pb           = (rawPb !== undefined && rawPb > 0) ? rawPb : undefined;
+
+      const rawAvgPrice  = parseOptionalFloat(f[F.AVG_PRICE]);
+      const avgPrice     = (rawAvgPrice !== undefined && rawAvgPrice > 0) ? rawAvgPrice : undefined;
+
       const rawSymbol = f[F.CODE] || fullCode.replace(/^us[\._\-]?/i, "");
       const parts = rawSymbol.split(".").filter(Boolean);
       const symbol = (parts.length > 0 ? parts[0] : rawSymbol).toUpperCase();
@@ -83,6 +109,13 @@ export class USStockService extends TencentBaseService {
         volume,
         turnover,
         currency: this.currency,
+        turnoverRate,
+        peTtm,
+        pb,
+        amplitude,
+        circulationMarketValue,
+        totalMarketValue,
+        avgPrice,
       });
     }
 

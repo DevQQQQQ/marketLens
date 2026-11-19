@@ -71,6 +71,8 @@ export class BinanceService {
 
   public parseTickerItem(item: BinanceTicker24hr): MarketItem {
     const sym = item.symbol;
+    // 币安 24hr ticker 接口中以下字段为协议规范强制返回项（非可选指标），
+    // 使用 parseFloat(...) || 0 仅作为数据非法/缺失时的保底数值兜底（与腾讯报文可选字段区分）。
     return {
       id:           sym,
       name:         this.formatDisplayName(sym),

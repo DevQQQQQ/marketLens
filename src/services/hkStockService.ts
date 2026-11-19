@@ -19,6 +19,13 @@ const F = {
   HIGH:        33, // 今日最高
   LOW:         34, // 今日最低
   TURNOVER:    37, // 成交额 (元/港币)
+  PE_TTM:      39, // 市盈率 (TTM)
+  AMPLITUDE:   43, // 振幅 %
+  TOTAL_MV:    44, // 总市值 (亿元，港币)
+  CIRC_MV:     45, // 流通市值 (亿元，港币)
+  PB:          58, // 市净率
+  TURNOVER_RATE: 59, // 换手率 %
+  AVG_PRICE:   73, // 日内成交均价 (港币)
 } as const;
 
 export class HKStockService extends TencentBaseService {
@@ -78,6 +85,24 @@ export class HKStockService extends TencentBaseService {
       // 必须走可选解析出口，禁止用 `|| 0` 把「上游未供数」伪装成「成交额为 0」（§5.5）。
       const turnover  = parseOptionalFloat(f[F.TURNOVER]);
 
+      // ── 深度量价与估值指标解析（具备防越界与无效数据防御） ──
+      const turnoverRate = parseOptionalFloat(f[F.TURNOVER_RATE]);
+      const peTtm        = parseOptionalFloat(f[F.PE_TTM]);
+      const amplitude    = parseOptionalFloat(f[F.AMPLITUDE]);
+
+      const rawCircMv    = parseOptionalFloat(f[F.CIRC_MV]);
+      // 腾讯返回单位为亿元（港币），转换为基准货币“元”
+      const circulationMarketValue = (rawCircMv !== undefined && rawCircMv > 0) ? rawCircMv * 1e8 : undefined;
+
+      const rawTotalMv   = parseOptionalFloat(f[F.TOTAL_MV]);
+      const totalMarketValue = (rawTotalMv !== undefined && rawTotalMv > 0) ? rawTotalMv * 1e8 : undefined;
+
+      const rawPb        = parseOptionalFloat(f[F.PB]);
+      const pb           = (rawPb !== undefined && rawPb > 0) ? rawPb : undefined;
+
+      const rawAvgPrice  = parseOptionalFloat(f[F.AVG_PRICE]);
+      const avgPrice     = (rawAvgPrice !== undefined && rawAvgPrice > 0) ? rawAvgPrice : undefined;
+
       items.push({
         id:           fullCode,
         name:         f[F.NAME] || f[F.CODE],
@@ -93,6 +118,13 @@ export class HKStockService extends TencentBaseService {
         volume,
         turnover,
         currency: this.currency,
+        turnoverRate,
+        peTtm,
+        pb,
+        amplitude,
+        circulationMarketValue,
+        totalMarketValue,
+        avgPrice,
       });
     }
 

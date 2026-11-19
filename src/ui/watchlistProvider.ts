@@ -14,18 +14,30 @@ import {
 import { SECTION_DEFAULT_GROUP_NAMES } from "../utils/config.ts";
 
 /**
- * 智能格式化价格
+ * 智能格式化价格（方案 A：微小单价优雅展示）
+ * - >= 10: 2位小数（$581.70）
+ * - 1 ~ 10: 3位小数（$9.876）
+ * - 1e-8 ~ 1: 展开最多 8 位小数并修剪多余尾零（保证至少2位小数），例如 $0.4715, $0.00009045
+ * - < 1e-8: 极微小价格回退科学计数法
  */
-function formatPrice(price: number, currency: "CNY" | "USD" | "HKD" | "USDT" = "USD"): string {
-  if (price === 0) return "0.00";
+export function formatPrice(price: number, currency: "CNY" | "USD" | "HKD" | "USDT" = "USD"): string {
+  if (!Number.isFinite(price) || price === 0) return "0.00";
   let sym = "$";
   if (currency === "CNY") sym = "¥";
   else if (currency === "HKD") sym = "HK$";
 
-  if (price < 0.0001) return `${sym}${price.toExponential(4)}`;
-  if (price < 1) return `${sym}${price.toFixed(6)}`;
-  if (price < 10) return `${sym}${price.toFixed(3)}`;
-  return `${sym}${price.toFixed(2)}`;
+  const prefix = price < 0 ? `-${sym}` : sym;
+  const abs = Math.abs(price);
+
+  if (abs < 1e-8) return `${prefix}${abs.toExponential(4)}`;
+  if (abs < 0.0001) {
+    const parts = abs.toFixed(8).split(".");
+    const dec = parts[1]!.replace(/0+$/, "");
+    return `${prefix}${parts[0]}.${dec}`;
+  }
+  if (abs < 1) return `${prefix}${abs.toFixed(6)}`;
+  if (abs < 10) return `${prefix}${abs.toFixed(3)}`;
+  return `${prefix}${abs.toFixed(2)}`;
 }
 
 /**
@@ -353,6 +365,19 @@ export class StockItem extends vscode.TreeItem {
         const copyTokenUri = `command:marketlens.copyCode?${encodeURIComponent(JSON.stringify(item.symbol))}`;
         const copyContractUri = `command:marketlens.copyCode?${encodeURIComponent(JSON.stringify(item.id))}`;
 
+        let multiChangeRow = "";
+        if (item.priceChangeMulti) {
+          const formatPct = (val?: number) => {
+            if (val === undefined || Number.isNaN(val)) return "--";
+            const s = val > 0 ? "+" : "";
+            return `${s}${val.toFixed(2)}%`;
+          };
+          const m5 = formatPct(item.priceChangeMulti.m5);
+          const h1 = formatPct(item.priceChangeMulti.h1);
+          const h6 = formatPct(item.priceChangeMulti.h6);
+          multiChangeRow = `| **多周期涨跌** | 5m: **${m5}** &nbsp; 1h: **${h1}** &nbsp; 6h: **${h6}** |\n`;
+        }
+
         const holdingSection = this._buildHoldingTooltipSection(item, alphaCur, alphaSym);
 
         mdText =
@@ -362,6 +387,7 @@ export class StockItem extends vscode.TreeItem {
           `| :--- | :--- |\n` +
           `| **最新价格** | ${colorHint} **${priceStr}** |\n` +
           `| **24h 涨跌幅** | **${pctStr}** |\n` +
+          multiChangeRow +
           `| **24h 涨跌额** | **${changeAmtStr}** |\n` +
           `| **开盘参考价** | ${openStr} |\n` +
           `| **流动性池 (Liquidity)** | **${liqStr}** |\n` +

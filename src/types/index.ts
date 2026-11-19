@@ -62,6 +62,12 @@ export interface MarketItem {
   chain?: string | undefined;      // 公链标识，如 "bsc", "solana", "base", "ethereum"
   dex?: string | undefined;        // 所在 DEX，如 "pancakeswap", "raydium", "uniswap", "pumpfun"
   liquidity?: number | undefined;  // 流动性池资金 (USD)
+  priceChangeMulti?: {             // 链上多周期涨跌幅 %
+    m5?: number | undefined;       // 5 分钟涨跌幅 %
+    h1?: number | undefined;       // 1 小时涨跌幅 %
+    h6?: number | undefined;       // 6 小时涨跌幅 %
+    h24?: number | undefined;      // 24 小时涨跌幅 %
+  } | undefined;
 
   // ── 数据新鲜度与展示扩展 (T1) ──
   updateTime?: number | undefined; // 行情最后拉取成功时间戳（毫秒）
