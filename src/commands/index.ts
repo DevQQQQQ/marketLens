@@ -5,6 +5,7 @@ import { WatchlistOps } from "../watchlistOps.ts";
 import { StatusBar } from "../ui/statusBar.ts";
 import { WatchlistProvider, GroupItem, StockItem } from "../ui/watchlistProvider.ts";
 import { SettingsWebviewPanel } from "../ui/settingsWebview.ts";
+import { MarketPanoramaWebviewPanel } from "../ui/panoramaWebview.ts";
 import { showPortfolioHud, setPortfolioHudContentProvider } from "../ui/portfolioHud.ts";
 import { readConfig, SECTION_DEFAULT_GROUP_NAMES } from "../utils/config.ts";
 import type { MarketSection } from "../types/index.ts";
@@ -117,6 +118,15 @@ export function registerCommands(
       }
       const extVersion = context.extension?.packageJSON?.version;
       SettingsWebviewPanel.createOrShow(context.extensionUri, extVersion);
+    }),
+
+    // 打开市场全景行情中心（大盘情绪与板块热力 Webview）
+    vscode.commands.registerCommand("marketlens.showMarketPanorama", () => {
+      if (!canEmitUserFeedback(statusBar.isBossKeyActive())) {
+        logger.info("专注模式激活期间拒绝打开行情中心（老板键守卫已生效）");
+        return;
+      }
+      MarketPanoramaWebviewPanel.createOrShow(context.extensionUri);
     }),
 
 

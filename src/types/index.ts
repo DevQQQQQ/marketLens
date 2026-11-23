@@ -98,6 +98,7 @@ export interface PriceAlertItem {
   above?: number | undefined;          // 突破上限价格 (> X)
   below?: number | undefined;          // 跌破下限价格 (< X)
   changePercent?: number | undefined;  // 单日涨跌幅突破绝对值 (|%| >= X)
+  rapidMove?: number | undefined;      // 盘中短时急拉/跳水快速异动阈值 (|%| >= X)
   enabled: boolean;        // 是否启用预警
 }
 

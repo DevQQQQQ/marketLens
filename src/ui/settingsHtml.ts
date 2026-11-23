@@ -746,17 +746,18 @@ export function getSettingsWebviewHtml(
             <table class="alert-table">
               <thead>
                 <tr>
-                  <th style="width: 20%;">标的名称 / 代码</th>
-                  <th style="width: 13%;">持仓成本</th>
-                  <th style="width: 13%;">持仓数量</th>
-                  <th style="width: 18%;">高于目标价 (突破 &gt;)</th>
-                  <th style="width: 18%;">低于目标价 (跌破 &lt;)</th>
-                  <th style="width: 11%;">单日波动 |%|</th>
+                  <th style="width: 18%;">标的名称 / 代码</th>
+                  <th style="width: 12%;">持仓成本</th>
+                  <th style="width: 12%;">持仓数量</th>
+                  <th style="width: 15%;">高于目标价 (突破 &gt;)</th>
+                  <th style="width: 15%;">低于目标价 (跌破 &lt;)</th>
+                  <th style="width: 10%;">单日波动 |%|</th>
+                  <th style="width: 11%;">短时异动 |%|</th>
                   <th style="width: 7%; text-align: center;">预警开关</th>
                 </tr>
               </thead>
               <tbody id="alertTableBody">
-                <tr><td colspan="7" style="text-align: center; color: var(--desc-fg); padding: 24px;">加载自选标的列表中...</td></tr>
+                <tr><td colspan="8" style="text-align: center; color: var(--desc-fg); padding: 24px;">加载自选标的列表中...</td></tr>
               </tbody>
             </table>
           </div>
@@ -1229,7 +1230,7 @@ export function getSettingsWebviewHtml(
           var grpName = groupKeys[i];
           var list = watchlist[grpName];
           if (Array.isArray(list) && list.length > 0) {
-            html += '<tr class="alert-grp-row"><td colspan="7">分组: ' + escapeHtml(grpName) + ' (' + list.length + ' 个标的)' + (isMasked ? ' <span style="font-size: 11px; opacity: 0.7;">[已脱敏]</span>' : '') + '</td></tr>';
+            html += '<tr class="alert-grp-row"><td colspan="8">分组: ' + escapeHtml(grpName) + ' (' + list.length + ' 个标的)' + (isMasked ? ' <span style="font-size: 11px; opacity: 0.7;">[已脱敏]</span>' : '') + '</td></tr>';
             for (var j = 0; j < list.length; j++) {
               var item = list[j];
               var sym = (typeof item === 'string') ? item : (item.symbol || item.code || '');
@@ -1243,6 +1244,7 @@ export function getSettingsWebviewHtml(
               var aboveVal = (rule.above !== undefined && rule.above !== null) ? rule.above : '';
               var belowVal = (rule.below !== undefined && rule.below !== null) ? rule.below : '';
               var pctVal = (rule.changePercent !== undefined && rule.changePercent !== null) ? rule.changePercent : '';
+              var rapidVal = (rule.rapidMove !== undefined && rule.rapidMove !== null) ? rule.rapidMove : '';
               var isEnabled = rule.enabled !== false;
 
               var keyEsc = escapeHtml(key);
@@ -1262,6 +1264,7 @@ export function getSettingsWebviewHtml(
                 + '<td><input type="number" step="any" class="alert-input alert-above" placeholder="未设置" value="' + (isMasked && aboveVal !== '' ? '***' : escapeHtml(aboveVal)) + '" ' + (isMasked ? 'disabled' : '') + '></td>'
                 + '<td><input type="number" step="any" class="alert-input alert-below" placeholder="未设置" value="' + (isMasked && belowVal !== '' ? '***' : escapeHtml(belowVal)) + '" ' + (isMasked ? 'disabled' : '') + '></td>'
                 + '<td><input type="number" step="any" class="alert-input alert-pct" placeholder="未设置" value="' + (isMasked && pctVal !== '' ? '***' : escapeHtml(pctVal)) + '" ' + (isMasked ? 'disabled' : '') + '></td>'
+                + '<td><input type="number" step="any" min="0" class="alert-input alert-rapid" placeholder="默认3.0%" value="' + (isMasked && rapidVal !== '' ? '***' : escapeHtml(rapidVal)) + '" ' + (isMasked ? 'disabled' : '') + '></td>'
                 + '<td style="text-align: center;"><label class="switch"><input type="checkbox" class="alert-enabled" ' + (isEnabled ? 'checked' : '') + '><span class="slider"></span></label></td>'
                 + '</tr>';
               totalCount++;
@@ -1270,7 +1273,7 @@ export function getSettingsWebviewHtml(
         }
 
         if (totalCount === 0) {
-          html = '<tr><td colspan="7" style="text-align: center; color: var(--desc-fg); padding: 24px;">暂无自选标的。请在左侧侧边栏添加自选后，即可在此配置持仓成本与到价预警。</td></tr>';
+          html = '<tr><td colspan="8" style="text-align: center; color: var(--desc-fg); padding: 24px;">暂无自选标的。请在左侧侧边栏添加自选后，即可在此配置持仓成本与到价预警。</td></tr>';
         }
 
         // 保存当前正在编辑的输入框焦点，防止实时重渲染时失去焦点
@@ -1286,6 +1289,7 @@ export function getSettingsWebviewHtml(
             if (activeEl.classList.contains('alert-above')) activeClass = 'alert-above';
             else if (activeEl.classList.contains('alert-below')) activeClass = 'alert-below';
             else if (activeEl.classList.contains('alert-pct')) activeClass = 'alert-pct';
+            else if (activeEl.classList.contains('alert-rapid')) activeClass = 'alert-rapid';
             else if (activeEl.classList.contains('alert-cost')) activeClass = 'alert-cost';
             else if (activeEl.classList.contains('alert-shares')) activeClass = 'alert-shares';
             if (activeEl.selectionStart !== undefined) {
@@ -1335,22 +1339,25 @@ export function getSettingsWebviewHtml(
         var aboveInput = tr.querySelector('.alert-above');
         var belowInput = tr.querySelector('.alert-below');
         var pctInput = tr.querySelector('.alert-pct');
+        var rapidInput = tr.querySelector('.alert-rapid');
         var enabledInput = tr.querySelector('.alert-enabled');
 
-        // 脱敏态下三个阈值输入框被遮值并 disabled，DOM 里的 '***' 不是「用户清空」而是「看不见」。
+        // 脱敏态下阈值输入框被遮值并 disabled，DOM 里的 '***' 不是「用户清空」而是「看不见」。
         // 若照常 parseFloat→NaN→undefined，切换启用开关就会把整条规则判成空并删除（真实数据丢失）。
         // 因此禁用态必须回读后端镜像里的现值，只有可编辑输入框才允许改写阈值。
         var mirrored = currentAlerts[key] || {};
         var above = readThresholdCell(aboveInput, mirrored.above);
         var below = readThresholdCell(belowInput, mirrored.below);
         var pct = readThresholdCell(pctInput, mirrored.changePercent);
+        var rapid = readThresholdCell(rapidInput, mirrored.rapidMove);
         var enabled = enabledInput ? enabledInput.checked : true;
 
         if (above !== undefined && isNaN(above)) above = undefined;
         if (below !== undefined && isNaN(below)) below = undefined;
         if (pct !== undefined && isNaN(pct)) pct = undefined;
+        if (rapid !== undefined && isNaN(rapid)) rapid = undefined;
 
-        if (above === undefined && below === undefined && pct === undefined) {
+        if (above === undefined && below === undefined && pct === undefined && rapid === undefined) {
           delete currentAlerts[key];
         } else {
           currentAlerts[key] = {
@@ -1359,6 +1366,7 @@ export function getSettingsWebviewHtml(
             above: above,
             below: below,
             changePercent: pct,
+            rapidMove: rapid,
             enabled: enabled
           };
         }
@@ -1377,7 +1385,7 @@ export function getSettingsWebviewHtml(
         var rows = tbody.querySelectorAll('tr[data-key]');
         for (var i = 0; i < rows.length; i++) {
           (function(tr) {
-            var alertInputs = tr.querySelectorAll('.alert-above, .alert-below, .alert-pct');
+            var alertInputs = tr.querySelectorAll('.alert-above, .alert-below, .alert-pct, .alert-rapid');
             for (var k = 0; k < alertInputs.length; k++) {
               alertInputs[k].addEventListener('input', function() {
                 updateAlertRuleFromRow(tr);

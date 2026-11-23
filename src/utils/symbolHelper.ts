@@ -563,8 +563,9 @@ function normalizeAlertRule(raw: unknown): PriceAlertItem | null {
   const above = positiveFinite(candidate.above);
   const below = positiveFinite(candidate.below);
   const changePercent = positiveFinite(candidate.changePercent);
+  const rapidMove = positiveFinite(candidate.rapidMove);
 
-  if (above === undefined && below === undefined && changePercent === undefined) {
+  if (above === undefined && below === undefined && changePercent === undefined && rapidMove === undefined) {
     return null;
   }
 
@@ -577,6 +578,7 @@ function normalizeAlertRule(raw: unknown): PriceAlertItem | null {
   if (above !== undefined) rule.above = above;
   if (below !== undefined) rule.below = below;
   if (changePercent !== undefined) rule.changePercent = changePercent;
+  if (rapidMove !== undefined) rule.rapidMove = rapidMove;
   if (typeof candidate.name === "string" && candidate.name.trim() !== "") {
     rule.name = candidate.name.trim();
   }

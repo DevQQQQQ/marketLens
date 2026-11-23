@@ -7,7 +7,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { isSameSymbol, normalizeSymbolKey, stripMarketPrefix, normalizeUSCode, inferAShareExchange, normalizeAShareCode, resolveItemAssetType, resolveItemDisplayName, getWatchlistFingerprint, reorderWatchlist, batchReorderWatchlist, pruneQuoteCache, extractTargetsFromWatchlist, extractStatusBarQuotes, computeStatusBarEnabled, resolveTrendColors, chunkArray, decodeGbk, escapeHtml, escapeMarkdownInline, toMarkdownCodeSpan, ASSET_TYPE_TO_SECTION_MAP, NORMALIZE_SYMBOL_KEY_CLIENT_SCRIPT, isItemMarketClosed, isGroupMarketClosed, buildGroupNodeId, sanitizeWatchlist } from "../src/utils/symbolHelper.ts";
+import { isSameSymbol, normalizeSymbolKey, stripMarketPrefix, normalizeUSCode, inferAShareExchange, normalizeAShareCode, resolveItemAssetType, resolveItemDisplayName, getWatchlistFingerprint, reorderWatchlist, batchReorderWatchlist, pruneQuoteCache, extractTargetsFromWatchlist, extractStatusBarQuotes, computeStatusBarEnabled, resolveTrendColors, chunkArray, decodeGbk, escapeHtml, escapeMarkdownInline, toMarkdownCodeSpan, ASSET_TYPE_TO_SECTION_MAP, NORMALIZE_SYMBOL_KEY_CLIENT_SCRIPT, isItemMarketClosed, isGroupMarketClosed, buildGroupNodeId, sanitizeWatchlist, sanitizeAlerts, applyAlertRuleDelta } from "../src/utils/symbolHelper.ts";
+import { getSettingsWebviewHtml } from "../src/ui/settingsHtml.ts";
 import type { MarketItem, WatchlistConfig, WatchConfigItem, PriceAlertItem } from "../src/types/index.ts";
 import { GLOBAL_STATE_QUOTE_CACHE_KEY } from "../src/types/index.ts";
 import { describeForLog, describeListForLog, scrubForLog, describeErrorForLog, describeErrorNameForLog, formatDetailForLog, logger } from "../src/utils/logger.ts";
@@ -5869,6 +5870,254 @@ void test("B-1 回归 - scheduler 源码契约：schedulePersistQuoteCache 不�
     "scheduler.ts 中不得存在复制残留的连续 schedulePersistQuoteCache 调用"
   );
 });
+
+void test("Squarified Treemap 矩形树图算法 - 几何切分与非法权重守卫", async () => {
+  const { computeSquarifiedTreemap } = await import("../src/utils/treemap.ts");
+
+  // 1. 空输入保护
+  assert.deepStrictEqual(computeSquarifiedTreemap([], 600, 400), []);
+  assert.deepStrictEqual(computeSquarifiedTreemap([{ name: "A", value: 10, change: 1 }], 0, 400), []);
+  assert.deepStrictEqual(computeSquarifiedTreemap([{ name: "A", value: 10, change: 1 }], 600, -10), []);
+
+  // 2. 负值与 NaN 权重过滤
+  const dirtyItems = [
+    { name: "正常A", value: 100, change: 2 },
+    { name: "脏数据负数", value: -50, change: -1 },
+    { name: "脏数据零", value: 0, change: 0 },
+    { name: "脏数据NaN", value: NaN, change: 0 },
+    { name: "正常B", value: 300, change: -3 },
+  ];
+  const rects = computeSquarifiedTreemap(dirtyItems, 400, 200);
+  assert.strictEqual(rects.length, 2, "非法权重必须被安全过滤");
+  assert.strictEqual(rects[0]!.name, "正常B", "必须按权重降序排列");
+  assert.strictEqual(rects[1]!.name, "正常A");
+
+  // 3. 几何面积守卫：各子矩形面积之和应等于总面积 W * H
+  const totalArea = 400 * 200;
+  const computedArea = rects.reduce((sum, r) => sum + r.w * r.h, 0);
+  assert.ok(Math.abs(computedArea - totalArea) < 1, "子矩形总面积应等于画布面积");
+  for (const r of rects) {
+    assert.ok(r.w > 0 && r.h > 0, "矩形宽高必须严格为正");
+    assert.ok(r.x >= 0 && r.y >= 0, "坐标不能为负");
+    assert.ok(r.x + r.w <= 400.01 && r.y + r.h <= 200.01, "矩形不能超出画布边界");
+  }
+});
+
+void test("行情中心纯原生 SVG 渲染器 - 直方图与恐慌贪婪仪表盘契约", async () => {
+  const { renderDistributionSvg, renderFearGreedGaugeSvg, getFearGreedMeta } = await import("../src/utils/panoramaSvg.ts");
+
+  // 1. 恐慌贪婪分级区间与文本映射
+  assert.strictEqual(getFearGreedMeta(10).labelZh, "极度恐慌");
+  assert.strictEqual(getFearGreedMeta(10).labelEn, "Extreme Fear");
+  assert.strictEqual(getFearGreedMeta(35).labelZh, "恐慌");
+  assert.strictEqual(getFearGreedMeta(50).labelZh, "中立");
+  assert.strictEqual(getFearGreedMeta(68).labelZh, "贪婪");
+  assert.strictEqual(getFearGreedMeta(85).labelZh, "极度贪婪");
+
+  // 2. 恐慌贪婪半圆仪表盘 SVG 输出结构
+  const gaugeSvg = renderFearGreedGaugeSvg({ score: 18, classification: "Extreme Fear" }, 240, 150);
+  assert.ok(gaugeSvg.includes("<svg"), "必须输出合法的 SVG");
+  assert.ok(gaugeSvg.includes("18"), "必须包含当前分数");
+  assert.ok(gaugeSvg.includes("极度恐慌 (Extreme Fear)"), "必须包含中文与英文评级");
+  assert.ok(gaugeSvg.includes("gaugeGrad"), "必须包含渐变刻度弧");
+
+  // 3. A 股涨跌梯队直方图与比例条 SVG 输出结构
+  const distSvg = renderDistributionSvg({
+    upLimit: 27,
+    upHigh: 36,
+    upMid: 268,
+    upLow: 311,
+    flat: 59,
+    downLow: 694,
+    downMid: 3335,
+    downHigh: 432,
+    downLimit: 55,
+    upTotal: 642,
+    downTotal: 4516,
+    turnover: "1.06万亿",
+  });
+  assert.ok(distSvg.includes("<svg"), "直方图必须为合法 SVG");
+  assert.ok(distSvg.includes("上涨 642 只"), "必须正确渲染上涨总数");
+  assert.ok(distSvg.includes("4516 只 下跌"), "必须正确渲染下跌总数");
+  assert.ok(distSvg.includes("3335"), "必须正确渲染峰值区间数值");
+  assert.ok(distSvg.includes("涨停"), "必须包含涨停梯队标签");
+  assert.ok(distSvg.includes("跌停"), "必须包含跌停梯队标签");
+});
+
+void test("行情中心 Phase 2 - 全球/港股/美股/ETF 数据聚合与契约保护", async () => {
+  const panorama = await import("../src/services/panoramaService.ts");
+
+  // 1. 验证导出契约存在
+  assert.strictEqual(typeof panorama.fetchGlobalPanorama, "function");
+  assert.strictEqual(typeof panorama.fetchHkPanorama, "function");
+  assert.strictEqual(typeof panorama.fetchUsPanorama, "function");
+  assert.strictEqual(typeof panorama.fetchFundPanorama, "function");
+
+  // 2. 模拟拉取或空回退防御（确保网络异常时不抛出未捕获异常）
+  const [globalData, hkData, usData, fundData] = await Promise.all([
+    panorama.fetchGlobalPanorama(),
+    panorama.fetchHkPanorama(),
+    panorama.fetchUsPanorama(),
+    panorama.fetchFundPanorama(),
+  ]);
+
+  assert.ok(Array.isArray(globalData.indices), "全球指数应为数组");
+  assert.ok(Array.isArray(globalData.commodities), "大宗商品应为数组");
+  assert.ok(Array.isArray(hkData.indices), "港股指数应为数组");
+  assert.ok(Array.isArray(hkData.leaders), "港股龙头资产应为数组");
+  assert.ok(Array.isArray(usData.indices), "美股指数应为数组");
+  assert.ok(Array.isArray(usData.mag7), "美股七巨头应为数组");
+  assert.ok(Array.isArray(fundData.popularEtfs), "热门 ETF 应为数组");
+});
+
+void test("行情中心脱敏与老板键联动契约测试", async () => {
+  const { MarketPanoramaWebviewPanel } = await import("../src/ui/panoramaWebview.ts");
+  // 静态 closeIfVisible 方法安全存在且空调用不抛异常
+  assert.strictEqual(typeof MarketPanoramaWebviewPanel.closeIfVisible, "function");
+  assert.doesNotThrow(() => {
+    MarketPanoramaWebviewPanel.closeIfVisible();
+  });
+
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+  const statusBarCode = fs.readFileSync(path.join(repoRoot, "src", "ui", "statusBar.ts"), "utf-8");
+
+  assert.ok(
+    statusBarCode.includes("MarketPanoramaWebviewPanel.closeIfVisible()"),
+    "statusBar.toggleBossKey 必须在激活专注模式时联动关闭行情中心面板"
+  );
+});
+
+void test("行情中心加密货币 24h 领涨/领跌榜契约测试", async () => {
+  const panorama = await import("../src/services/panoramaService.ts");
+  const cryptoData = await panorama.fetchCryptoPanorama();
+
+  assert.ok(Array.isArray(cryptoData.topGainers), "topGainers 必须为数组");
+  assert.ok(Array.isArray(cryptoData.topLosers), "topLosers 必须为数组");
+  assert.ok(cryptoData.topGainers.length <= 5, "领涨榜最多展示前 5 名");
+  assert.ok(cryptoData.topLosers.length <= 5, "领跌榜最多展示前 5 名");
+
+  for (const item of cryptoData.topGainers) {
+    assert.strictEqual(typeof item.name, "string");
+    assert.strictEqual(typeof item.price, "number");
+    assert.strictEqual(typeof item.change, "number");
+    assert.strictEqual(typeof item.volume, "number");
+  }
+});
+
+void test("AlertManager 异动提醒 - 封板、炸板与滑动窗口短时急拉/跳水契约测试", async () => {
+  const { AlertManager } = await import("../src/services/alertManager.ts");
+  const am = new AlertManager();
+
+  const mockConfig = {
+    alerts: {
+      "sh600519": { symbol: "sh600519", enabled: true, above: 2000 },
+      "sz000001": { symbol: "sz000001", enabled: true, rapidMove: 2.5 },
+    },
+    alertNotificationMode: "notification" as const,
+    alertCooldownMinutes: 15,
+  };
+
+  // 1. 测试 A 股封板异动提醒 (limitUp)
+  const quoteLimitUp = {
+    id: "sh600519",
+    name: "贵州茅台",
+    symbol: "sh600519",
+    type: "A_SHARE" as const,
+    price: 1980.0,
+    limitUp: 1980.0,
+    changePercent: 10.0,
+  };
+
+  const events1 = am.checkQuotes([quoteLimitUp], mockConfig);
+  const limitUpEvt = events1.find((e) => e.type === "limitUp");
+  assert.ok(limitUpEvt, "首次达到涨停价必须触发 limitUp 封板提醒");
+  assert.strictEqual(limitUpEvt.symbolKey, "sh600519");
+
+  // 2. 再次同一价格刷新处于封板态，受冷却期保护不应重复触发
+  const events2 = am.checkQuotes([quoteLimitUp], mockConfig);
+  assert.strictEqual(events2.filter((e) => e.type === "limitUp").length, 0, "冷却期内不得重复触发封板提醒");
+
+  // 3. 测试 A 股炸板（涨停打开）提醒 (limitUpBroken)
+  const quoteLimitBroken = {
+    ...quoteLimitUp,
+    price: 1975.0, // 回落低于涨停价
+  };
+  const events3 = am.checkQuotes([quoteLimitBroken], mockConfig);
+  const brokenEvt = events3.find((e) => e.type === "limitUpBroken");
+  assert.ok(brokenEvt, "涨停打开回落时必须触发 limitUpBroken 炸板提醒");
+
+  // 4. 测试 DEX 链上代币 5m 突变异动
+  const quoteDex = {
+    id: "0x123",
+    name: "DEX_MEME",
+    symbol: "0x123",
+    type: "BSC_TOKEN" as const,
+    price: 1.5,
+    changePercent: 35.0,
+    priceChangeMulti: {
+      m5: 12.5, // 5 分钟暴涨 12.5%
+    },
+  };
+  const mockConfigDex = {
+    alerts: {
+      "0x123": { symbol: "0x123", enabled: true },
+    },
+    alertNotificationMode: "notification" as const,
+    alertCooldownMinutes: 15,
+  };
+  const eventsDex = am.checkQuotes([quoteDex], mockConfigDex);
+  const dexRapid = eventsDex.find((e) => e.type === "rapidMove");
+  assert.ok(dexRapid, "链上 5m 突变超过 10% 必须触发 rapidMove 异动提醒");
+  assert.strictEqual(dexRapid.currentValue, 12.5);
+});
+
+void test("P1/P2 回归 - sanitizeAlerts 与 applyAlertRuleDelta 支持 rapidMove 字段并过滤非法值", () => {
+  const dirty = {
+    validBoth: { symbol: "sh600519", above: 2000, rapidMove: 5.5, enabled: true },
+    validRapidOnly: { symbol: "sz000001", rapidMove: 4.0, enabled: true },
+    invalidRapidNegative: { symbol: "hk00700", rapidMove: -3.0 },
+    invalidRapidZero: { symbol: "usAAPL", rapidMove: 0 },
+    invalidRapidInfinity: { symbol: "btcusdt", rapidMove: Number.POSITIVE_INFINITY },
+  };
+  const sanitized = sanitizeAlerts(dirty);
+  assert.ok(sanitized["validBoth"], "包含 above 与 rapidMove 的规则必须保留");
+  assert.strictEqual(sanitized["validBoth"]?.above, 2000);
+  assert.strictEqual(sanitized["validBoth"]?.rapidMove, 5.5);
+
+  assert.ok(sanitized["validRapidOnly"], "仅设置 rapidMove 异动阈值的规则必须被正确保留");
+  assert.strictEqual(sanitized["validRapidOnly"]?.rapidMove, 4.0);
+
+  assert.strictEqual(sanitized["invalidRapidNegative"], undefined, "负数 rapidMove 必须剔除");
+  assert.strictEqual(sanitized["invalidRapidZero"], undefined, "0 阈值 rapidMove 必须剔除");
+  assert.strictEqual(sanitized["invalidRapidInfinity"], undefined, "Infinity 阈值 rapidMove 必须剔除");
+
+  // 增量合并契约
+  const merged = applyAlertRuleDelta(
+    sanitized,
+    "sz000001",
+    { symbol: "sz000001", rapidMove: 6.8, enabled: true }
+  );
+  assert.ok(merged);
+  assert.strictEqual(merged!["sz000001"]?.rapidMove, 6.8, "增量回写必须更新 rapidMove 阈值");
+});
+
+void test("P2 回归 - SettingsHtml 预警矩阵包含短时异动列与 alert-rapid 输入框", () => {
+  const html = getSettingsWebviewHtml("nonce123", "1.3.9", "vscode-resource:", {
+    alerts: {
+      "sh600519": { symbol: "sh600519", rapidMove: 4.5, enabled: true },
+    },
+    watchlist: {
+      "A股": [{ symbol: "sh600519", name: "贵州茅台" }],
+    },
+  } as any);
+
+  assert.ok(html.includes("短时异动 |%|"), "表头必须包含短时异动列");
+  assert.ok(html.includes("alert-rapid"), "必须渲染 alert-rapid 输入控件");
+  assert.ok(html.includes("默认3.0%"), "必须具有默认3.0%占位符");
+  assert.ok(html.includes("colspan=\"8\""), "必须使用 8 列跨列");
+});
+
+
 
 
 

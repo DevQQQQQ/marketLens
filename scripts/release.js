@@ -31,6 +31,10 @@ const isDryRun = process.argv.includes('--dry-run');
 const skipChecks = process.argv.includes('--skip-checks');
 const autoConfirm = process.argv.includes('--yes') || process.argv.includes('-y');
 
+// 动态感知当前调用的包管理器（优先识别 pnpm，兼容 npm 与 yarn）
+const userAgent = process.env.npm_config_user_agent || '';
+const pm = userAgent.startsWith('pnpm') ? 'pnpm' : (userAgent.startsWith('yarn') ? 'yarn' : 'npm');
+
 /**
  * @param {string} title
  */
@@ -147,17 +151,17 @@ async function main() {
     logWarn('已通过 --skip-checks 参数跳过前置门禁');
   } else {
     try {
-      console.log('正在核对版本一致性 (sync-version:check)...');
-      run('npm run sync-version:check');
+      console.log(`正在核对版本一致性 (${pm} run sync-version:check)...`);
+      run(`${pm} run sync-version:check`);
 
-      console.log('正在执行 ESLint (npm run lint)...');
-      run('npm run lint');
+      console.log(`正在执行 ESLint (${pm} run lint)...`);
+      run(`${pm} run lint`);
 
-      console.log('正在执行类型检查 (npm run typecheck)...');
-      run('npm run typecheck');
+      console.log(`正在执行类型检查 (${pm} run typecheck)...`);
+      run(`${pm} run typecheck`);
 
-      console.log('正在运行全量自动化测试 (npm test)...');
-      run('npm test');
+      console.log(`正在运行全量自动化测试 (${pm} test)...`);
+      run(`${pm} test`);
 
       logSuccess('所有发版门禁均已 100% 验证通过！');
     } catch (err) {

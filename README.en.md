@@ -8,7 +8,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/VS_Code-^1.85.0-007ACC?logo=visualstudiocode" alt="VS Code Version">
   <img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License">
-  <img src="https://img.shields.io/badge/Release-v1.3.9-blue.svg" alt="Version">
+  <img src="https://img.shields.io/badge/Release-v1.4.0-blue.svg" alt="Version">
   <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-orange" alt="Platform">
 </p>
 
@@ -22,6 +22,8 @@ As developers, while focusing on writing code, we often need to keep an eye on o
 
 - 🌲 **6-in-1 Unified Market Coverage**: On-field ETFs/funds, A-Shares, HK stocks, US stocks, Binance crypto, and Alpha DEX tokens all in one place—say goodbye to multi-app switching.
 - 🎯 **Trading Day IPO & Subscription Calendar**: Intelligent reminders for today's A-share IPOs, convertible bonds, and HK IPOs during trading hours, one-click copy to clipboard with zero-spam protection.
+- ⚡ **Market Panorama Center**: One-click instant dashboard across 6 market tabs (A-share 9-tier distribution histogram, sector/leader/ETF/crypto Squarified treemap, global macro indices, commodities & forex, Fear & Greed gauge).
+- 🚀 **Smart Volatility & Limit-Up Broken Alerts**: Second-level tracking for A-share limit-up ceiling hits & broken rebounds, sliding-window rapid surge/plunge detection, and DEX 5m surges.
 - ⚡ **Price Alerts & Volatility Monitoring**: Real-time notifications for breaking upper resistance, falling below stop-loss, or sharp intraday swings—no need to stare at charts all day.
 - 🔍 **Smart Chinese & Pinyin Fuzzy Search**: Search stocks directly by name (e.g., "贵州茅台", "腾讯") or Pinyin acronym ("GZMT", "TC") without memorizing numeric codes.
 - 🖱️ **Multi-Select Batch Drag & Drop & Multi-Dimensional Sorting**: Hold `Shift` or `Ctrl` / `Cmd` to reorder items in batches, and sort groups by change %, price, or Pinyin with one click.
@@ -83,7 +85,10 @@ A specialized companion for A-share and HK market participants—no more manuall
 
 Stay focused on your code without watching tickers constantly. Receive accurate, timely alerts when assets hit key levels:
 
-- **Three Flexible Alert Rules**:
+- **Flexible & Comprehensive Alert Rules**:
+    - **`A-Share Limit-Up Hit & Broken Alerts`**: Notifies instantly upon reaching limit-up ceiling, and alerts when limit-up opens to guard against profit retracement;
+    - **`Intraday Rapid Surge / Plunge`**: Sliding-window 5-minute sampling detecting sharp intraday momentum within 3 minutes (default ±3%, customizable);
+    - **`DEX Token 5m Surge Sensing`**: Directly utilizes on-chain 5-minute price change metrics to catch rapid breakout moves;
     - **`Price Ceiling Alert (Break Above)`**: Triggers when current price >= target value (e.g., Kweichow Moutai >= 1800, BTC >= 75000);
     - **`Price Floor Alert (Drop Below)`**: Triggers when current price <= target value (e.g., Kweichow Moutai <= 1500, SOL <= 110);
     - **`Intraday Volatility Alert`**: Triggers when absolute percentage change exceeds the set threshold (e.g., daily move > 10%).

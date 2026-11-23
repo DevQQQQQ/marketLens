@@ -2,6 +2,7 @@
   "displayName": "MarketLens-全球行情看板(A股/港股/美股/基金/加密货币)",
   "description": "实时查看A股/港股/美股/基金/加密货币与链上DEX资产，支持快捷键隐藏、简洁模式及网络代理。专为开发者打造的摸鱼盯盘、股票看板与持仓盈亏效率工具，支持自定义自选列表、价格预警、大盘指数及底部状态栏轮播。",
   "command.openSettings": "设置",
+  "command.showMarketPanorama": "行情中心（大盘情绪与热力图）",
   "command.refresh": "立即刷新全部",
   "command.refreshGroup": "刷新当前分类",
   "command.expandAllGroups": "全部展开",

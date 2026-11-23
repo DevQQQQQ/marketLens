@@ -2,7 +2,7 @@
 	"name": "marketlens",
 	"displayName": "%displayName%",
 	"description": "%description%",
-	"version": "1.3.9",
+	"version": "1.4.0",
 	"publisher": "devqqqqq",
 	"repository": {
 		"type": "git",
@@ -149,6 +149,11 @@
 				"icon": "$(gear)"
 			},
 			{
+				"command": "marketlens.showMarketPanorama",
+				"title": "%command.showMarketPanorama%",
+				"icon": "$(pulse)"
+			},
+			{
 				"command": "marketlens.restoreDefaults",
 				"title": "%command.restoreDefaults%",
 				"icon": "$(discard)"
@@ -265,6 +270,11 @@
 		],
 		"menus": {
 			"view/title": [
+				{
+					"command": "marketlens.showMarketPanorama",
+					"when": "view == marketlens.watchlist",
+					"group": "navigation@0"
+				},
 				{
 					"command": "marketlens.openSettings",
 					"when": "view == marketlens.watchlist",
@@ -916,6 +926,7 @@
 		"package": "vsce package --allow-missing-repository --no-dependencies",
 		"postpackage": "node scripts/prepare-release-changelog.js --restore",
 		"release": "node scripts/release.js",
+		"git": "node scripts/release.js",
 		"lint": "eslint src test --ext ts",
 		"typecheck": "tsc --noEmit && tsc -p tsconfig.test.json --noEmit",
 		"pretest": "node scripts/setup-mock-vscode.js",

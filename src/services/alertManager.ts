@@ -27,13 +27,17 @@ export interface AlertTriggerEvent {
   symbolKey: string;
   item: MarketItem;
   rule: PriceAlertItem;
-  type: "above" | "below" | "changePercent";
+  type: "above" | "below" | "changePercent" | "rapidMove" | "limitUp" | "limitUpBroken";
   currentValue: number;
   thresholdValue: number;
 }
 
 export class AlertManager {
   private readonly cooldownMap = new Map<string, number>();
+  // 盘中短时急拉/跳水采样队列（保留 5 分钟内历史价格）
+  private readonly priceHistory = new Map<string, Array<{ price: number; timestamp: number }>>();
+  // A 股涨停封板状态记录
+  private readonly limitUpState = new Map<string, boolean>();
   // 构造参数可缺省（无状态栏场景），存入的真是 `undefined` 而非「键不存在」
   private readonly statusBar: StatusBar | undefined;
 
@@ -53,10 +57,16 @@ export class AlertManager {
     this.cooldownMap.set(`${normKey}:above`, expiry);
     this.cooldownMap.set(`${normKey}:below`, expiry);
     this.cooldownMap.set(`${normKey}:changePercent`, expiry);
+    this.cooldownMap.set(`${normKey}:rapidMove`, expiry);
+    this.cooldownMap.set(`${normKey}:limitUp`, expiry);
+    this.cooldownMap.set(`${normKey}:limitUpBroken`, expiry);
   }
 
   /** 只读探针：当前是否仍处于静音冷却期内（供回归用例观测到期自清理链路） */
-  public isMuted(symbolKey: string, minutesSuffix: "above" | "below" | "changePercent" = "above"): boolean {
+  public isMuted(
+    symbolKey: string,
+    minutesSuffix: "above" | "below" | "changePercent" | "rapidMove" | "limitUp" | "limitUpBroken" = "above"
+  ): boolean {
     const normKey = normalizeSymbolKey(symbolKey) || symbolKey.toLowerCase();
     const expiry = this.cooldownMap.get(`${normKey}:${minutesSuffix}`);
     return expiry !== undefined && Date.now() < expiry;
@@ -67,6 +77,8 @@ export class AlertManager {
    */
   public resetCooldown(): void {
     this.cooldownMap.clear();
+    this.priceHistory.clear();
+    this.limitUpState.clear();
   }
 
   /**
@@ -166,12 +178,139 @@ export class AlertManager {
           });
         }
       }
+
+      // 4. A 股封板与炸板异动监控
+      if (q.type === "A_SHARE" && typeof q.limitUp === "number" && q.limitUp > 0 && q.price > 0) {
+        const isLimitUpNow = q.price >= q.limitUp - 0.001;
+        const wasLimitUp = this.limitUpState.get(matchedKey) ?? false;
+
+        // 4.1 触发封板提醒
+        if (isLimitUpNow && !wasLimitUp) {
+          this.limitUpState.set(matchedKey, true);
+          const cKey = `${matchedKey}:limitUp`;
+          const cooldownExpiry = this.cooldownMap.get(cKey) || 0;
+          if (now >= cooldownExpiry) {
+            this.cooldownMap.set(cKey, now + cooldownMs);
+            triggeredEvents.push({
+              symbolKey: matchedKey,
+              item: q,
+              rule,
+              type: "limitUp",
+              currentValue: q.price,
+              thresholdValue: q.limitUp,
+            });
+          }
+        }
+        // 4.2 触发炸板（涨停打开）提醒并释放封板状态
+        else if (!isLimitUpNow && wasLimitUp) {
+          this.limitUpState.delete(matchedKey);
+          const cKey = `${matchedKey}:limitUpBroken`;
+          const cooldownExpiry = this.cooldownMap.get(cKey) || 0;
+          if (now >= cooldownExpiry) {
+            this.cooldownMap.set(cKey, now + cooldownMs);
+            triggeredEvents.push({
+              symbolKey: matchedKey,
+              item: q,
+              rule,
+              type: "limitUpBroken",
+              currentValue: q.price,
+              thresholdValue: q.limitUp,
+            });
+          }
+        }
+      }
+
+      // 5. 盘中短时快速急拉/跳水与 DEX 5m 突变异动
+      const rapidThreshold = rule.rapidMove !== undefined && Number.isFinite(rule.rapidMove) && rule.rapidMove > 0
+        ? rule.rapidMove
+        : 3.0; // 默认 3.0% 短时异动阈值
+
+      // 5.1 DEX 链上代币 5m 突变直接利用原生指标
+      if (
+        q.priceChangeMulti?.m5 !== undefined &&
+        Number.isFinite(q.priceChangeMulti.m5) &&
+        Math.abs(q.priceChangeMulti.m5) >= Math.max(5.0, rapidThreshold)
+      ) {
+        const cKey = `${matchedKey}:rapidMove`;
+        const cooldownExpiry = this.cooldownMap.get(cKey) || 0;
+        if (now >= cooldownExpiry) {
+          this.cooldownMap.set(cKey, now + cooldownMs);
+          triggeredEvents.push({
+            symbolKey: matchedKey,
+            item: q,
+            rule,
+            type: "rapidMove",
+            currentValue: q.priceChangeMulti.m5,
+            thresholdValue: Math.max(5.0, rapidThreshold),
+          });
+        }
+      }
+      // 5.2 股票/加密币通用滑动窗口（3~5分钟）急拉跳水计算
+      else if (q.price > 0) {
+        let history = this.priceHistory.get(matchedKey);
+        if (!history) {
+          history = [];
+          this.priceHistory.set(matchedKey, history);
+        }
+        history.push({ price: q.price, timestamp: now });
+        // 清理超过 5 分钟的陈旧数据
+        while (history.length > 0 && now - history[0]!.timestamp > 5 * 60 * 1000) {
+          history.shift();
+        }
+
+        // 仅在拥有至少 1 分钟以前的对比基准点时才计算急拉/跳水，避免刚添加自选时误触
+        const basePoint = history[0];
+        if (basePoint && now - basePoint.timestamp >= 60 * 1000 && basePoint.price > 0) {
+          const deltaPct = ((q.price - basePoint.price) / basePoint.price) * 100;
+          if (Math.abs(deltaPct) >= rapidThreshold) {
+            const cKey = `${matchedKey}:rapidMove`;
+            const cooldownExpiry = this.cooldownMap.get(cKey) || 0;
+            if (now >= cooldownExpiry) {
+              this.cooldownMap.set(cKey, now + cooldownMs);
+              triggeredEvents.push({
+                symbolKey: matchedKey,
+                item: q,
+                rule,
+                type: "rapidMove",
+                currentValue: deltaPct,
+                thresholdValue: rapidThreshold,
+              });
+            }
+          }
+        }
+      }
     }
 
-    // 冷却表到期即删：无人回收会让已删除自选的键永久滞留内存（AGENTS.md §5.6）
+    // 冷却表与滑动队列到期即删：无人回收会让已删除自选的键永久滞留内存（AGENTS.md §5.6）
     for (const [expiredKey, expiry] of this.cooldownMap) {
       if (now >= expiry) {
         this.cooldownMap.delete(expiredKey);
+      }
+    }
+    for (const [key, history] of this.priceHistory) {
+      while (history.length > 0 && now - history[0]!.timestamp > 5 * 60 * 1000) {
+        history.shift();
+      }
+      if (history.length === 0) {
+        this.priceHistory.delete(key);
+      }
+    }
+    if (this.limitUpState.size > 0) {
+      const activeKeys = new Set<string>();
+      for (const q of quotes) {
+        if (!q || !q.symbol) continue;
+        const normSym = normalizeSymbolKey(q.symbol);
+        const normId = q.id ? normalizeSymbolKey(q.id) : undefined;
+        const rawTicker = stripMarketPrefix(q.symbol);
+        if (normSym) activeKeys.add(normSym);
+        if (normId) activeKeys.add(normId);
+        if (q.symbol) activeKeys.add(q.symbol);
+        if (rawTicker) activeKeys.add(rawTicker);
+      }
+      for (const key of this.limitUpState.keys()) {
+        if (!alerts[key] && !activeKeys.has(key)) {
+          this.limitUpState.delete(key);
+        }
       }
     }
 
@@ -196,7 +335,13 @@ export class AlertManager {
 
     const summaryParts = events.map((e) => {
       const name = masked ? "****" : (e.item.name || e.item.symbol);
-      const tag = e.type === "above" ? "突破上限" : e.type === "below" ? "跌破下限" : "剧烈波动";
+      const tag =
+        e.type === "above" ? "突破上限" :
+        e.type === "below" ? "跌破下限" :
+        e.type === "limitUp" ? "涨停封板" :
+        e.type === "limitUpBroken" ? "涨停打开" :
+        e.type === "rapidMove" ? (e.currentValue >= 0 ? "短时急拉" : "短时跳水") :
+        "剧烈波动";
       return `${name} (${tag})`;
     });
 
@@ -245,11 +390,20 @@ export class AlertManager {
     if (this.statusBar?.isBossKeyActive()) return;
 
     const pickItems = events.map((e) => {
-      const typeLabel = e.type === "above" ? "突破上限" : e.type === "below" ? "跌破下限" : "剧烈波动";
-      const icon = e.type === "above" ? "$(arrow-up)" : e.type === "below" ? "$(arrow-down)" : "$(pulse)";
+      const typeLabel =
+        e.type === "above" ? "突破上限" :
+        e.type === "below" ? "跌破下限" :
+        e.type === "limitUp" ? "涨停封板" :
+        e.type === "limitUpBroken" ? "涨停打开" :
+        e.type === "rapidMove" ? (e.currentValue >= 0 ? "短时急拉" : "短时跳水") :
+        "剧烈波动";
+      const icon =
+        e.type === "above" || e.type === "limitUp" ? "$(arrow-up)" :
+        e.type === "below" || e.type === "limitUpBroken" ? "$(warning)" :
+        "$(pulse)";
       const label = `${icon} [${typeLabel}] ${e.item.name || e.item.symbol} (${e.item.symbol})`;
-      const desc = e.type === "changePercent"
-        ? `现涨跌幅: ${e.currentValue >= 0 ? "+" : ""}${e.currentValue.toFixed(2)}% · 设定阈值: ±${e.thresholdValue}%`
+      const desc = e.type === "changePercent" || e.type === "rapidMove"
+        ? `现变动: ${e.currentValue >= 0 ? "+" : ""}${e.currentValue.toFixed(2)}% · 设定阈值: ±${e.thresholdValue}%`
         : `现价: ${e.currentValue} · 设定阈值: ${e.thresholdValue}`;
       return {
         label,
@@ -288,6 +442,22 @@ export class AlertManager {
       const thresholdStr = masked ? "****" : String(evt.thresholdValue);
       alertMessage = `⚠️ [MarketLens 预警] ${displayName} (${displaySymbol}) 现价已跌破下限：${currentStr}${currency}（设定阈值 ≤ ${thresholdStr}）`;
       statusText = masked ? "$(warning) [跌破预警]" : `$(warning) [跌破预警] ${displayName} ${evt.currentValue}`;
+    } else if (evt.type === "limitUp") {
+      const currentStr = masked ? "****" : String(evt.currentValue);
+      alertMessage = `🚀 [MarketLens 封板] ${displayName} (${displaySymbol}) 现价已封涨停板：${currentStr}${currency}！`;
+      statusText = masked ? "$(arrow-up) [涨停封板]" : `$(arrow-up) [涨停封板] ${displayName} ${evt.currentValue}`;
+    } else if (evt.type === "limitUpBroken") {
+      const currentStr = masked ? "****" : String(evt.currentValue);
+      alertMessage = `⚠️ [MarketLens 炸板] ${displayName} (${displaySymbol}) 涨停板打开！现价回落至 ${currentStr}${currency}，注意短线波动！`;
+      statusText = masked ? "$(warning) [涨停打开]" : `$(warning) [涨停打开] ${displayName} ${evt.currentValue}`;
+    } else if (evt.type === "rapidMove") {
+      const sign = evt.currentValue >= 0 ? "+" : "";
+      const direction = evt.currentValue >= 0 ? "急拉" : "跳水";
+      const icon = evt.currentValue >= 0 ? "🚀" : "📉";
+      const currentStr = masked ? "****" : `${sign}${evt.currentValue.toFixed(2)}%`;
+      const thresholdStr = masked ? "****" : `±${evt.thresholdValue}%`;
+      alertMessage = `${icon} [MarketLens ${direction}] ${displayName} (${displaySymbol}) 盘中短时快速${direction}达到 ${currentStr}（阈值 ${thresholdStr}）`;
+      statusText = masked ? `$(pulse) [短时${direction}]` : `$(pulse) [短时${direction}] ${displayName} ${sign}${evt.currentValue.toFixed(2)}%`;
     } else {
       const sign = evt.currentValue >= 0 ? "+" : "";
       const currentStr = masked ? "****" : `${sign}${evt.currentValue.toFixed(2)}%`;
@@ -307,7 +477,7 @@ export class AlertManager {
     if (!masked && (mode === "notification" || mode === "both")) {
       const muteAction = `静音 ${config.alertCooldownMinutes || 15} 分钟`;
       const settingsAction = "管理预警";
-      const notifyFn = evt.type === "below"
+      const notifyFn = (evt.type === "below" || evt.type === "limitUpBroken")
         ? vscode.window?.showWarningMessage
         : vscode.window?.showInformationMessage;
 

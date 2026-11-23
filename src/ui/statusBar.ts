@@ -7,6 +7,7 @@ import { getProxyStatus } from "../services/network.ts";
 import { escapeMarkdownInline, toMarkdownCodeSpan, type HoldingItemQuote } from "../utils/symbolHelper.ts";
 import { isDisplayMasked } from "../utils/maskState.ts";
 import { closePortfolioHud } from "./portfolioHud.ts";
+import { MarketPanoramaWebviewPanel } from "./panoramaWebview.ts";
 import {
   aggregateHoldingsByCurrency,
   formatFxSourceNote,
@@ -323,7 +324,10 @@ export class StatusBar implements vscode.Disposable {
     this.bossKeyActive = forceState !== undefined ? forceState : !this.bossKeyActive;
     // 老板键一票否决所有真实数据展示：已打开的总账 HUD 必须同帧关闭。
     // 这里是 bossKeyActive 的唯一写入口，覆盖 Alt+M、设置面板自动退出等全部路径。
-    if (this.bossKeyActive) closePortfolioHud();
+    if (this.bossKeyActive) {
+      closePortfolioHud();
+      MarketPanoramaWebviewPanel.closeIfVisible();
+    }
     if (this.bossKeyActive) {
       this.stopCarousel();
       this.stopHoldingCarousel();
@@ -760,6 +764,7 @@ export class StatusBar implements vscode.Disposable {
     this.stopCarousel();
     this.stopHoldingCarousel();
     closePortfolioHud();
+    MarketPanoramaWebviewPanel.closeIfVisible();
     if (this.flashAlertTimer !== undefined) {
       clearTimeout(this.flashAlertTimer);
       this.flashAlertTimer = undefined;
