@@ -19,10 +19,12 @@ import { isDisplayMasked, shouldAutoExitBossKey, canEmitUserFeedback, resolveMas
 import { AlertManager, DEFAULT_ALERT_COOLDOWN_MINUTES } from "../src/services/alertManager.ts";
 import { DexScreenerService } from "../src/services/dexScreenerService.ts";
 import { BinanceService } from "../src/services/binanceService.ts";
+import { SafeTradeService } from "../src/services/safeTradeService.ts";
 import { AShareService } from "../src/services/aShareService.ts";
 import { HKStockService } from "../src/services/hkStockService.ts";
 import { USStockService } from "../src/services/usStockService.ts";
 import { generateBackupData, validateBackupData } from "../src/utils/backupHelper.ts";
+import { migrateLegacyBinanceGroup, MIGRATION_BINANCE_GROUP_KEY, SECTION_DEFAULT_GROUP_NAMES } from "../src/utils/config.ts";
 import {
   parseHkIpoHtml,
   isWithinIpoWindow,
@@ -30,10 +32,12 @@ import {
   setCachedIpoForTesting,
   checkAndTriggerIpoReminder,
   showIpoDetailQuickPick,
+  fetchAShareIpos,
   GLOBAL_STATE_LAST_IPO_REMIND_KEY,
 } from "../src/services/ipoService.ts";
 import { formatPrice, StockItem } from "../src/ui/watchlistProvider.ts";
 import { toDisplayPrice } from "../src/ui/statusBar.ts";
+import { setFxRateFetcherForTesting } from "../src/services/fxRateService.ts";
 import "./config.test.ts";
 
 void test("nls - package.json 占位符与语言包契约一致性", () => {
@@ -195,7 +199,7 @@ void test("inputValidator - 真实源码输入识别与非法拦截", () => {
   const cBtc = validateAndParseInput("BTC");
   assert.strictEqual(cBtc.parsed?.symbol, "BTCUSDT", "BTC 输入自动规范化为 BTCUSDT");
   assert.strictEqual(cBtc.parsed?.type, "CRYPTO", "BTC 输入首选类型应为 CRYPTO");
-  assert.strictEqual(cBtc.parsed?.defaultGroup, "Binance", "BTC 输入首选分组应为 Binance");
+  assert.strictEqual(cBtc.parsed?.defaultGroup, "加密货币", "BTC 输入首选分组应为 加密货币");
   assert.strictEqual(cBtc.parsed?.alternativeGroup, "美股");
   assert.strictEqual(cBtc.parsed?.alternativeType, "US_STOCK");
 
@@ -3499,6 +3503,7 @@ void test("scheduler - 网络持续故障退避计数与自动复位守卫", asy
   const { RefreshScheduler } = await import("../src/scheduler.ts");
   const mockMarketManager: any = {
     clearInvalidCache: () => {},
+    pruneInvalidCaches: () => {},
     pollAll: async () => [],
   };
   const mockTreeProvider: any = {
@@ -3722,6 +3727,8 @@ void test("StatusBar & Extension - 网络退避 Tooltip 呈现与老板键期间
     },
   };
 
+  setCachedIpoForTesting([]);
+  setFxRateFetcherForTesting(async () => undefined);
   await activate(mockContext);
   try {
     // 先触发老板键进入隐身状态
@@ -3736,6 +3743,8 @@ void test("StatusBar & Extension - 网络退避 Tooltip 呈现与老板键期间
     await vscode.commands.executeCommand("marketlens.toggleBossKey");
   } finally {
     deactivate();
+    resetIpoCache();
+    setFxRateFetcherForTesting(undefined);
     for (const sub of subscriptions) {
       try { sub.dispose(); } catch {}
     }
@@ -3759,13 +3768,33 @@ void test("P1-6 时区口径回归 - 节假日覆盖护栏的年份必须与查�
   // 默认参数保持向后兼容（北京口径，与 A股/港股调用点一致）
   assert.strictEqual(checkHolidayCoverage(new Date("2026-06-01T04:00:00Z")), true);
 
-  // 占位预测年份护栏：2027 仍是预测数据，2026 已为官方终版
-  assert.strictEqual(FORECAST_HOLIDAY_YEARS.has(2027), true, "2027 日历尚未复核，必须留在预测集合内");
+  // 占位预测年份护栏：2027 已对照官方公告核准并从预测集合移除
+  assert.strictEqual(FORECAST_HOLIDAY_YEARS.has(2027), false, "2027 日历已完成官方终版核准，必须移出预测集合");
   assert.strictEqual(FORECAST_HOLIDAY_YEARS.has(MAX_COVERED_HOLIDAY_YEAR - 1), false);
   assert.strictEqual(
     A_SHARE_HOLIDAYS.has("2027-02-05"),
     true,
-    "2027 除夕为全日休市；半日市/提前收盘严禁写入日历（§5.5）"
+    "2027 除夕 A 股为全日休市"
+  );
+  assert.strictEqual(
+    HK_HOLIDAYS.has("2027-02-05"),
+    false,
+    "2027 除夕港股为半日市（上午开市），严禁列入全天休市集合"
+  );
+  assert.strictEqual(
+    HK_HOLIDAYS.has("2027-12-28"),
+    false,
+    "2027-12-28 港股正常开市"
+  );
+  assert.strictEqual(
+    isHKMarketOpen(new Date("2027-02-05T02:00:00Z")),
+    true,
+    "2027-02-05 10:00 北京时间港股半日市早盘应当开市"
+  );
+  assert.strictEqual(
+    isHKMarketOpen(new Date("2027-02-05T06:00:00Z")),
+    false,
+    "2027-02-05 14:00 北京时间港股半日市午盘应当休市"
   );
 });
 
@@ -4799,6 +4828,7 @@ void test("RefreshScheduler - 代理板块连续失败自动挂起、轮询跳�
 
   const mockMarketManager: any = {
     clearInvalidCache: () => {},
+    pruneInvalidCaches: () => {},
     pollAll: async () => [],
   };
 
@@ -5458,8 +5488,8 @@ void test("addItem - 标的与系统专属分组排他性约束与防呆守卫 (
       },
       {
         inputLabel: "BTC",
-        detected: { symbol: "BTC", type: "CRYPTO", defaultGroup: "Binance", alternativeGroup: "美股", hint: "BTC" },
-        expectedOffered: ["Binance", "美股"], // 多重可能，弹窗供用户二选一
+        detected: { symbol: "BTC", type: "CRYPTO", defaultGroup: "加密货币", alternativeGroup: "美股", hint: "BTC" },
+        expectedOffered: ["加密货币", "美股"], // 多重可能，弹窗供用户二选一
       },
     ];
 
@@ -6116,6 +6146,232 @@ void test("P2 回归 - SettingsHtml 预警矩阵包含短时异动列与 alert-r
   assert.ok(html.includes("默认3.0%"), "必须具有默认3.0%占位符");
   assert.ok(html.includes("colspan=\"8\""), "必须使用 8 列跨列");
 });
+
+void test("SafeTrade - symbol 标准化、解析与失效抑制契约", () => {
+  const service = new SafeTradeService();
+
+  // 1. 标准化测试
+  assert.strictEqual(service.normalizeSymbol("safetrade:prlusdt"), "prlusdt");
+  assert.strictEqual(service.normalizeSymbol("safetrade:PRL-USDT"), "prlusdt");
+  assert.strictEqual(service.normalizeSymbol("  safetrade:pearl_usdt  "), "pearlusdt");
+  assert.strictEqual(service.formatDisplayName("prlusdt"), "PRL/USDT");
+  assert.strictEqual(service.formatDisplayName("pearlbtc"), "PEARL/BTC");
+
+  // 2. Ticker 报文解析
+  const mockResp = {
+    at: 1711234567,
+    ticker: {
+      buy: "0.0012",
+      sell: "0.0013",
+      low: "0.0010",
+      high: "0.0015",
+      last: "0.00125",
+      vol: "123456.78",
+      price_change_percent: "+5.50%",
+    },
+  };
+  const parsed = service.parseTicker("safetrade:prlusdt", "prlusdt", mockResp);
+  assert.ok(parsed, "必须成功解析行情对象");
+  assert.strictEqual(parsed.symbol, "safetrade:prlusdt");
+  assert.strictEqual(parsed.id, "safetrade:prlusdt");
+  assert.strictEqual(parsed.name, "PRL/USDT");
+  assert.strictEqual(parsed.type, "CRYPTO");
+  assert.strictEqual(parsed.price, 0.00125);
+  assert.strictEqual(parsed.changePercent, 5.5);
+  assert.strictEqual(parsed.high, 0.0015);
+  assert.strictEqual(parsed.low, 0.0010);
+  assert.strictEqual(parsed.volume, 123456.78);
+  assert.strictEqual(parsed.currency, "USDT");
+  assert.strictEqual(parsed.dataSource, "SafeTrade");
+  assert.strictEqual(parsed.updateTime, 1711234567000);
+  assert.ok(parsed.change !== undefined && parsed.change > 0, "涨跌额必须正确反推");
+
+  // 3. BTC 计价对
+  const btcItem = service.parseTicker("safetrade:prlbtc", "prlbtc", {
+    at: 1711234567,
+    ticker: { last: "0.0000001", price_change_percent: "-2.0%" },
+  });
+  assert.ok(btcItem);
+  assert.strictEqual(btcItem.currency, "BTC");
+  assert.strictEqual(btcItem.name, "PRL/BTC");
+
+  // 4. 失效修剪与缓存清理
+  service.pruneInactiveSymbols(["safetrade:prlusdt"]);
+  service.clearInvalidCache();
+});
+
+void test("SafeTrade - inputValidator 与 symbolHelper 路由及契约", () => {
+  // 1. inputValidator
+  const input1 = validateAndParseInput("safetrade:prlusdt");
+  assert.ok(!input1.error);
+  assert.strictEqual(input1.parsed?.symbol, "safetrade:prlusdt");
+  assert.strictEqual(input1.parsed?.type, "CRYPTO");
+
+  const input2 = validateAndParseInput("safetrade:PRL-USDT");
+  assert.strictEqual(input2.parsed?.symbol, "safetrade:prlusdt");
+
+  const inputUrl = validateAndParseInput("https://safetrade.com/exchange/PRL-USDT");
+  assert.strictEqual(inputUrl.parsed?.symbol, "safetrade:prlusdt");
+  assert.strictEqual(inputUrl.parsed?.type, "CRYPTO");
+
+  // 2. symbolHelper
+  assert.strictEqual(resolveItemAssetType({ symbol: "safetrade:prlusdt" }), "CRYPTO");
+  assert.strictEqual(normalizeSymbolKey("safetrade:PRL-USDT"), "safetrade:prlusdt");
+  assert.strictEqual(isSameSymbol("safetrade:prlusdt", "safetrade:PRL-USDT"), true);
+  assert.strictEqual(isSameSymbol("safetrade:prlusdt", "BTCUSDT"), false);
+});
+
+void test("migrateLegacyBinanceGroup - 老用户 Binance 分组平滑迁移至加密货币契约", async () => {
+  assert.strictEqual(SECTION_DEFAULT_GROUP_NAMES.binance, "加密货币", "默认板块分组名必须为 加密货币");
+  const vscode = await import("vscode");
+  const cfg = vscode.workspace.getConfiguration("marketlens");
+  const origWatchlist = cfg.get("watchlist");
+
+  const storage = new Map<string, any>();
+  const mockContext: any = {
+    globalState: {
+      get: (k: string) => storage.get(k),
+      update: async (k: string, v: any) => { storage.set(k, v); },
+    },
+  };
+
+  try {
+    // 1. 老用户含有 Binance 分组 -> 自动重命名为 加密货币
+    await cfg.update("watchlist", {
+      "A股": [{ symbol: "sh600519", name: "茅台" }],
+      "Binance": [
+        { symbol: "BTCUSDT", name: "BTC" },
+        { symbol: "safetrade:prlusdt", name: "PRL" },
+      ],
+      "Alpha": [{ symbol: "0x123", name: "Token" }],
+    }, vscode.ConfigurationTarget.Global);
+
+    const migrated = await migrateLegacyBinanceGroup(mockContext);
+    assert.strictEqual(migrated, true, "存在 Binance 且不存在 加密货币 时必须执行迁移");
+    assert.strictEqual(storage.get(MIGRATION_BINANCE_GROUP_KEY), true, "迁移后必须锁定 globalState 标记");
+
+    const updated = cfg.get("watchlist") as any;
+    assert.ok(updated["加密货币"], "必须生成 加密货币 分组");
+    assert.strictEqual(updated["Binance"], undefined, "旧的 Binance 分组必须被安全替换");
+    assert.strictEqual(updated["加密货币"].length, 2);
+    assert.strictEqual(updated["加密货币"][0].symbol, "BTCUSDT");
+    assert.strictEqual(updated["加密货币"][1].symbol, "safetrade:prlusdt");
+    assert.strictEqual(updated["A股"].length, 1);
+    assert.strictEqual(updated["Alpha"].length, 1);
+
+    // 2. 幂等性：后续再次激活绝不重复执行
+    const secondRun = await migrateLegacyBinanceGroup(mockContext);
+    assert.strictEqual(secondRun, false, "标记存在时必须直接短路跳过");
+
+    // 3. 用户未来主动改回 Binance 或自定义名称，迁移标记已锁死，绝不覆盖用户自主选择
+    await cfg.update("watchlist", {
+      "Binance": [{ symbol: "BTCUSDT" }],
+    }, vscode.ConfigurationTarget.Global);
+    const thirdRun = await migrateLegacyBinanceGroup(mockContext);
+    assert.strictEqual(thirdRun, false);
+    const thirdCheck = cfg.get("watchlist") as any;
+    assert.ok(thirdCheck["Binance"], "未来用户自主改回 Binance 绝不受干预");
+  } finally {
+    await cfg.update("watchlist", origWatchlist, vscode.ConfigurationTarget.Global);
+  }
+});
+
+void test("ipoService - 北交所新股 MARKET 为 null 时根据代码前缀自动补齐「北交所」", async () => {
+  setCustomHttpExecutor(async () => ({
+    status: 200,
+    statusText: "OK",
+    headers: {},
+    data: {
+      result: {
+        data: [
+          {
+            SECURITY_CODE: "920319",
+            SECURITY_NAME: "天广实",
+            APPLY_CODE: "920319",
+            ISSUE_PRICE: 55.65,
+            APPLY_DATE: "2026-11-25 00:00:00",
+            ONLINE_APPLY_UPPER: 65800,
+            MARKET: null,
+          },
+          {
+            SECURITY_CODE: "688845",
+            SECURITY_NAME: "傲拓科技",
+            APPLY_CODE: "787845",
+            ISSUE_PRICE: 18.18,
+            APPLY_DATE: "2026-11-25 00:00:00",
+            ONLINE_APPLY_UPPER: 9000,
+            MARKET: "上交所科创板",
+          },
+        ],
+      },
+    },
+  }));
+  try {
+    const items = await fetchAShareIpos("2026-11-25", { mode: "direct" });
+    assert.strictEqual(items.length, 2);
+    assert.strictEqual(items[0].code, "920319");
+    assert.strictEqual(items[0].detail, "北交所");
+    assert.strictEqual(items[1].detail, "上交所科创板");
+  } finally {
+    setCustomHttpExecutor(undefined);
+  }
+});
+
+void test("SafeTradeService.parseTicker - 缺失或非正最新价时返回 null，防止构造 price=0 脏行情", () => {
+  const svc = new SafeTradeService();
+  assert.strictEqual(svc.parseTicker("safetrade:prlusdt", "prlusdt", { ticker: {} }), null);
+  assert.strictEqual(svc.parseTicker("safetrade:prlusdt", "prlusdt", { ticker: { last: "0" } }), null);
+  assert.strictEqual(svc.parseTicker("safetrade:prlusdt", "prlusdt", { ticker: { last: "NaN" } }), null);
+  const valid = svc.parseTicker("safetrade:prlusdt", "prlusdt", {
+    at: 1700000000,
+    ticker: { last: "0.015", high: "0.02", low: "0.01", vol: "1000", price_change_percent: "5.0%" },
+  });
+  assert.ok(valid);
+  assert.strictEqual(valid.price, 0.015);
+  assert.strictEqual(valid.changePercent, 5);
+});
+
+void test("SafeTradeService - 抑制 TTL 过期后必须清零连续失败计数，单次抖动不得立即再抑制", async () => {
+  const svc = new SafeTradeService();
+  let calls = 0;
+  setCustomHttpExecutor(async () => {
+    calls++;
+    throw new Error("ETIMEDOUT");
+  });
+  try {
+    // 连续 3 次非 400/404 失败触发临时抑制
+    await svc.fetchSingleQuote("safetrade:prlusdt", { mode: "direct" });
+    await svc.fetchSingleQuote("safetrade:prlusdt", { mode: "direct" });
+    await svc.fetchSingleQuote("safetrade:prlusdt", { mode: "direct" });
+    assert.strictEqual(svc.isSymbolSuppressed("safetrade:prlusdt"), true);
+    assert.strictEqual(calls, 3);
+
+    // 模拟 10 分钟 TTL 过期
+    const internals = svc as unknown as { invalidSymbols: Map<string, number> };
+    internals.invalidSymbols.set("prlusdt", Date.now() - 1);
+    assert.strictEqual(svc.isSymbolSuppressed("safetrade:prlusdt"), false);
+
+    // TTL 过期后第 1 次失败不得立即再次抑制
+    await svc.fetchSingleQuote("safetrade:prlusdt", { mode: "direct" });
+    assert.strictEqual(calls, 4);
+    assert.strictEqual(
+      svc.isSymbolSuppressed("safetrade:prlusdt"),
+      false,
+      "TTL 过期后单次失败不得立即再抑制，必须重新累计满 3 次"
+    );
+  } finally {
+    setCustomHttpExecutor(undefined);
+  }
+});
+
+void test("SafeTrade 标准化键前后端一致（含冒号后空白与分隔符）", () => {
+  const getSymbolKey = new Function(`${NORMALIZE_SYMBOL_KEY_CLIENT_SCRIPT}; return getSymbolKey;`)() as (s: string) => string;
+  for (const raw of ["safetrade:prlusdt", "SafeTrade:PRL-USDT", "safetrade: prl_usdt"]) {
+    assert.strictEqual(normalizeSymbolKey(raw), "safetrade:prlusdt");
+    assert.strictEqual(getSymbolKey(raw), "safetrade:prlusdt");
+  }
+});
+
 
 
 

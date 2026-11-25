@@ -11,7 +11,14 @@ import { logger } from "./logger.ts";
 export type PortfolioBaseCurrency = "CNY" | "USD";
 
 /** 持仓条目实际出现的计价货币（与 MarketItem.currency 口径一致） */
-export type PortfolioCurrency = "CNY" | "USD" | "HKD" | "USDT";
+export type PortfolioCurrency = "CNY" | "USD" | "HKD" | "USDT" | "BTC" | "ETH";
+
+/** 可按法币汇率折算进基准货币总账的币种（BTC/ETH 计价资产无可靠法币汇率，不参与折算） */
+export type FiatPortfolioCurrency = "CNY" | "USD" | "HKD" | "USDT";
+
+export function isFiatConvertibleCurrency(cur: string): cur is FiatPortfolioCurrency {
+  return cur === "CNY" || cur === "USD" || cur === "HKD" || cur === "USDT";
+}
 
 /**
  * 内置静态参考汇率（对 CNY 的系数），换算兜底真相源。
@@ -22,7 +29,7 @@ export type PortfolioCurrency = "CNY" | "USD" | "HKD" | "USDT";
  * 复核并校准；汇率会随市场变化，需定期复核（见 docs/项目全面体检报告.md 长期关注项）。
  * 禁止在 UI 文案里另写死本组数值，统一用 formatFxDetailNote 插值展示。
  */
-export const FX_RATES_TO_CNY: Readonly<Record<PortfolioCurrency, number>> = {
+export const FX_RATES_TO_CNY: Readonly<Record<FiatPortfolioCurrency, number>> = {
   CNY: 1,
   USD: 6.67,
   HKD: 0.85,
@@ -40,6 +47,9 @@ export function toBaseCurrency(
   base: PortfolioBaseCurrency
 ): number {
   if (!Number.isFinite(value)) return 0;
+  // BTC/ETH 计价资产没有可靠法币汇率，不做无依据折算（§5.5）；
+  // computePortfolioSummary 会跳过这类桶，此守卫仅兜底直接调用方。
+  if (!isFiatConvertibleCurrency(from)) return 0;
   const fx = getEffectiveFxRates();
   const fromRate =
     from === "CNY" ? 1 : from === "HKD" ? fx.hkdToCny : fx.usdToCny;
@@ -172,6 +182,18 @@ export interface HoldingCurrencyBucket {
 }
 
 /**
+ * 有效持仓谓词（录入校验 / 导入消毒 / 总账聚合三端共享的唯一口径）：
+ * cost 允许 0（赠股等零成本持仓合法），shares 必须为正，price 非负，全部有限。
+ */
+export function isValidHoldingQuote(h: HoldingItemQuote): boolean {
+  return (
+    Number.isFinite(h.cost) && h.cost >= 0 &&
+    Number.isFinite(h.shares) && h.shares > 0 &&
+    Number.isFinite(h.price) && h.price >= 0
+  );
+}
+
+/**
  * 按计价币种原生聚合持仓——状态栏 `aggregateHoldings` 的委托出口。
  * 今日盈亏经 `deriveTodayProfit` 单一实现（AGENTS.md §5.5）。
  */
@@ -180,6 +202,10 @@ export function aggregateHoldingsByCurrency(
 ): Map<string, HoldingCurrencyBucket> {
   const currencyMap = new Map<string, HoldingCurrencyBucket>();
   for (const h of holdings) {
+    // 防御性校验：过滤脏数据或未预处理的非有限数值，防止乘法破坏账务汇总
+    if (!isValidHoldingQuote(h)) {
+      continue;
+    }
     const cur = h.currency || "CNY";
     let data = currencyMap.get(cur);
     if (!data) {
@@ -286,7 +312,8 @@ export function computePortfolioSummary(
   const sectionNative = new Map<MarketSection, Map<string, HoldingCurrencyBucket>>();
 
   for (const h of holdings) {
-    if (!h.section) continue;
+    // 与 aggregateHoldingsByCurrency 同一谓词：否则脏输入时 total ≠ ΣbySection
+    if (!h.section || !isValidHoldingQuote(h)) continue;
     let perSection = sectionNative.get(h.section);
     if (!perSection) {
       perSection = new Map<string, HoldingCurrencyBucket>();
@@ -307,20 +334,23 @@ export function computePortfolioSummary(
   const byCurrency: Record<string, HoldingCurrencyBucket> = {};
   for (const [cur, native] of byCurrencyMap) {
     byCurrency[cur] = native;
-    total.marketVal += toBaseCurrency(native.marketVal, cur as PortfolioCurrency, base);
-    total.costVal += toBaseCurrency(native.costVal, cur as PortfolioCurrency, base);
-    total.todayProfit += toBaseCurrency(native.todayProfit, cur as PortfolioCurrency, base);
-    total.totalProfit += toBaseCurrency(native.totalProfit, cur as PortfolioCurrency, base);
+    // BTC/ETH 计价持仓保留原生币种桶供对账展示，但不折算进基准货币总账（无法币汇率依据，§5.5）
+    if (!isFiatConvertibleCurrency(cur)) continue;
+    total.marketVal += toBaseCurrency(native.marketVal, cur, base);
+    total.costVal += toBaseCurrency(native.costVal, cur, base);
+    total.todayProfit += toBaseCurrency(native.todayProfit, cur, base);
+    total.totalProfit += toBaseCurrency(native.totalProfit, cur, base);
     total.count += native.count;
   }
 
   for (const [section, perSection] of sectionNative) {
     const bucket = emptyBucket();
     for (const [cur, native] of perSection) {
-      bucket.marketVal += toBaseCurrency(native.marketVal, cur as PortfolioCurrency, base);
-      bucket.costVal += toBaseCurrency(native.costVal, cur as PortfolioCurrency, base);
-      bucket.todayProfit += toBaseCurrency(native.todayProfit, cur as PortfolioCurrency, base);
-      bucket.totalProfit += toBaseCurrency(native.totalProfit, cur as PortfolioCurrency, base);
+      if (!isFiatConvertibleCurrency(cur)) continue;
+      bucket.marketVal += toBaseCurrency(native.marketVal, cur, base);
+      bucket.costVal += toBaseCurrency(native.costVal, cur, base);
+      bucket.todayProfit += toBaseCurrency(native.todayProfit, cur, base);
+      bucket.totalProfit += toBaseCurrency(native.totalProfit, cur, base);
       bucket.count += native.count;
     }
     bySection[section] = bucket;
@@ -332,6 +362,6 @@ export function computePortfolioSummary(
     bySection,
     byCurrency,
     fx: getEffectiveFxRates(),
-    holdingsCount: holdings.length,
+    holdingsCount: holdings.filter(isValidHoldingQuote).length,
   };
 }

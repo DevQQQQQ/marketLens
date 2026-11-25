@@ -410,11 +410,24 @@ void test("P2-11 CI 在打包前执行 sync-version:check，拦截版本/文档�
 
 // ── 设置面板与调度器恢复契约 ───────────────────────────────────────
 
-void test("autoRefresh 恢复开启时必须重新启动调度器（源码契约）", () => {
+void test("autoRefresh 开关单一启动入口：禁用即时 stop，启用由 flushConfigChange 统一 start（源码契约）", () => {
   const ext = read("src/extension.ts");
   assert.ok(
-    ext.includes("if (!config.autoRefresh) {\n        scheduler.stop();\n      } else {\n        scheduler.start();\n      }"),
-    "autoRefresh 重新为 true 时必须显式调用 scheduler.start()"
+    ext.includes("if (!config.autoRefresh) {\n        scheduler.stop();\n      }"),
+    "autoRefresh 关闭时 Webview 即时路径必须立刻 stop()"
+  );
+  assert.ok(
+    !ext.includes("} else {\n        scheduler.start();\n      }"),
+    "启用时不得在 Webview 即时路径再 start()：落盘后的 flushConfigChange 会统一 start，两处都 start 会连发两次全量强制刷新"
+  );
+  assert.ok(
+    ext.includes("if (hadNetworkChange || watchlistContentChanged) {"),
+    "flushConfigChange 必须保留网络相关变更的统一重启分支"
+  );
+  const cfg = read("src/utils/config.ts");
+  assert.ok(
+    cfg.includes('e.affectsConfiguration("marketlens.autoRefresh")'),
+    "autoRefresh 必须属于 affectsNetworkConfig，否则启用后 flushConfigChange 不会重启调度器"
   );
 });
 

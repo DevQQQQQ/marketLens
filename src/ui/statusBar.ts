@@ -4,7 +4,7 @@
 import * as vscode from "vscode";
 import type { MarketItem } from "../types/index.ts";
 import { getProxyStatus } from "../services/network.ts";
-import { escapeMarkdownInline, toMarkdownCodeSpan, type HoldingItemQuote } from "../utils/symbolHelper.ts";
+import { escapeMarkdownInline, toMarkdownCodeSpan, currencyPrefix, currencySuffix, type HoldingItemQuote } from "../utils/symbolHelper.ts";
 import { isDisplayMasked } from "../utils/maskState.ts";
 import { closePortfolioHud } from "./portfolioHud.ts";
 import { MarketPanoramaWebviewPanel } from "./panoramaWebview.ts";
@@ -619,18 +619,20 @@ export class StatusBar implements vscode.Disposable {
         return;
       }
       const [primaryCur, primaryData] = entries[0];
-      const pSym = primaryCur === "CNY" ? "¥" : primaryCur === "HKD" ? "HK$" : "$";
+      const pSym = currencyPrefix(primaryCur);
+      const pSuf = currencySuffix(primaryCur);
       const tSign = primaryData.todayProfit >= 0 ? "+" : "-";
       const fSign = primaryData.totalProfit >= 0 ? "+" : "-";
       const tFmt = formatPortfolioAmount(primaryData.todayProfit);
       const fFmt = formatPortfolioAmount(primaryData.totalProfit);
 
-      let text = `$(briefcase) 今日: ${tSign}${pSym}${tFmt} ｜ 浮盈: ${fSign}${pSym}${fFmt}`;
+      let text = `$(briefcase) 今日: ${tSign}${pSym}${tFmt}${pSuf} ｜ 浮盈: ${fSign}${pSym}${fFmt}${pSuf}`;
       if (entries.length > 1) {
         const extras = entries.slice(1).map(([c, d]) => {
-          const s = c === "CNY" ? "¥" : c === "HKD" ? "HK$" : "$";
+          const s = currencyPrefix(c);
+          const suf = currencySuffix(c);
           const sign = d.totalProfit >= 0 ? "+" : "-";
-          return `${sign}${s}${formatPortfolioAmount(d.totalProfit)}`;
+          return `${sign}${s}${formatPortfolioAmount(d.totalProfit)}${suf}`;
         });
         text += ` (${extras.join(", ")})`;
       }
@@ -645,7 +647,8 @@ export class StatusBar implements vscode.Disposable {
         this.renderHolding();
         return;
       }
-      const curSym = h.currency === "CNY" ? "¥" : h.currency === "HKD" ? "HK$" : "$";
+      const curSym = currencyPrefix(h.currency);
+      const curSuf = currencySuffix(h.currency);
       const profit = (h.price - h.cost) * h.shares;
       const profitRate = ((h.price - h.cost) / h.cost) * 100;
       const pSign = profit >= 0 ? "+" : "-";
@@ -653,7 +656,7 @@ export class StatusBar implements vscode.Disposable {
       const pFmt = formatPortfolioAmount(profit);
       const rFmt = Math.abs(profitRate).toFixed(2);
 
-      this.holdingBarItem.text = `$(briefcase) ${h.name}: ${pSign}${curSym}${pFmt} (${rSign}${rFmt}%) [${this.holdingIndex}/${this.holdings.length}]`;
+      this.holdingBarItem.text = `$(briefcase) ${h.name}: ${pSign}${curSym}${pFmt}${curSuf} (${rSign}${rFmt}%) [${this.holdingIndex}/${this.holdings.length}]`;
       this.applyHoldingColor(profit > 0, Math.abs(profit) < 0.01);
     }
 
@@ -672,7 +675,8 @@ export class StatusBar implements vscode.Disposable {
       md.appendMarkdown(`_当前没有标的参与状态栏轮播（板块轮播开关或休市折叠已过滤），本看板与下方明细为空。_\n\n`);
     } else if (entries.length === 1) {
       const [cur, d] = entries[0];
-      const s = cur === "CNY" ? "¥" : cur === "HKD" ? "HK$" : "$";
+      const s = currencyPrefix(cur);
+      const suf = currencySuffix(cur);
       const tSign = d.todayProfit >= 0 ? "+" : "-";
       const fSign = d.totalProfit >= 0 ? "+" : "-";
       const tFmt = formatPortfolioAmount(d.todayProfit);
@@ -683,14 +687,15 @@ export class StatusBar implements vscode.Disposable {
       const rSign = totalRate >= 0 ? "+" : "-";
 
       md.appendMarkdown(`| 统计指标 | 数值表现 |\n| :--- | :--- |\n`);
-      md.appendMarkdown(`| **今日总盈亏** | **${tSign}${s}${tFmt}** |\n`);
-      md.appendMarkdown(`| **累计总浮盈** | **${fSign}${s}${fFmt} (${rSign}${Math.abs(totalRate).toFixed(2)}%)** |\n`);
-      md.appendMarkdown(`| **持仓总市值** | ${s}${mFmt} |\n`);
-      md.appendMarkdown(`| **持仓总本金** | ${s}${cFmt} |\n\n`);
+      md.appendMarkdown(`| **今日总盈亏** | **${tSign}${s}${tFmt}${suf}** |\n`);
+      md.appendMarkdown(`| **累计总浮盈** | **${fSign}${s}${fFmt}${suf} (${rSign}${Math.abs(totalRate).toFixed(2)}%)** |\n`);
+      md.appendMarkdown(`| **持仓总市值** | ${s}${mFmt}${suf} |\n`);
+      md.appendMarkdown(`| **持仓总本金** | ${s}${cFmt}${suf} |\n\n`);
     } else {
       md.appendMarkdown(`| 币种 | 今日盈亏 | 累计浮盈 | 当前市值 | 持仓本金 |\n| :--- | :--- | :--- | :--- | :--- |\n`);
       for (const [cur, d] of entries) {
-        const s = cur === "CNY" ? "¥" : cur === "HKD" ? "HK$" : "$";
+        const s = currencyPrefix(cur);
+        const suf = currencySuffix(cur);
         const tSign = d.todayProfit >= 0 ? "+" : "-";
         const fSign = d.totalProfit >= 0 ? "+" : "-";
         const tFmt = formatPortfolioAmount(d.todayProfit);
@@ -700,8 +705,10 @@ export class StatusBar implements vscode.Disposable {
         const label =
           cur === "CNY" ? "人民币 (¥)" :
           cur === "HKD" ? "港币 (HK$)" :
-          cur === "USDT" ? "U 本位 (USDT $)" : "美元 ($)";
-        md.appendMarkdown(`| **${label}** | ${tSign}${s}${tFmt} | ${fSign}${s}${fFmt} | ${s}${mFmt} | ${s}${cFmt} |\n`);
+          cur === "USDT" ? "U 本位 (USDT $)" :
+          cur === "BTC" ? "BTC 本位 (BTC)" :
+          cur === "ETH" ? "ETH 本位 (ETH)" : "美元 ($)";
+        md.appendMarkdown(`| **${label}** | ${tSign}${s}${tFmt}${suf} | ${fSign}${s}${fFmt}${suf} | ${s}${mFmt}${suf} | ${s}${cFmt}${suf} |\n`);
       }
       md.appendMarkdown(`\n`);
     }
@@ -725,7 +732,8 @@ export class StatusBar implements vscode.Disposable {
     md.appendMarkdown(`---\n**持仓明细（状态栏轮播口径 · 共 ${this.holdings.length} 只标的，当前轮播: ${this.holdingIndex === 0 ? "总览" : `${this.holdingIndex}/${this.holdings.length}`}）**：\n\n`);
     for (let i = 0; i < this.holdings.length; i++) {
       const h = this.holdings[i];
-      const s = h.currency === "CNY" ? "¥" : h.currency === "HKD" ? "HK$" : "$";
+      const s = currencyPrefix(h.currency);
+      const suf = currencySuffix(h.currency);
       const profit = (h.price - h.cost) * h.shares;
       const profitRate = ((h.price - h.cost) / h.cost) * 100;
       const pSign = profit >= 0 ? "+" : "-";
@@ -733,7 +741,7 @@ export class StatusBar implements vscode.Disposable {
       const pFmt = formatPortfolioAmount(profit);
       const rFmt = Math.abs(profitRate).toFixed(2);
       const currentIndicator = this.holdingIndex === i + 1 ? " 👈" : "";
-      md.appendMarkdown(`- **${escapeMarkdownInline(h.name)}** (${toMarkdownCodeSpan(h.symbol)}): 成本 ${s}${toDisplayPrice(h.cost)} ｜ 现价 ${s}${toDisplayPrice(h.price)} ｜ 浮盈: **${pSign}${s}${pFmt} (${rSign}${rFmt}%)**${currentIndicator}\n`);
+      md.appendMarkdown(`- **${escapeMarkdownInline(h.name)}** (${toMarkdownCodeSpan(h.symbol)}): 成本 ${s}${toDisplayPrice(h.cost)}${suf} ｜ 现价 ${s}${toDisplayPrice(h.price)}${suf} ｜ 浮盈: **${pSign}${s}${pFmt}${suf} (${rSign}${rFmt}%)**${currentIndicator}\n`);
     }
 
     md.appendMarkdown(`\n_点击打开「通用与全局设置」调整持仓轮播开关与间隔 (当前 ${this.holdingInterval}s)_`);

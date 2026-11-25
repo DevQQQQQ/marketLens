@@ -2,7 +2,7 @@
 	"name": "marketlens",
 	"displayName": "%displayName%",
 	"description": "%description%",
-	"version": "1.4.0",
+	"version": "1.4.1",
 	"publisher": "devqqqqq",
 	"repository": {
 		"type": "git",
@@ -782,7 +782,7 @@
 								"type": "US_STOCK"
 							}
 						],
-						"Binance": [
+						"加密货币": [
 							{
 								"symbol": "BTCUSDT",
 								"name": "BTC/USDT",

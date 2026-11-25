@@ -207,6 +207,9 @@ export class SettingsWebviewPanel {
   private readonly _panel: vscode.WebviewPanel;
   private readonly _version: string;
   private _disposables: vscode.Disposable[] = [];
+  // alerts 增量写入串行链：onDidReceiveMessage 不等待上一条 async 处理器完成，
+  // 两条快速预警消息会在 await cfg.update 处交错，后读磁盘缺前一条规则导致后写覆盖前写
+  private _alertWriteChain: Promise<void> = Promise.resolve();
 
   public static createOrShow(extensionUri: vscode.Uri, version?: string) {
     const column = vscode.window.activeTextEditor
@@ -394,21 +397,27 @@ export class SettingsWebviewPanel {
             // alerts 只能按标的增量写入：以**磁盘现值**为基准合并单个标的，
             // 绝不接受前端整幅镜像回写——那会让后端快照在防抖窗口内覆盖用户未落盘的编辑，
             // 并让同一标的的历史别名键永久并存（AGENTS.md §5.2 配置与状态流）。
-            const cfg = vscode.workspace.getConfiguration("marketlens");
-            const diskAlerts = sanitizeAlerts(cfg.get("alerts", {}));
-            const merged = applyAlertRuleDelta(diskAlerts, message.key, message.rule);
-            if (!merged) {
-              // 预警键即标的身份，属于 §5.4「自选内容不得写入日志」范围：只记不可逆标签
-              logger.warn(`[SettingsWebview] 拒绝非法预警标的键: ${describeForLog(String(message.key))}`);
-              break;
-            }
-            try {
-              SettingsWebviewPanel.onDidUpdateSetting?.("alerts", merged);
-            } catch (err) {
-              logger.warn("[SettingsWebview] notify alert delta failed", err);
-            }
-            await cfg.update("alerts", merged, vscode.ConfigurationTarget.Global);
-            this.sendCurrentSettings();
+            // 读盘→合并→落盘整段进入串行链，杜绝并发消息在 await 处交错互相覆盖。
+            this._alertWriteChain = this._alertWriteChain.then(async () => {
+              const cfg = vscode.workspace.getConfiguration("marketlens");
+              const diskAlerts = sanitizeAlerts(cfg.get("alerts", {}));
+              const merged = applyAlertRuleDelta(diskAlerts, message.key, message.rule);
+              if (!merged) {
+                // 预警键即标的身份，属于 §5.4「自选内容不得写入日志」范围：只记不可逆标签
+                logger.warn(`[SettingsWebview] 拒绝非法预警标的键: ${describeForLog(String(message.key))}`);
+                return;
+              }
+              try {
+                SettingsWebviewPanel.onDidUpdateSetting?.("alerts", merged);
+              } catch (err) {
+                logger.warn("[SettingsWebview] notify alert delta failed", err);
+              }
+              await cfg.update("alerts", merged, vscode.ConfigurationTarget.Global);
+              this.sendCurrentSettings();
+            }).catch((err) => {
+              logger.warn("[SettingsWebview] alert delta write failed", err);
+            });
+            await this._alertWriteChain;
             break;
           }
           case "clearAllAlerts": {
@@ -451,7 +460,7 @@ export class SettingsWebviewPanel {
                     x.symbol === message.symbol)
               );
               if (it) {
-                if (typeof message.cost === "number" && Number.isFinite(message.cost) && message.cost > 0) {
+                if (typeof message.cost === "number" && Number.isFinite(message.cost) && message.cost >= 0) {
                   it.cost = message.cost;
                 } else {
                   delete it.cost;

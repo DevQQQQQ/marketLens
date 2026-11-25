@@ -36,8 +36,10 @@ export class AlertManager {
   private readonly cooldownMap = new Map<string, number>();
   // 盘中短时急拉/跳水采样队列（保留 5 分钟内历史价格）
   private readonly priceHistory = new Map<string, Array<{ price: number; timestamp: number }>>();
-  // A 股涨停封板状态记录
-  private readonly limitUpState = new Map<string, boolean>();
+  // 时钟回拨兜底：5 分钟窗口按 1s 轮询约 300 样本，硬上限防止任何异常场景下无界增长
+  private readonly MAX_PRICE_HISTORY_SAMPLES = 600;
+  // A 股涨停封板状态记录：值为封板当日的 Asia/Shanghai 日期串，跨日自动失效，避免昨日封板残留误报今日炸板
+  private readonly limitUpState = new Map<string, string>();
   // 构造参数可缺省（无状态栏场景），存入的真是 `undefined` 而非「键不存在」
   private readonly statusBar: StatusBar | undefined;
 
@@ -82,6 +84,22 @@ export class AlertManager {
   }
 
   /**
+   * 修剪滑动窗口：超 5 分钟的陈旧样本与「未来时间戳」样本（时钟回拨后旧样本相对新 now 成为未来）
+   * 一律丢弃，否则回拨期间差值恒负、永不修剪，队列随轮询无界增长且急拉判定长期失效。
+   */
+  private prunePriceHistory(history: Array<{ price: number; timestamp: number }>, now: number): void {
+    while (
+      history.length > 0 &&
+      (now - history[0]!.timestamp > 5 * 60 * 1000 || history[0]!.timestamp > now)
+    ) {
+      history.shift();
+    }
+    if (history.length > this.MAX_PRICE_HISTORY_SAMPLES) {
+      history.splice(0, history.length - this.MAX_PRICE_HISTORY_SAMPLES);
+    }
+  }
+
+  /**
    * 在行情拉取完成后，由调度器调用进行纯内存预警评估
    */
   public checkQuotes(quotes: MarketItem[], customConfig?: Partial<MarketLensConfig>): AlertTriggerEvent[] {
@@ -102,6 +120,12 @@ export class AlertManager {
 
     const cooldownMs = Math.max(1, config.alertCooldownMinutes || DEFAULT_ALERT_COOLDOWN_MINUTES) * 60 * 1000;
     const now = Date.now();
+    const aShareToday = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Shanghai",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(now);
     const triggeredEvents: AlertTriggerEvent[] = [];
 
     for (const q of quotes) {
@@ -182,11 +206,11 @@ export class AlertManager {
       // 4. A 股封板与炸板异动监控
       if (q.type === "A_SHARE" && typeof q.limitUp === "number" && q.limitUp > 0 && q.price > 0) {
         const isLimitUpNow = q.price >= q.limitUp - 0.001;
-        const wasLimitUp = this.limitUpState.get(matchedKey) ?? false;
+        const wasLimitUp = this.limitUpState.get(matchedKey) === aShareToday;
 
         // 4.1 触发封板提醒
         if (isLimitUpNow && !wasLimitUp) {
-          this.limitUpState.set(matchedKey, true);
+          this.limitUpState.set(matchedKey, aShareToday);
           const cKey = `${matchedKey}:limitUp`;
           const cooldownExpiry = this.cooldownMap.get(cKey) || 0;
           if (now >= cooldownExpiry) {
@@ -225,7 +249,8 @@ export class AlertManager {
         ? rule.rapidMove
         : 3.0; // 默认 3.0% 短时异动阈值
 
-      // 5.1 DEX 链上代币 5m 突变直接利用原生指标
+      // 5.1 DEX 链上代币 5m 突变直接利用原生指标（与滑动窗口解耦：m5 未达阈值不阻断采样，
+      // 否则 DEX 标的自定义 <5% 阈值永不生效；同轮双触发由同一 rapidMove 冷却键合并）
       if (
         q.priceChangeMulti?.m5 !== undefined &&
         Number.isFinite(q.priceChangeMulti.m5) &&
@@ -246,17 +271,14 @@ export class AlertManager {
         }
       }
       // 5.2 股票/加密币通用滑动窗口（3~5分钟）急拉跳水计算
-      else if (q.price > 0) {
+      if (q.price > 0) {
         let history = this.priceHistory.get(matchedKey);
         if (!history) {
           history = [];
           this.priceHistory.set(matchedKey, history);
         }
         history.push({ price: q.price, timestamp: now });
-        // 清理超过 5 分钟的陈旧数据
-        while (history.length > 0 && now - history[0]!.timestamp > 5 * 60 * 1000) {
-          history.shift();
-        }
+        this.prunePriceHistory(history, now);
 
         // 仅在拥有至少 1 分钟以前的对比基准点时才计算急拉/跳水，避免刚添加自选时误触
         const basePoint = history[0];
@@ -288,9 +310,7 @@ export class AlertManager {
       }
     }
     for (const [key, history] of this.priceHistory) {
-      while (history.length > 0 && now - history[0]!.timestamp > 5 * 60 * 1000) {
-        history.shift();
-      }
+      this.prunePriceHistory(history, now);
       if (history.length === 0) {
         this.priceHistory.delete(key);
       }

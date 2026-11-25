@@ -7,6 +7,7 @@ import fs from "node:fs";
 import {
   FX_RATES_TO_CNY,
   toBaseCurrency,
+  isFiatConvertibleCurrency,
   aggregateHoldingsByCurrency,
   computePortfolioSummary,
   setLiveFxRates,
@@ -74,7 +75,7 @@ void test("computePortfolioSummary - 混合币种（A+港+美+加密）折算期
   assert.ok(Math.abs(summary.total.costVal - expectCostVal) < 1e-6, `costVal: ${summary.total.costVal}`);
   // 逐标的折算再求和（等价性验证）
   const perItemTotalProfit = holdings.reduce(
-    (acc, h) => acc + (h.price - h.cost) * h.shares * FX_RATES_TO_CNY[h.currency],
+    (acc, h) => acc + (isFiatConvertibleCurrency(h.currency) ? (h.price - h.cost) * h.shares * FX_RATES_TO_CNY[h.currency] : 0),
     0
   );
   assert.ok(Math.abs(summary.total.totalProfit - perItemTotalProfit) < 1e-6);
@@ -190,7 +191,7 @@ void test("computePortfolioSummary - 今日盈亏走 deriveTodayProfit 降级链
 });
 
 void test("computePortfolioSummary - 除零守卫：costVal 为 0 时不产生 NaN", () => {
-  // extractHoldingQuotes 保证 cost > 0，但总账计算作为纯函数仍须自防
+  // 零成本持仓（cost=0）为合法口径，本金为 0 时浮盈率回落 0，总账仍须自防 NaN
   const holdings = [
     makeHolding({ symbol: "sh600000", currency: "CNY", cost: 0, shares: 100, price: 10, change: 0.2 }),
   ];
@@ -461,7 +462,7 @@ void test("scheduler - Alt+P 取快照触发在线汇率刷新且 TTL 节流", a
   let calls = 0;
   const fakeRates = { usdToCny: 6.6677, hkdToCny: 0.850029326, fetchedAt: Date.now() };
   const scheduler = new RefreshScheduler({
-    marketManager: { clearInvalidCache() {}, pollAll: async () => [] } as any,
+    marketManager: { clearInvalidCache() {}, pruneInvalidCaches() {}, pollAll: async () => [] } as any,
     treeProvider: { setAlerts() {}, buildTree() {}, applyQuotes() {}, isEmpty: () => false } as any,
     statusBar: { setQuotes() {}, show() {}, hide() {}, isBossKeyActive: () => false } as any,
     treeView: { visible: false } as any,
@@ -530,4 +531,34 @@ void test("总账展示单一出口契约 - 三处 UI 不得复制盈亏率公�
       `${rel} 不得写死已校准的旧静态牌价`
     );
   }
+});
+
+void test("P2 回归 - 零成本持仓（赠股）录入/总账同口径合法，负成本脏数据三端一致过滤", () => {
+  resetLiveFxRatesForTest();
+  const watchlist: WatchlistConfig = {
+    "A股": [
+      { symbol: "sh600519", name: "赠股", type: "A_SHARE", cost: 0, shares: 100 } as any,
+      { symbol: "sh600000", name: "脏数据", type: "A_SHARE", cost: -5, shares: 100 } as any,
+    ],
+  };
+  const cache = new Map<string, MarketItem>();
+  cache.set("sh600519", { id: "sh600519", symbol: "sh600519", name: "赠股", type: "A_SHARE", price: 20, changePercent: 0 } as any);
+  cache.set("sh600000", { id: "sh600000", symbol: "sh600000", name: "脏数据", type: "A_SHARE", price: 10, changePercent: 0 } as any);
+
+  const holdings = extractHoldingQuotes(watchlist, cache, { forPortfolio: true });
+  assert.strictEqual(holdings.length, 1, "cost=0 合法保留，cost<0 过滤（与 isValidHoldingQuote 同口径）");
+  assert.strictEqual(holdings[0].cost, 0);
+
+  const summary = computePortfolioSummary(
+    holdings.map((h) => ({ ...h, section: "aShare" as const })),
+    "CNY"
+  );
+  assert.strictEqual(summary.holdingsCount, 1);
+  assert.strictEqual(summary.total.costVal, 0);
+  assert.strictEqual(summary.total.marketVal, 2000);
+  assert.strictEqual(summary.total.totalProfit, 2000);
+  const section = summary.bySection.aShare;
+  assert.ok(section, "板块桶必须存在");
+  assert.strictEqual(section!.marketVal, summary.total.marketVal, "total 与 bySection 对账一致");
+  assert.strictEqual(section!.totalProfit, summary.total.totalProfit);
 });

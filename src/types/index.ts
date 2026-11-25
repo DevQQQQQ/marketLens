@@ -44,7 +44,7 @@ export interface MarketItem {
   change?: number | undefined;     // 涨跌额
   volume?: number | undefined;     // 成交量
   turnover?: number | undefined;   // 成交额 (USD / CNY / HKD)
-  currency?: "CNY" | "USD" | "HKD" | "USDT" | undefined; // 计价货币（加密标的统一 U 本位，见 AGENTS.md §5.5）
+  currency?: "CNY" | "USD" | "HKD" | "USDT" | "BTC" | "ETH" | undefined; // 计价货币（稳定币计价对统一 U 本位；BTC/ETH 计价对如实标注计价资产，见 AGENTS.md §5.5）
 
   // ── 深度量价与估值指标（A股等板块） ──
   turnoverRate?: number | undefined;           // 换手率 %
@@ -72,6 +72,7 @@ export interface MarketItem {
   // ── 数据新鲜度与展示扩展 (T1) ──
   updateTime?: number | undefined; // 行情最后拉取成功时间戳（毫秒）
   alias?: string | undefined;      // 标的自定义展示简称 / 别名
+  dataSource?: string | undefined; // 行情数据来源，如 "SafeTrade" | "Binance" | "DexScreener" | "腾讯财经"
 }
 
 // 兼容别名

@@ -34,6 +34,7 @@ export interface SchedulerContext {
 export class RefreshScheduler implements vscode.Disposable {
   private timer: ReturnType<typeof setTimeout> | undefined;
   private retryTimer: ReturnType<typeof setTimeout> | undefined;
+  private retryIsForce = false;
   private retryCount = 0;
   private readonly MAX_RETRY_COUNT = 2;
   private readonly RETRY_DELAY_MS = 300;
@@ -102,7 +103,9 @@ export class RefreshScheduler implements vscode.Disposable {
   private maybeRefreshFxRates(): void {
     if (!this.fxRateFetcher || this.disposed) return;
     const now = Date.now();
-    if (now - this.lastFxFetchAt < this.FX_REFRESH_TTL_MS) return;
+    const elapsed = now - this.lastFxFetchAt;
+    // 时钟回拨（elapsed < 0）时不节流：否则汇率停摆直到时钟追回回拨量
+    if (elapsed >= 0 && elapsed < this.FX_REFRESH_TTL_MS) return;
     this.lastFxFetchAt = now;
 
     void this.fxRateFetcher()
@@ -474,7 +477,7 @@ export class RefreshScheduler implements vscode.Disposable {
     // 汇率刷新必须早于下方的「资源节流早退」：状态栏关闭 + 侧边栏不可见时 refresh 仍会被
     // 调度执行，若把触发点放在早退之后，在线汇率将永不更新，总账会静默停在静态兜底。
     this.maybeRefreshFxRates();
-    const config = readConfig();
+    let config = readConfig();
     if (customWatchlist) {
       config.watchlist = customWatchlist;
     }
@@ -487,11 +490,17 @@ export class RefreshScheduler implements vscode.Disposable {
     }
 
     if (this.isRefreshing) {
-      if (forceRefreshAll && !this.retryTimer && this.retryCount < this.MAX_RETRY_COUNT) {
+      // 强制全量刷新覆盖一切分组意图：即便已排队分组重试也可升级接管，避免用户操作被静默丢弃
+      if (forceRefreshAll && this.retryCount < this.MAX_RETRY_COUNT && (!this.retryTimer || !this.retryIsForce)) {
+        if (this.retryTimer) {
+          clearTimeout(this.retryTimer);
+        }
         this.retryCount++;
-        // 若当前已有刷新在执行，且未排队重试，延迟 300ms 再次触发一次强制刷新
+        this.retryIsForce = true;
+        // 若当前已有刷新在执行，延迟 300ms 再次触发一次强制刷新
         this.retryTimer = setTimeout(() => {
           this.retryTimer = undefined;
+          this.retryIsForce = false;
           void this.refresh(true, customWatchlist);
         }, this.RETRY_DELAY_MS);
       }
@@ -523,6 +532,18 @@ export class RefreshScheduler implements vscode.Disposable {
       if (this.disposed) {
         return;
       }
+
+      // await 期间落盘的热更新（板块开关/预警删改）立即生效，避免旧快照把 UI 闪回
+      config = readConfig();
+      if (customWatchlist) {
+        config.watchlist = customWatchlist;
+      }
+
+      // 修剪已从自选移除的加密/链上标的的失效抑制与失败计数，防止 Map 随历史标的无界增长。
+      // 用全量 watchlist 派生（不受板块开关/休市跳过影响），板块临时停用不清空抑制状态；
+      // 仅在全量刷新路径执行——分组定向刷新的目标集不完整，会误剪其他分组的标的。
+      const fullTargets = extractTargetsFromWatchlist(config.watchlist);
+      this.marketManager.pruneInvalidCaches(fullTargets.cryptos, fullTargets.bscTokens);
 
       // 评估 Binance 与 Alpha 代理健康与挂起状态
       let proxySuspensionChanged = false;
@@ -643,7 +664,7 @@ export class RefreshScheduler implements vscode.Disposable {
       if (this.globalState) {
         void checkAndTriggerIpoReminder(
           this.globalState,
-          () => this.statusBar.isBossKeyActive() || this.statusBar.isMaskModeActive()
+          () => this.statusBar.isBossKeyActive() || Boolean(this.statusBar.isMaskModeActive?.())
         ).catch((err) => {
           logger.debug("[scheduler] IPO check error", err);
         });
@@ -670,6 +691,7 @@ export class RefreshScheduler implements vscode.Disposable {
       // 若当前已有刷新在执行，复用 retryTimer 延迟 300ms 排队重试，避免静默丢弃用户操作
       if (!this.retryTimer && this.retryCount < this.MAX_RETRY_COUNT) {
         this.retryCount++;
+        this.retryIsForce = false;
         logger.info(`分组 ${describeForLog(group.groupName)} 刷新遇到并发冲突，已加入重试队列 (第 ${this.retryCount} 次)`);
         this.retryTimer = setTimeout(() => {
           this.retryTimer = undefined;
@@ -683,7 +705,7 @@ export class RefreshScheduler implements vscode.Disposable {
     this.retryCount = 0;
     this.isRefreshing = true;
     try {
-      const config = readConfig();
+      let config = readConfig();
       const groupSection = resolveGroupSection(
         group.groupName,
         group.children.map((c) => ({ symbol: c.confSymbol, type: c.item?.type }))
@@ -711,6 +733,9 @@ export class RefreshScheduler implements vscode.Disposable {
         return;
       }
 
+      // await 期间落盘的热更新立即生效，避免旧快照把 UI 闪回
+      config = readConfig();
+
       let restoredFromSuspension = false;
       if (isProxySec) {
         const expectedCount = groupSection === "binance" ? targets.cryptos.length : targets.bscTokens.length;
@@ -727,7 +752,7 @@ export class RefreshScheduler implements vscode.Disposable {
             this.rebuildTree();
             const proxyTarget =
               (groupSection === "binance" ? config.binance.proxyUrl : config.alpha.proxyUrl) || "127.0.0.1:10808";
-            if (canEmitUserFeedback(this.statusBar.isBossKeyActive())) {
+            if (canEmitUserFeedback(this.statusBar.isBossKeyActive()) && !this.statusBar.isMaskModeActive?.()) {
               void vscode.window.showWarningMessage(
                 `[MarketLens] ${group.groupName} 代理仍不可达（当前配置: ${proxyTarget}），已继续暂停自动轮询。请确认代理软件已启动。`
               );
@@ -759,6 +784,11 @@ export class RefreshScheduler implements vscode.Disposable {
       logger.error(`分组 ${describeForLog(group.groupName)} 刷新失败`, err);
     } finally {
       this.isRefreshing = false;
+      // 分组刷新不走 refresh() 的调度出口：若定时 tick 在此期间被并发早退消耗，
+      // 必须在这里补挂下一轮，否则自动轮询会永久停摆
+      if (!this.disposed && this.timer === undefined) {
+        this.scheduleNextTick();
+      }
     }
   }
 

@@ -175,16 +175,17 @@ export async function searchSymbols(
     return cached.items;
   }
 
-  // 组装出网参数，优先遵循 A股 板块网络设置（Smartbox 位于腾讯国内域名）
-  const config = readConfig();
-  const netOpts: { mode: "direct" | "proxy"; proxyUrl?: string } = {
-    mode: customNetworkOpts?.mode ?? config.aShare?.networkMode ?? "direct",
-    ...(customNetworkOpts?.proxyUrl || config.aShare?.proxyUrl ? { proxyUrl: customNetworkOpts?.proxyUrl || config.aShare?.proxyUrl } : {}),
-  };
-
   const url = `${TENCENT_SMARTBOX_URL}?t=all&q=${encodeURIComponent(trimmed)}`;
 
   try {
+    // 组装出网参数，优先遵循 A股 板块网络设置（Smartbox 位于腾讯国内域名）；
+    // readConfig 置于 try 内：配置读取异常时搜索优雅降级为空结果，而非向调用方 reject
+    const config = readConfig();
+    const netOpts: { mode: "direct" | "proxy"; proxyUrl?: string } = {
+      mode: customNetworkOpts?.mode ?? config.aShare?.networkMode ?? "direct",
+      ...(customNetworkOpts?.proxyUrl || config.aShare?.proxyUrl ? { proxyUrl: customNetworkOpts?.proxyUrl || config.aShare?.proxyUrl } : {}),
+    };
+
     const res = await smartNetworkGet<ArrayBuffer>(url, netOpts, {
       responseType: "arraybuffer",
       timeout: 3500,

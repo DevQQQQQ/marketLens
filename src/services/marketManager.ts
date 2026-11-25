@@ -4,6 +4,7 @@ import { AShareService } from "./aShareService.ts";
 import { HKStockService } from "./hkStockService.ts";
 import { USStockService } from "./usStockService.ts";
 import { BinanceService } from "./binanceService.ts";
+import { SafeTradeService } from "./safeTradeService.ts";
 import { DexScreenerService } from "./dexScreenerService.ts";
 import { DEFAULT_PROXY_URL, type CryptoNetworkOptions } from "./network.ts";
 import { logger } from "../utils/logger.ts";
@@ -22,6 +23,7 @@ export class MarketManager {
   private hkStockService: HKStockService;
   private usStockService: USStockService;
   private binanceService: BinanceService;
+  private safeTradeService: SafeTradeService;
   private dexScreenerService: DexScreenerService;
 
   constructor() {
@@ -29,12 +31,23 @@ export class MarketManager {
     this.hkStockService = new HKStockService();
     this.usStockService = new USStockService();
     this.binanceService = new BinanceService();
+    this.safeTradeService = new SafeTradeService();
     this.dexScreenerService = new DexScreenerService();
   }
 
   public clearInvalidCache(): void {
     this.binanceService.clearInvalidCache();
+    this.safeTradeService.clearInvalidCache();
     this.dexScreenerService.clearInvalidCache();
+  }
+
+  /** 按当前自选全集修剪加密/链上标的的失效抑制与失败计数（板块临时停用不应清空抑制状态） */
+  public pruneInvalidCaches(cryptos: readonly string[], bscTokens: readonly string[]): void {
+    const binanceSymbols = cryptos.filter((s) => !/^safetrade:/i.test(s));
+    const safeTradeSymbols = cryptos.filter((s) => /^safetrade:/i.test(s));
+    this.binanceService.pruneInactiveSymbols(binanceSymbols);
+    this.safeTradeService.pruneInactiveSymbols(safeTradeSymbols);
+    this.dexScreenerService.pruneInactiveAddresses(bscTokens);
   }
 
   /**
@@ -51,12 +64,16 @@ export class MarketManager {
   ): Promise<MarketItem[]> {
     const { funds = [], aShares = [], hkStocks = [], usStocks = [], cryptos = [], bscTokens = [] } = targets;
 
-    const [fundRes, aShareRes, hkRes, usRes, cryptoRes, bscRes] = await Promise.allSettled([
+    const binanceSymbols = cryptos.filter((s) => !/^safetrade:/i.test(s));
+    const safeTradeSymbols = cryptos.filter((s) => /^safetrade:/i.test(s));
+
+    const [fundRes, aShareRes, hkRes, usRes, cryptoRes, safeTradeRes, bscRes] = await Promise.allSettled([
       funds.length ? this.aShareService.fetchQuotes(funds, fundOptions) : Promise.resolve([]),
       aShares.length ? this.aShareService.fetchQuotes(aShares, aShareOptions) : Promise.resolve([]),
       hkStocks.length ? this.hkStockService.fetchQuotes(hkStocks, hkStockOptions) : Promise.resolve([]),
       usStocks.length ? this.usStockService.fetchQuotes(usStocks, usStockOptions) : Promise.resolve([]),
-      cryptos.length ? this.binanceService.fetchQuotes(cryptos, binanceOptions) : Promise.resolve([]),
+      binanceSymbols.length ? this.binanceService.fetchQuotes(binanceSymbols, binanceOptions) : Promise.resolve([]),
+      safeTradeSymbols.length ? this.safeTradeService.fetchQuotes(safeTradeSymbols, binanceOptions) : Promise.resolve([]),
       bscTokens.length ? this.dexScreenerService.fetchQuotes(bscTokens, alphaOptions) : Promise.resolve([]),
     ]);
 
@@ -89,7 +106,13 @@ export class MarketManager {
     if (cryptoRes.status === "fulfilled") {
       aggregated.push(...cryptoRes.value);
     } else {
-      logger.error("[MarketManager] Crypto fetch failed:", cryptoRes.reason);
+      logger.error("[MarketManager] Binance fetch failed:", cryptoRes.reason);
+    }
+
+    if (safeTradeRes.status === "fulfilled") {
+      aggregated.push(...safeTradeRes.value);
+    } else {
+      logger.error("[MarketManager] SafeTrade fetch failed:", safeTradeRes.reason);
     }
 
     if (bscRes.status === "fulfilled") {

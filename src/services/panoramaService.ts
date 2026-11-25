@@ -4,6 +4,8 @@
 
 import { smartNetworkGet } from "./network.ts";
 import type { CryptoNetworkOptions } from "./network.ts";
+import { extractFxPrice } from "./fxRateService.ts";
+import { decodeGbk } from "../utils/symbolHelper.ts";
 import type { MarketDistributionBins, FearGreedData } from "../utils/panoramaSvg.ts";
 import type { TreemapInputItem } from "../utils/treemap.ts";
 
@@ -81,140 +83,136 @@ export async function fetchASharePanorama(
   const topInflows: TreemapInputItem[] = [];
   const topOutflows: TreemapInputItem[] = [];
 
-  try {
-    // 1. 请求东财两市大盘统计 (上证 1.000001, 深证 0.399001)
-    const ulistUrl =
-      "https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&invt=2&secids=1.000001,0.399001&fields=f2,f3,f6,f12,f14,f104,f105,f106,f124";
-    const ulistResp = await smartNetworkGet<{
-      data?: {
-        diff?: Array<{
-          f2?: number;
-          f3?: number;
-          f6?: number;
-          f104?: number;
-          f105?: number;
-          f106?: number;
-        }>;
-      };
-    }>(ulistUrl, options, {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        Referer: "https://quote.eastmoney.com/",
-      },
-      timeout: 5000,
-    });
+  // 三路请求无依赖，并发发起（串行 await 会让首屏耗时叠加）；各自 catch 降级，互不拖累
+  const ulistUrl =
+    "https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&invt=2&secids=1.000001,0.399001&fields=f2,f3,f6,f12,f14,f104,f105,f106,f124";
+  const ulistReq = smartNetworkGet<{
+    data?: {
+      diff?: Array<{
+        f2?: number;
+        f3?: number;
+        f6?: number;
+        f104?: number;
+        f105?: number;
+        f106?: number;
+      }>;
+    };
+  }>(ulistUrl, options, {
+    headers: {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+      Referer: "https://quote.eastmoney.com/",
+    },
+    timeout: 5000,
+  }).catch(() => undefined);
 
-    const diff = ulistResp.data?.data?.diff || [];
-    for (const item of diff) {
-      upTotal += Number(item.f104) || 0;
-      downTotal += Number(item.f105) || 0;
-      flatTotal += Number(item.f106) || 0;
-      turnoverYuan += Number(item.f6) || 0;
-    }
-  } catch {
-    // 降级回退
-  }
+  const clistUrl =
+    "https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=80&po=1&np=1&ut=bd1d9ddb04089700cf9c27f6f7426281&fltt=2&invt=2&fid=f6&fs=m:90+t:2+f:!50&fields=f12,f14,f2,f3,f62,f6";
+  const clistReq = smartNetworkGet<{
+    data?: {
+      diff?: Array<{
+        f12?: string;
+        f14?: string;
+        f2?: number;
+        f3?: number;
+        f6?: number;
+        f62?: number;
+      }>;
+    };
+  }>(clistUrl, options, {
+    headers: {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+      Referer: "https://quote.eastmoney.com/center/boardlist.html?industry_board",
+    },
+    timeout: 5000,
+  }).catch(() => undefined);
 
-  try {
-    // 2. 请求全市场行业板块列表与主力资金
-    const clistUrl =
-      "https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=80&po=1&np=1&ut=bd1d9ddb04089700cf9c27f6f7426281&fltt=2&invt=2&fid=f6&fs=m:90+t:2+f:!50&fields=f12,f14,f2,f3,f62,f6";
-    const clistResp = await smartNetworkGet<{
-      data?: {
-        diff?: Array<{
-          f12?: string;
-          f14?: string;
-          f2?: number;
-          f3?: number;
-          f6?: number;
-          f62?: number;
-        }>;
-      };
-    }>(clistUrl, options, {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        Referer: "https://quote.eastmoney.com/center/boardlist.html?industry_board",
-      },
-      timeout: 5000,
-    });
-
-    const rawSectors = clistResp.data?.data?.diff || [];
-    for (const s of rawSectors) {
-      if (!s.f14 || typeof s.f6 !== "number" || s.f6 <= 0) continue;
-      const change = typeof s.f3 === "number" ? s.f3 : 0;
-      const inflow = typeof s.f62 === "number" ? s.f62 : 0;
-      const inflowText = `${inflow >= 0 ? "+" : ""}${formatAmount(inflow)}`;
-
-      sectors.push({
-        id: s.f12,
-        name: s.f14,
-        value: s.f6, // 成交额用于权重
-        change,
-        extra: `成交:${formatAmount(s.f6)} 主力:${inflowText}`,
-      });
-    }
-
-    // 排序前 5 主力净流入与主力净流出
-    const sortedByInflow = [...rawSectors]
-      .filter((s) => typeof s.f62 === "number" && s.f14)
-      .sort((a, b) => (b.f62 || 0) - (a.f62 || 0));
-
-    topInflows.push(
-      ...sortedByInflow.slice(0, 5).map((s) => ({
-        name: s.f14!,
-        value: Math.abs(s.f62 || 0),
-        change: s.f3 || 0,
-        extra: `+${formatAmount(s.f62 || 0)}`,
-      }))
-    );
-
-    topOutflows.push(
-      ...sortedByInflow
-        .slice(-5)
-        .reverse()
-        .map((s) => ({
-          name: s.f14!,
-          value: Math.abs(s.f62 || 0),
-          change: s.f3 || 0,
-          extra: formatAmount(s.f62 || 0),
-        }))
-    );
-  } catch {
-    // 降级回退
-  }
-
-  // 3. 构建 9 区间分布模型
-  // 并发拉取东财涨跌停专题池获取精准真实涨跌停家数；异常或非交易时段自动平滑回退
-  let realUpLimit: number | undefined;
-  let realDownLimit: number | undefined;
-
+  // 涨跌停专题池获取精准真实涨跌停家数；异常或非交易时段自动平滑回退
   const ztUrl = "https://push2ex.eastmoney.com/getTopicZTPool?ut=7eea3ed0793160c760e83a0c0914a873&dpt=wz.ztzt&Pageindex=0&pagesize=1";
   const dtUrl = "https://push2ex.eastmoney.com/getTopicDTPool?ut=7eea3ed0793160c760e83a0c0914a873&dpt=wz.ztzt&Pageindex=0&pagesize=1";
   const poolHeaders = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     Referer: "https://quote.eastmoney.com/ztb/",
   };
+  const poolReq = Promise.allSettled([
+    smartNetworkGet<{ data?: { tc?: number } }>(ztUrl, options, {
+      headers: poolHeaders,
+      timeout: 3000,
+    }),
+    smartNetworkGet<{ data?: { tc?: number } }>(dtUrl, options, {
+      headers: poolHeaders,
+      timeout: 3000,
+    }),
+  ]);
 
-  try {
-    const [ztRes, dtRes] = await Promise.allSettled([
-      smartNetworkGet<{ data?: { tc?: number } }>(ztUrl, options, {
-        headers: poolHeaders,
-        timeout: 3000,
-      }),
-      smartNetworkGet<{ data?: { tc?: number } }>(dtUrl, options, {
-        headers: poolHeaders,
-        timeout: 3000,
-      }),
-    ]);
+  // 1. 两市大盘统计 (上证 1.000001, 深证 0.399001)
+  const ulistResp = await ulistReq;
+  const diff = ulistResp?.data?.data?.diff || [];
+  for (const item of diff) {
+    upTotal += Number(item.f104) || 0;
+    downTotal += Number(item.f105) || 0;
+    flatTotal += Number(item.f106) || 0;
+    turnoverYuan += Number(item.f6) || 0;
+  }
 
-    if (ztRes.status === "fulfilled" && typeof ztRes.value.data?.data?.tc === "number" && ztRes.value.data.data.tc >= 0) {
-      realUpLimit = ztRes.value.data.data.tc;
-    }
-    if (dtRes.status === "fulfilled" && typeof dtRes.value.data?.data?.tc === "number" && dtRes.value.data.data.tc >= 0) {
-      realDownLimit = dtRes.value.data.data.tc;
-    }
-  } catch {
-    // 降级使用模型估算
+  // 2. 全市场行业板块列表与主力资金
+  const clistResp = await clistReq;
+  const rawSectors = clistResp?.data?.data?.diff || [];
+  for (const s of rawSectors) {
+    if (!s.f14 || typeof s.f6 !== "number" || s.f6 <= 0) continue;
+    const change = typeof s.f3 === "number" ? s.f3 : 0;
+    const inflow = typeof s.f62 === "number" ? s.f62 : 0;
+    const inflowText = `${inflow >= 0 ? "+" : ""}${formatAmount(inflow)}`;
+
+    sectors.push({
+      id: s.f12,
+      name: s.f14,
+      value: s.f6, // 成交额用于权重
+      change,
+      extra: `成交:${formatAmount(s.f6)} 主力:${inflowText}`,
+    });
+  }
+
+  // 净流入/流出榜按符号过滤：候选不足 5 个时两榜不再重叠，
+  // 全市场净流入日「流出榜」宁缺毋滥，不把最小净流入伪装成流出
+  const sortedByInflow = [...rawSectors]
+    .filter((s) => typeof s.f62 === "number" && s.f14)
+    .sort((a, b) => (b.f62 || 0) - (a.f62 || 0));
+
+  topInflows.push(
+    ...sortedByInflow
+      .filter((s) => (s.f62 || 0) > 0)
+      .slice(0, 5)
+      .map((s) => ({
+        name: s.f14!,
+        value: Math.abs(s.f62 || 0),
+        change: s.f3 || 0,
+        extra: `+${formatAmount(s.f62 || 0)}`,
+      }))
+  );
+
+  topOutflows.push(
+    ...sortedByInflow
+      .filter((s) => (s.f62 || 0) < 0)
+      .slice(-5)
+      .reverse()
+      .map((s) => ({
+        name: s.f14!,
+        value: Math.abs(s.f62 || 0),
+        change: s.f3 || 0,
+        extra: formatAmount(s.f62 || 0),
+      }))
+  );
+
+  // 3. 构建 9 区间分布模型
+  let realUpLimit: number | undefined;
+  let realDownLimit: number | undefined;
+
+  const [ztRes, dtRes] = await poolReq;
+  if (ztRes.status === "fulfilled" && typeof ztRes.value.data?.data?.tc === "number" && ztRes.value.data.data.tc >= 0) {
+    realUpLimit = ztRes.value.data.data.tc;
+  }
+  if (dtRes.status === "fulfilled" && typeof dtRes.value.data?.data?.tc === "number" && dtRes.value.data.data.tc >= 0) {
+    realDownLimit = dtRes.value.data.data.tc;
   }
 
   const upBase = upTotal > 0 ? upTotal : 1;
@@ -266,39 +264,20 @@ export async function fetchASharePanorama(
 export async function fetchCryptoPanorama(
   options: CryptoNetworkOptions = { mode: "direct" }
 ): Promise<CryptoPanoramaData> {
-  // 1. Alternative.me 恐慌贪婪接口
+  // 1. Alternative.me 恐慌贪婪接口（与币安榜单无依赖，并发发起）
   let fearGreed: FearGreedData = {
     score: 50,
     classification: "Neutral",
   };
 
-  try {
-    const fngUrl = "https://api.alternative.me/fng/?limit=7";
-    const fngResp = await smartNetworkGet<{
-      data?: Array<{
-        value: string;
-        value_classification: string;
-        timestamp: string;
-      }>;
-    }>(fngUrl, options, { timeout: 4000 });
-
-    const fngList = fngResp.data?.data;
-    if (fngList && fngList.length > 0 && fngList[0]) {
-      const cur = fngList[0];
-      const prev = fngList[1];
-      const week = fngList[6];
-
-      fearGreed = {
-        score: parseInt(cur.value, 10) || 50,
-        classification: cur.value_classification || "Neutral",
-        timestamp: parseInt(cur.timestamp, 10) * 1000,
-        previousClose: prev ? parseInt(prev.value, 10) : undefined,
-        oneWeekAgo: week ? parseInt(week.value, 10) : undefined,
-      };
-    }
-  } catch {
-    // 降级使用默认中立值
-  }
+  const fngUrl = "https://api.alternative.me/fng/?limit=7";
+  const fngReq = smartNetworkGet<{
+    data?: Array<{
+      value: string;
+      value_classification: string;
+      timestamp: string;
+    }>;
+  }>(fngUrl, options, { timeout: 4000 }).catch(() => undefined);
 
   // 2. Binance 现货主流币 24hr Ticker
   const TARGET_SYMBOLS = new Set([
@@ -328,18 +307,35 @@ export async function fetchCryptoPanorama(
   const topGainers: CryptoRankItem[] = [];
   const topLosers: CryptoRankItem[] = [];
 
-  try {
-    const binanceUrl = "https://api.binance.com/api/v3/ticker/24hr";
-    const binanceResp = await smartNetworkGet<
-      Array<{
-        symbol: string;
-        lastPrice: string;
-        priceChangePercent: string;
-        quoteVolume: string;
-      }>
-    >(binanceUrl, options, { timeout: 5000 });
+  const binanceUrl = "https://api.binance.com/api/v3/ticker/24hr";
+  const binanceReq = smartNetworkGet<
+    Array<{
+      symbol: string;
+      lastPrice: string;
+      priceChangePercent: string;
+      quoteVolume: string;
+    }>
+  >(binanceUrl, options, { timeout: 5000 }).catch(() => undefined);
 
-    const tickers = binanceResp.data || [];
+  const fngResp = await fngReq;
+  const fngList = fngResp?.data?.data;
+  if (fngList && fngList.length > 0 && fngList[0]) {
+    const cur = fngList[0];
+    const prev = fngList[1];
+    const week = fngList[6];
+
+    fearGreed = {
+      score: parseInt(cur.value, 10) || 50,
+      classification: cur.value_classification || "Neutral",
+      timestamp: parseInt(cur.timestamp, 10) * 1000,
+      previousClose: prev ? parseInt(prev.value, 10) : undefined,
+      oneWeekAgo: week ? parseInt(week.value, 10) : undefined,
+    };
+  }
+
+  const binanceResp = await binanceReq;
+  if (binanceResp) {
+    const tickers = Array.isArray(binanceResp.data) ? binanceResp.data : [];
     const STABLECOIN_NAMES = new Set(["USDC", "FDUSD", "TUSD", "BUSD", "EUR", "DAI", "USDP", "AEUR", "USDS"]);
     const candidateRanks: CryptoRankItem[] = [];
 
@@ -378,11 +374,11 @@ export async function fetchCryptoPanorama(
       }
     }
 
+    // 领涨/领跌按符号过滤：候选不足 10 个时两榜不再重叠，
+    // 全市场普涨日「领跌榜」宁缺毋滥，不把最小涨幅伪装成下跌
     const sortedByChange = [...candidateRanks].sort((a, b) => b.change - a.change);
-    topGainers.push(...sortedByChange.slice(0, 5));
-    topLosers.push(...sortedByChange.slice(-5).reverse());
-  } catch {
-    // 接口异常时保证非空回退
+    topGainers.push(...sortedByChange.filter((c) => c.change > 0).slice(0, 5));
+    topLosers.push(...sortedByChange.filter((c) => c.change < 0).slice(-5).reverse());
   }
 
   return {
@@ -415,31 +411,34 @@ export async function fetchGlobalPanorama(
   const symbols = "s_usDJI,s_usIXIC,s_usINX,s_hkHSI,s_hkHSTECH,s_sh000001";
   const url = `https://qt.gtimg.cn/q=${symbols}`;
 
+  // 腾讯股指与新浪商品外汇无依赖，并发发起
+  const tencentReq = smartNetworkGet<ArrayBuffer>(url, options, {
+    responseType: "arraybuffer",
+    timeout: 5000,
+  }).catch(() => undefined);
+  const sinaUrl = "https://hq.sinajs.cn/list=hf_GC,hf_CL,fx_susdcnh";
+  const sinaReq = smartNetworkGet<ArrayBuffer>(sinaUrl, options, {
+    responseType: "arraybuffer",
+    timeout: 5000,
+    headers: { Referer: "https://finance.sina.com.cn/" },
+  }).catch(() => undefined);
+
   const indices: IndexCardItem[] = [];
-  try {
-    const resp = await smartNetworkGet<string>(url, options, {
-      responseType: "text",
-      timeout: 5000,
-    });
-    const lines = (resp.data || "").split(";");
+  const tencentResp = await tencentReq;
+  if (tencentResp) {
+    const text = decodeGbk(tencentResp.data);
+    const lines = text.split(";");
     for (const line of lines) {
       const item = parseTencentSimpleLine(line.trim());
       if (item) indices.push(item);
     }
-  } catch {
-    // 降级回退
   }
 
   // 大宗商品与外汇（通过新浪期货/外汇公共接口）
   const commodities: IndexCardItem[] = [];
-  try {
-    const sinaUrl = "https://hq.sinajs.cn/list=hf_GC,hf_CL,fx_susdcnh";
-    const resp = await smartNetworkGet<string>(sinaUrl, options, {
-      responseType: "text",
-      timeout: 5000,
-      headers: { Referer: "https://finance.sina.com.cn/" },
-    });
-    const text = resp.data || "";
+  const sinaResp = await sinaReq;
+  if (sinaResp) {
+    const text = decodeGbk(sinaResp.data);
 
     // 黄金 GC
     const gcMatch = text.match(/hq_str_hf_GC="([^"]+)"/);
@@ -461,17 +460,15 @@ export async function fetchGlobalPanorama(
       commodities.push({ symbol: "CL", name: "WTI 原油", price: cur, change: chg, changeAmount: cur - prev });
     }
 
-    // 离岸人民币 USD/CNH
+    // 离岸人民币 USD/CNH：现价走 fxRateService 共享出口（[8] 最新价、[1] 买价兜底），[3] 为昨收（实测报文核验）
     const cnhMatch = text.match(/hq_str_fx_susdcnh="([^"]+)"/);
-    if (cnhMatch && cnhMatch[1]) {
+    const cur = extractFxPrice(text, "fx_susdcnh");
+    if (cnhMatch && cnhMatch[1] && cur !== undefined) {
       const parts = cnhMatch[1].split(",");
-      const cur = parseFloat(parts[1] || "0") || 0;
       const prev = parseFloat(parts[3] || "0") || cur;
       const chg = prev > 0 ? ((cur - prev) / prev) * 100 : 0;
       commodities.push({ symbol: "USDCNH", name: "美元/离岸人民币", price: cur, change: chg, changeAmount: cur - prev });
     }
-  } catch {
-    // 降级回退
   }
 
   return { indices, commodities };
@@ -490,11 +487,12 @@ export async function fetchHkPanorama(
   const leaders: TreemapInputItem[] = [];
 
   try {
-    const resp = await smartNetworkGet<string>(`https://qt.gtimg.cn/q=${indexSymbols},${leaderSymbols}`, options, {
-      responseType: "text",
+    const resp = await smartNetworkGet<ArrayBuffer>(`https://qt.gtimg.cn/q=${indexSymbols},${leaderSymbols}`, options, {
+      responseType: "arraybuffer",
       timeout: 5000,
     });
-    const lines = (resp.data || "").split(";");
+    const text = decodeGbk(resp.data);
+    const lines = text.split(";");
     for (const line of lines) {
       const trimmed = line.trim();
       if (!trimmed) continue;
@@ -512,7 +510,9 @@ export async function fetchHkPanorama(
       if (symbol === "HSI" || symbol === "HSTECH" || symbol === "HSCEI") {
         indices.push({ symbol, name, price, change, changeAmount });
       } else {
-        const volume = parseFloat(p[7] || "1") || 1;
+        // p[7] 在长度守卫之外：缺失/非法时跳过该龙头，禁止 || 1 假兜底把热力图退化为等权
+        const volume = p.length > 7 ? parseFloat(p[7] || "") : NaN;
+        if (!Number.isFinite(volume) || volume <= 0) continue;
         leaders.push({
           id: symbol,
           name,
@@ -542,11 +542,12 @@ export async function fetchUsPanorama(
   const mag7: TreemapInputItem[] = [];
 
   try {
-    const resp = await smartNetworkGet<string>(`https://qt.gtimg.cn/q=${indexSymbols},${mag7Symbols}`, options, {
-      responseType: "text",
+    const resp = await smartNetworkGet<ArrayBuffer>(`https://qt.gtimg.cn/q=${indexSymbols},${mag7Symbols}`, options, {
+      responseType: "arraybuffer",
       timeout: 5000,
     });
-    const lines = (resp.data || "").split(";");
+    const text = decodeGbk(resp.data);
+    const lines = text.split(";");
     for (const line of lines) {
       const trimmed = line.trim();
       if (!trimmed) continue;
@@ -564,8 +565,9 @@ export async function fetchUsPanorama(
       if (symbol.startsWith(".")) {
         indices.push({ symbol, name, price, change, changeAmount });
       } else {
-        // p[8] 是市值（亿美元）
-        const marketCap = parseFloat(p[8] || "1") || 1;
+        // p[8] 是市值（亿美元），在长度守卫之外：缺失/非法时跳过，禁止 || 1 假兜底
+        const marketCap = p.length > 8 ? parseFloat(p[8] || "") : NaN;
+        if (!Number.isFinite(marketCap) || marketCap <= 0) continue;
         const cleanName = symbol.split(".")[0] || name;
         mag7.push({
           id: cleanName,
@@ -593,11 +595,12 @@ export async function fetchFundPanorama(
   const popularEtfs: TreemapInputItem[] = [];
 
   try {
-    const resp = await smartNetworkGet<string>(`https://qt.gtimg.cn/q=${etfSymbols}`, options, {
-      responseType: "text",
+    const resp = await smartNetworkGet<ArrayBuffer>(`https://qt.gtimg.cn/q=${etfSymbols}`, options, {
+      responseType: "arraybuffer",
       timeout: 5000,
     });
-    const lines = (resp.data || "").split(";");
+    const text = decodeGbk(resp.data);
+    const lines = text.split(";");
     for (const line of lines) {
       const trimmed = line.trim();
       if (!trimmed) continue;
@@ -610,7 +613,8 @@ export async function fetchFundPanorama(
       const symbol = p[2] || "";
       const price = parseFloat(p[3] || "0") || 0;
       const change = parseFloat(p[5] || "0") || 0;
-      const turnoverWan = parseFloat(p[7] || "1") || 1; // 万元成交额
+      const turnoverWan = parseFloat(p[7] || ""); // 万元成交额；缺失/非法跳过，禁止 || 1 假兜底
+      if (!Number.isFinite(turnoverWan) || turnoverWan <= 0) continue;
 
       popularEtfs.push({
         id: symbol,

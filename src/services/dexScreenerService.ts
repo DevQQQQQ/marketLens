@@ -76,6 +76,17 @@ export class DexScreenerService {
     this.addressFailureCounts.clear();
   }
 
+  /** 修剪已不在当前自选中的合约的抑制与失败计数，防止 Map 随历史标的无界增长 */
+  public pruneInactiveAddresses(activeAddresses: readonly string[]): void {
+    const active = new Set(activeAddresses.map((a) => a.trim().toLowerCase()));
+    for (const key of this.invalidAddresses.keys()) {
+      if (!active.has(key)) this.invalidAddresses.delete(key);
+    }
+    for (const key of this.addressFailureCounts.keys()) {
+      if (!active.has(key)) this.addressFailureCounts.delete(key);
+    }
+  }
+
   public isAddressSuppressed(addr: string): boolean {
     return this.isAddressInvalid(addr);
   }
@@ -94,6 +105,8 @@ export class DexScreenerService {
   private markAddressInvalid(addr: string): void {
     const key = addr.toLowerCase();
     this.invalidAddresses.set(key, Date.now() + this.INVALID_CACHE_TTL);
+    // 同步清零失败计数：否则 TTL 过期恢复后残留计数使单次失败立即再抑制，「连续 N 轮」契约失效
+    this.addressFailureCounts.delete(key);
     logger.warn(
       `[DexScreenerService] 合约 ${describeForLog(addr)} 未检索到流动性池或已下架，已加入临时抑制黑名单(10分钟)`
     );
@@ -264,6 +277,8 @@ export class DexScreenerService {
           priceChangeMulti,
           // 链上标的与币安同为 U 本位口径（价源自 priceUsd，稳定币计价）
           currency:      "USDT",
+          updateTime:    Date.now(),
+          dataSource:    "DexScreener",
         });
       }
       return { items, networkError: false };

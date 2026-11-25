@@ -13,6 +13,7 @@ import {
   isAShareHoliday,
   isHKHoliday,
 } from "../utils/marketHours.ts";
+import { inferAShareExchange } from "../utils/symbolHelper.ts";
 
 export interface IpoFilterOptions {
   includeAShare?: boolean;
@@ -116,7 +117,11 @@ export async function fetchAShareIpos(
     const price = typeof raw.ISSUE_PRICE === "number" ? raw.ISSUE_PRICE : String(raw.ISSUE_PRICE || "-");
     const upper = typeof raw.ONLINE_APPLY_UPPER === "number" ? raw.ONLINE_APPLY_UPPER : 0;
     const limitStr = upper > 0 ? `${(upper / 10000).toFixed(2)}万股` : undefined;
-    const market = raw.MARKET ? String(raw.MARKET) : undefined;
+    let market = raw.MARKET ? String(raw.MARKET).trim() : undefined;
+    if (!market && /^\d{6}$/.test(code)) {
+      const ex = inferAShareExchange(code);
+      market = ex === "bj" ? "北交所" : ex === "sh" ? "上交所" : "深交所";
+    }
 
     items.push({
       type: "A_SHARE",
@@ -232,7 +237,7 @@ export async function fetchHkIpos(
   networkOpts?: { mode?: "direct" | "proxy"; proxyUrl?: string }
 ): Promise<IpoItem[]> {
   const opts = getNetworkOptions(networkOpts);
-  const res = await smartNetworkGet<string>(EASTMONEY_HK_IPO_URL, opts, { timeout: 6000 });
+  const res = await smartNetworkGet<string>(EASTMONEY_HK_IPO_URL, opts, { timeout: 8000 });
   const html = typeof res.data === "string" ? res.data : String(res.data || "");
   return parseHkIpoHtml(html, targetDateStr);
 }
@@ -292,8 +297,8 @@ export async function fetchTodayIposWithStatus(
     };
   }
 
-  // 只要未发生网络错误，或即便有局部错误但已抓到有效标的，才写入缓存
-  if (!fetchFailed || allItems.length > 0) {
+  // 仅全部来源成功才写入当日缓存：局部失败若被锁定为全日结果，失败板块当日将永不补抓
+  if (!fetchFailed) {
     _cachedIpoDate = targetDateStr;
     _cachedIpoItems = allItems;
   }

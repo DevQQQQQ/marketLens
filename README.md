@@ -1,14 +1,14 @@
-# MarketLens 是一款面向开发者的股票看板 / 基金与大盘指数 / 持仓盈亏 / 加密货币行情 / 摸鱼盯盘效率工具，聚合基金、A股、港股、美股、Binance 主流币与全链 DEX 链上资产，让你在写代码时也能一眼掌握盘面异动。
+# MarketLens 是一款面向开发者的股票看板 / 基金与大盘指数 / 持仓盈亏 / 加密货币行情 / 摸鱼盯盘效率工具，聚合基金、A股、港股、美股、加密货币 (Binance主流币 & SafeTrade矿币) 与全链 DEX 链上资产，让你在写代码时也能一眼掌握盘面异动。
 
 <p align="center">
   <b>📊 专为开发者打造的专业行情看板与极致效率工具</b><br>
-  实时盯盘 场内ETF/基金、大盘指数、A股 (沪深京)、港股 (恒生/腾讯/美团等)、美股 (纳斯达克/标普/英伟达/苹果等)、Binance 主流加密货币、全链 DEX 链上资产 (Solana / BSC / Base / 以太坊等)，支持多币种持仓总账与盈亏统计。
+  实时盯盘 场内ETF/基金、大盘指数、A股 (沪深京)、港股 (恒生/腾讯/美团等)、美股 (纳斯达克/标普/英伟达/苹果等)、主流加密货币与矿币 (BTC/ETH/SOL 及 SafeTrade PRL 等)、全链 DEX 链上资产 (Solana / BSC / Base / 以太坊等)，支持多币种持仓总账与盈亏统计。
 </p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/VS_Code-^1.85.0-007ACC?logo=visualstudiocode" alt="VS Code Version">
   <img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License">
-  <img src="https://img.shields.io/badge/Release-v1.4.0-blue.svg" alt="Version">
+  <img src="https://img.shields.io/badge/Release-v1.4.1-blue.svg" alt="Version">
   <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-orange" alt="Platform">
 </p>
 
@@ -16,11 +16,13 @@
 
 ## 🌟 为什么选择 MarketLens？
 
-作为程序员，在工作专注编码时，经常需要兼顾自选资产（基金、股票、指数、加密代币、链上新币）的盘面异动。频繁切换桌面炒股炒币软件不仅打断工作心流，而且容易被旁人察觉。
+作为程序员，在工作专注编码时，经常需要兼顾自选资产（基金、股票、指数、加密代币、矿币、链上新币）的盘面异动。频繁切换桌面炒股炒币软件不仅打断工作心流，而且容易被旁人察觉。
 
 **MarketLens** 将全市场行情与效率预警深度融合进 VS Code 编辑器中：
 
-- 🌲 **六合一全能行情**：场内ETF/基金、A股、港股、美股、Binance 主流币、Alpha 链上新币一站式聚合，告别多软件频繁切换；
+- 🌲 **六合一全能行情**：场内ETF/基金、A股、港股、美股、加密货币 (Binance主流币 & SafeTrade矿币)、Alpha 链上新币一站式聚合，告别多软件频繁切换；
+- ⛏️ **主流加密与矿币全覆盖**：默认输入 `BTCUSDT` 走币安，支持输入 `safetrade:prlusdt` 或粘贴 SafeTrade 链接直接监控未上架主流所的优质矿币（免 API Key、自动代理兼容）；
+- 📡 **数据全链路溯源**：鼠标悬停在任意标的上，卡片底部清晰显示数据源（`SafeTrade` / `Binance` / `DexScreener` / `腾讯财经`）及秒级更新时效；
 - 🎯 **交易日今日打新日历**：A股新股、可转债、港股IPO申购窗口智能提醒，一键回车复制申购信息，单日防打扰；
 - ⚡ **市场全景行情中心**：一键呼出 6 Tab 全景中心（大盘 9 区间分布直方图、行业板块/龙头/ETF/加密 Squarified 矩形树图、全球宏观与大宗外汇、恐慌贪婪仪表盘）；
 - 🚀 **智能异动监控与炸板预警**：支持 A 股涨停封板/炸板秒级感知、滑动窗口短时急拉/跳水监控及 DEX 5m 突变突击预警；
@@ -54,9 +56,10 @@
     - 覆盖纳斯达克、标普500、道琼斯全市场标的及指数；
     - 苹果 (`AAPL`)、英伟达 (`NVDA`)、特斯拉 (`TSLA`)、微软 (`MSFT`)、纳指 (`.IXIC`) 实时追踪；
     - 智能识别北京时间夜间交易时段与盘后展示。
-- 🟡 **Binance 币安主流代币**：
-    - 覆盖 BTC、ETH、SOL、BNB、DOGE、SOL、Raydium、Uniswap 等主流加密资产与山寨代币；
-    - 24 小时全天候无间断拉取最新价格、日内涨跌幅及波动幅度。
+- 🪙 **加密货币板块 (Binance 主流币 & SafeTrade 矿币)**：
+    - **主流代币全覆盖**：覆盖 BTC、ETH、SOL、BNB、DOGE 等币安主流币种，24 小时全天候无间断拉取最新行情与波动；
+    - **SafeTrade 矿币扩展**：支持直接添加未在币安上架的优质矿币（如输入 `safetrade:prlusdt` 或粘贴交易对网址），自动通过 SafeTrade 公开接口并行抓取，免 API Key、自动复用本地代理探活；
+    - **老用户平滑升级**：开箱默认分组名为「加密货币」，老用户启动插件时自动平滑升级为新命名，标的与排序完好保留，并终生保留自主改名权限。
 - 🦄 **Alpha 链上 DEX 聚合 (全链新币)**：
     - 集成 DexScreener 全球去中心化交易所聚合行情；
     - 支持 Solana、BSC、Base、以太坊、Arbitrum 等主流公链；
@@ -252,7 +255,8 @@
 | **A股** (沪深京)               | 腾讯证券开放金融行情接口 | `qt.gtimg.cn`         | HTTPS / HTTP (免登录无状态) | 境内直连（零延迟） |
 | **港股** (恒生核心)            | 腾讯证券开放金融行情接口 | `qt.gtimg.cn`         | HTTPS / HTTP (免登录无状态) | 境内直连（零延迟） |
 | **美股** (三大指数/个股)       | 腾讯证券开放金融行情接口 | `qt.gtimg.cn`         | HTTPS / HTTP (免登录无状态) | 境内直连（零延迟） |
-| **Binance** (加密货币)         | 币安现货公开市场 API     | `api.binance.com`     | HTTPS (公开只读接口)        | 建议开启强制代理   |
+| **加密货币** (主流代币)        | 币安现货公开市场 API     | `api.binance.com`     | HTTPS (公开只读接口)        | 建议开启强制代理   |
+| **加密货币** (未上架矿币)      | SafeTrade 公开行情 API   | `safetrade.com`       | HTTPS (公开只读接口)        | 建议开启强制代理   |
 | **Alpha** (全链DEX)            | DexScreener 官方聚合 API | `api.dexscreener.com` | HTTPS (公开只读接口)        | 建议开启强制代理   |
 
 #### 🔒 网络隐私与防护原理

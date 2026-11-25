@@ -1,14 +1,14 @@
-# MarketLens is a financial market ticker, portfolio PnL tracker, and stealth productivity tool for developers. It unifies Funds, Market Indices, A-Shares, Hong Kong Stocks, US Stocks, Binance Crypto, and on-chain DEX tokens, keeping you informed of market fluctuations while coding.
+# MarketLens is a financial market ticker, portfolio PnL tracker, and stealth productivity tool for developers. It unifies Funds, Market Indices, A-Shares, Hong Kong Stocks, US Stocks, Cryptocurrency (Binance & SafeTrade), and on-chain DEX tokens, keeping you informed of market fluctuations while coding.
 
 <p align="center">
   <b>📊 Professional real-time market dashboard, portfolio tracker, and stealth productivity tool built for developers</b><br>
-  Real-time tracking of Exchange-Traded Funds (ETFs) & Feeder Funds, Market Indices, A-Shares (SSE / SZSE / BSE), Hong Kong Stocks (HKEX), US Stocks (NASDAQ / S&P 500 / NYSE), Binance mainstream crypto, and all-chain DEX tokens (Solana / BSC / Base / Ethereum, etc.), with multi-currency portfolio valuation.
+  Real-time tracking of Exchange-Traded Funds (ETFs) & Feeder Funds, Market Indices, A-Shares (SSE / SZSE / BSE), Hong Kong Stocks (HKEX), US Stocks (NASDAQ / S&P 500 / NYSE), mainstream cryptocurrency & mineable coins (BTC/ETH/SOL & SafeTrade PRL), and all-chain DEX tokens (Solana / BSC / Base / Ethereum, etc.), with multi-currency portfolio valuation.
 </p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/VS_Code-^1.85.0-007ACC?logo=visualstudiocode" alt="VS Code Version">
   <img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License">
-  <img src="https://img.shields.io/badge/Release-v1.4.0-blue.svg" alt="Version">
+  <img src="https://img.shields.io/badge/Release-v1.4.1-blue.svg" alt="Version">
   <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-orange" alt="Platform">
 </p>
 
@@ -16,11 +16,13 @@
 
 ## 🌟 Why Choose MarketLens?
 
-As developers, while focusing on writing code, we often need to keep an eye on our investments (funds, stocks, market indices, crypto, and on-chain tokens). Constantly switching between desktop trading applications breaks your coding flow and easily attracts unwanted attention.
+As developers, while focusing on writing code, we often need to keep an eye on our investments (funds, stocks, market indices, crypto, mineable coins, and on-chain tokens). Constantly switching between desktop trading applications breaks your coding flow and easily attracts unwanted attention.
 
 **MarketLens** deeply integrates multi-market tickers and productivity alerts directly into VS Code:
 
-- 🌲 **6-in-1 Unified Market Coverage**: On-field ETFs/funds, A-Shares, HK stocks, US stocks, Binance crypto, and Alpha DEX tokens all in one place—say goodbye to multi-app switching.
+- 🌲 **6-in-1 Unified Market Coverage**: On-field ETFs/funds, A-Shares, HK stocks, US stocks, Cryptocurrency (Binance & SafeTrade), and Alpha DEX tokens all in one place—say goodbye to multi-app switching.
+- ⛏️ **Mainstream Crypto & Mining Coins**: Enter standard symbols like `BTCUSDT` for Binance, or add mineable coins via `safetrade:prlusdt` or SafeTrade pair URLs (no API key required, transparent proxy compatible).
+- 📡 **Full Data Traceability**: Hover over any watch item to view its explicit data source (`SafeTrade` / `Binance` / `DexScreener` / `Tencent Finance`) and second-level fresh timestamp.
 - 🎯 **Trading Day IPO & Subscription Calendar**: Intelligent reminders for today's A-share IPOs, convertible bonds, and HK IPOs during trading hours, one-click copy to clipboard with zero-spam protection.
 - ⚡ **Market Panorama Center**: One-click instant dashboard across 6 market tabs (A-share 9-tier distribution histogram, sector/leader/ETF/crypto Squarified treemap, global macro indices, commodities & forex, Fear & Greed gauge).
 - 🚀 **Smart Volatility & Limit-Up Broken Alerts**: Second-level tracking for A-share limit-up ceiling hits & broken rebounds, sliding-window rapid surge/plunge detection, and DEX 5m surges.
@@ -54,9 +56,10 @@ As developers, while focusing on writing code, we often need to keep an eye on o
     - Comprehensive coverage of Nasdaq, S&P 500, and Dow Jones benchmarks;
     - Real-time tracking of Apple (`AAPL`), Nvidia (`NVDA`), Tesla (`TSLA`), Microsoft (`MSFT`), Nasdaq Composite (`.IXIC`), etc.;
     - Timezone-aware handling of US trading sessions and after-hours displays.
-- 🟡 **Binance Mainstream Crypto**:
-    - Real-time prices for BTC, ETH, SOL, BNB, DOGE, Uniswap, and altcoins;
-    - 24/7 round-the-clock price tracking and intraday volatility stats.
+- 🪙 **Cryptocurrency Section (Binance & SafeTrade Mineable Coins)**:
+    - **Mainstream Coverage**: Full tracking for BTC, ETH, SOL, BNB, DOGE, and altcoins with 24/7 round-the-clock updates;
+    - **SafeTrade Mineable Coins**: Add unlisted mineable coins (e.g. `safetrade:prlusdt` or SafeTrade pair URL) to fetch real-time quotes without requiring an API key;
+    - **Seamless Migration**: Default group normalized to "加密货币", automatically upgraded for existing users while preserving complete customization freedom.
 - 🦄 **Alpha On-Chain DEX Aggregation (All-Chain New Tokens)**:
     - Powered by DexScreener global decentralized exchange aggregation;
     - Supports Solana, BSC, Base, Ethereum, Arbitrum, and other major chains;
@@ -237,7 +240,8 @@ Designed for corporate network environments with firewall audits, DPI, and DNS l
 | **A-Shares** (SSE / SZSE / BSE)| Tencent Financial Open API    | `qt.gtimg.cn`         | HTTPS / HTTP (Stateless) | Direct (Zero latency)  |
 | **HK Stocks** (HKEX)           | Tencent Financial Open API    | `qt.gtimg.cn`         | HTTPS / HTTP (Stateless) | Direct (Zero latency)  |
 | **US Stocks** (Indices/Stocks) | Tencent Financial Open API    | `qt.gtimg.cn`         | HTTPS / HTTP (Stateless) | Direct (Zero latency)  |
-| **Binance** (Crypto)           | Binance Spot Public API       | `api.binance.com`     | HTTPS (Public read-only) | Mandatory proxy recommended |
+| **Crypto** (Mainstream Coins)  | Binance Spot Public API       | `api.binance.com`     | HTTPS (Public read-only) | Mandatory proxy recommended |
+| **Crypto** (Mineable Coins)    | SafeTrade Public API          | `safetrade.com`       | HTTPS (Public read-only) | Mandatory proxy recommended |
 | **Alpha** (All-Chain DEX)      | DexScreener Official API      | `api.dexscreener.com` | HTTPS (Public read-only) | Mandatory proxy recommended |
 
 #### 🔒 Privacy & Defense Mechanisms

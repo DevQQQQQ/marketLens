@@ -341,6 +341,7 @@ const window = {
         }
       },
       reveal() {},
+      visible: true,
       onDidChangeViewState(listener) {
         return new Disposable();
       },

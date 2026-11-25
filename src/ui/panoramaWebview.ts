@@ -17,6 +17,9 @@ import {
 } from "../services/panoramaService.ts";
 import { logger } from "../utils/logger.ts";
 
+// 与 panoramaHtml.ts 的 data-tab 集合一致；Webview 消息按不可信输入处理
+const PANORAMA_TABS: ReadonlySet<string> = new Set(["ashare", "crypto", "global", "hk", "us", "fund"]);
+
 export class MarketPanoramaWebviewPanel {
   public static currentPanel: MarketPanoramaWebviewPanel | undefined;
   private readonly _panel: vscode.WebviewPanel;
@@ -26,6 +29,7 @@ export class MarketPanoramaWebviewPanel {
   private _isDisposed: boolean = false;
   private _containerWidth: number = 600;
   private _containerHeight: number = 420;
+  private readonly _tabRefreshSeq = new Map<string, number>();
 
   public static createOrShow(extensionUri: vscode.Uri): void {
     const column = vscode.window.activeTextEditor ? vscode.window.activeTextEditor.viewColumn : undefined;
@@ -75,7 +79,7 @@ export class MarketPanoramaWebviewPanel {
             this.setupPolling();
             break;
           case "switchTab":
-            if (typeof message.tab === "string") {
+            if (typeof message.tab === "string" && PANORAMA_TABS.has(message.tab)) {
               this._activeTab = message.tab;
               void this.refreshCurrentTab();
               this.setupPolling();
@@ -85,11 +89,28 @@ export class MarketPanoramaWebviewPanel {
             void this.refreshCurrentTab();
             break;
           case "resize":
-            if (typeof message.width === "number" && message.width > 200) {
+            if (typeof message.width === "number" && Number.isFinite(message.width) && message.width > 200) {
               this._containerWidth = Math.max(300, message.width * 0.5);
             }
             void this.refreshCurrentTab();
             break;
+        }
+      },
+      null,
+      this._disposables
+    );
+
+    // retainContextWhenHidden 只保留 DOM，不会停掉后端定时器；
+    // 面板切到后台/被遮挡时停止轮询，回到前台立即刷新一次并恢复轮询
+    this._panel.onDidChangeViewState(
+      () => {
+        if (this._isDisposed) return;
+        if (this._panel.visible) {
+          void this.refreshCurrentTab();
+          this.setupPolling();
+        } else if (this._pollTimer) {
+          clearInterval(this._pollTimer);
+          this._pollTimer = undefined;
         }
       },
       null,
@@ -102,7 +123,7 @@ export class MarketPanoramaWebviewPanel {
       clearInterval(this._pollTimer);
       this._pollTimer = undefined;
     }
-    if (this._isDisposed) return;
+    if (this._isDisposed || !this._panel.visible) return;
 
     // A 股 20 秒轮询，加密 15 秒轮询，非活动页面不轮询
     const interval = this._activeTab === "crypto" ? 15_000 : 20_000;
@@ -114,10 +135,15 @@ export class MarketPanoramaWebviewPanel {
   public async refreshCurrentTab(): Promise<void> {
     if (this._isDisposed) return;
 
+    const tab = this._activeTab;
+    const seq = (this._tabRefreshSeq.get(tab) ?? 0) + 1;
+    this._tabRefreshSeq.set(tab, seq);
+    const isStale = () => this._isDisposed || this._tabRefreshSeq.get(tab) !== seq;
+
     try {
-      if (this._activeTab === "ashare") {
+      if (tab === "ashare") {
         const raw = await fetchASharePanorama();
-        if (this._isDisposed) return;
+        if (isStale()) return;
 
         // 计算 SVG 直方图与 Treemap 几何布局
         const distributionSvg = renderDistributionSvg(raw.distribution, 310, 160);
@@ -133,9 +159,9 @@ export class MarketPanoramaWebviewPanel {
             topOutflows: raw.topOutflows,
           },
         });
-      } else if (this._activeTab === "crypto") {
+      } else if (tab === "crypto") {
         const raw = await fetchCryptoPanorama();
-        if (this._isDisposed) return;
+        if (isStale()) return;
 
         const fearGreedSvg = renderFearGreedGaugeSvg(raw.fearGreed, 240, 140);
         const cryptoRects = computeSquarifiedTreemap(raw.heatmap, this._containerWidth, this._containerHeight);
@@ -150,9 +176,9 @@ export class MarketPanoramaWebviewPanel {
             topLosers: raw.topLosers,
           },
         });
-      } else if (this._activeTab === "global") {
+      } else if (tab === "global") {
         const raw = await fetchGlobalPanorama();
-        if (this._isDisposed) return;
+        if (isStale()) return;
 
         this._panel.webview.postMessage({
           type: "global",
@@ -161,9 +187,9 @@ export class MarketPanoramaWebviewPanel {
             commodities: raw.commodities,
           },
         });
-      } else if (this._activeTab === "hk") {
+      } else if (tab === "hk") {
         const raw = await fetchHkPanorama();
-        if (this._isDisposed) return;
+        if (isStale()) return;
 
         const leaderRects = computeSquarifiedTreemap(raw.leaders, this._containerWidth, this._containerHeight);
         this._panel.webview.postMessage({
@@ -173,9 +199,9 @@ export class MarketPanoramaWebviewPanel {
             leaders: leaderRects,
           },
         });
-      } else if (this._activeTab === "us") {
+      } else if (tab === "us") {
         const raw = await fetchUsPanorama();
-        if (this._isDisposed) return;
+        if (isStale()) return;
 
         const mag7Rects = computeSquarifiedTreemap(raw.mag7, this._containerWidth, this._containerHeight);
         this._panel.webview.postMessage({
@@ -185,9 +211,9 @@ export class MarketPanoramaWebviewPanel {
             mag7: mag7Rects,
           },
         });
-      } else if (this._activeTab === "fund") {
+      } else if (tab === "fund") {
         const raw = await fetchFundPanorama();
-        if (this._isDisposed) return;
+        if (isStale()) return;
 
         const etfRects = computeSquarifiedTreemap(raw.popularEtfs, this._containerWidth, this._containerHeight);
         this._panel.webview.postMessage({
@@ -198,7 +224,7 @@ export class MarketPanoramaWebviewPanel {
         });
       }
     } catch (err) {
-      logger.warn(`[MarketPanorama] 刷新 ${this._activeTab} 数据失败: ${String((err as Error)?.message || err)}`);
+      logger.warn(`[MarketPanorama] 刷新 ${tab} 数据失败: ${String((err as Error)?.message || err)}`);
     }
   }
 

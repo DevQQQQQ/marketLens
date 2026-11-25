@@ -32,13 +32,13 @@ export interface FearGreedData {
 export function renderDistributionSvg(data: MarketDistributionBins, width: number = 360, height: number = 180): string {
   const bins = [
     { label: "涨停", count: data.upLimit, color: "#eb445a" },
-    { label: ">5%", count: data.upHigh, color: "#eb445a" },
+    { label: "&gt;5%", count: data.upHigh, color: "#eb445a" },
     { label: "2~5%", count: data.upMid, color: "#eb445a" },
     { label: "0~2%", count: data.upLow, color: "#eb445a" },
     { label: "平", count: data.flat, color: "#8a919e" },
     { label: "0~-2%", count: data.downLow, color: "#2dd36f" },
     { label: "-2~-5%", count: data.downMid, color: "#2dd36f" },
-    { label: "<-5%", count: data.downHigh, color: "#2dd36f" },
+    { label: "&lt;-5%", count: data.downHigh, color: "#2dd36f" },
     { label: "跌停", count: data.downLimit, color: "#2dd36f" },
   ];
 

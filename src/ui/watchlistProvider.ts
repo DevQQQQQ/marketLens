@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import type { MarketItem, WatchlistConfig, WatchConfigItem, PriceAlertItem, AlertsConfig, GroupSortMode, MarketSection } from "../types/index.ts";
-import { normalizeSymbolKey, stripMarketPrefix, resolveItemAssetType, resolveItemDisplayName, resolveTrendColors, type ColorScheme, isFundGroupName, resolveItemSection, resolveGroupSection, deriveTodayProfit, escapeMarkdownInline, toMarkdownCodeSpan, isGroupMarketClosed, buildGroupNodeId, isItemMarketClosed, resolveQuoteCurrency } from "../utils/symbolHelper.ts";
+import { normalizeSymbolKey, stripMarketPrefix, resolveItemAssetType, resolveItemDisplayName, resolveTrendColors, type ColorScheme, isFundGroupName, resolveItemSection, resolveGroupSection, deriveTodayProfit, escapeMarkdownInline, toMarkdownCodeSpan, isGroupMarketClosed, buildGroupNodeId, isItemMarketClosed, resolveQuoteCurrency, currencyPrefix, currencySuffix } from "../utils/symbolHelper.ts";
 import { isDisplayMasked, resolveStockTooltip, MASKED_TOOLTIP_TEXT } from "../utils/maskState.ts";
 import { DEFAULT_PROXY_PORT, getProxyStatus } from "../services/network.ts";
 import { logger, describeErrorNameForLog } from "../utils/logger.ts";
@@ -20,38 +20,43 @@ import { SECTION_DEFAULT_GROUP_NAMES } from "../utils/config.ts";
  * - 1e-8 ~ 1: 展开最多 8 位小数并修剪多余尾零（保证至少2位小数），例如 $0.4715, $0.00009045
  * - < 1e-8: 极微小价格回退科学计数法
  */
-export function formatPrice(price: number, currency: "CNY" | "USD" | "HKD" | "USDT" = "USD"): string {
+export function formatPrice(price: number, currency: NonNullable<MarketItem["currency"]> = "USD"): string {
   if (!Number.isFinite(price) || price === 0) return "0.00";
+  const isCryptoQuote = currency === "BTC" || currency === "ETH";
   let sym = "$";
   if (currency === "CNY") sym = "¥";
   else if (currency === "HKD") sym = "HK$";
+  else if (isCryptoQuote) sym = "";
 
   const prefix = price < 0 ? `-${sym}` : sym;
+  const suffix = isCryptoQuote ? ` ${currency}` : "";
   const abs = Math.abs(price);
 
-  if (abs < 1e-8) return `${prefix}${abs.toExponential(4)}`;
+  if (abs < 1e-8) return `${prefix}${abs.toExponential(4)}${suffix}`;
   if (abs < 0.0001) {
     const parts = abs.toFixed(8).split(".");
     const dec = parts[1]!.replace(/0+$/, "");
-    return `${prefix}${parts[0]}.${dec}`;
+    return `${prefix}${parts[0]}.${dec}${suffix}`;
   }
-  if (abs < 1) return `${prefix}${abs.toFixed(6)}`;
-  if (abs < 10) return `${prefix}${abs.toFixed(3)}`;
-  return `${prefix}${abs.toFixed(2)}`;
+  if (abs < 1) return `${prefix}${abs.toFixed(6)}${suffix}`;
+  if (abs < 10) return `${prefix}${abs.toFixed(3)}${suffix}`;
+  return `${prefix}${abs.toFixed(2)}${suffix}`;
 }
 
 /**
  * 格式化大数值（成交量 / 成交额 / 流动性）
  */
-function formatLargeNumber(num: number | undefined, isVolume: boolean, currency: "CNY" | "USD" | "HKD" | "USDT" = "USD"): string {
+function formatLargeNumber(num: number | undefined, isVolume: boolean, currency: NonNullable<MarketItem["currency"]> = "USD"): string {
   if (num === undefined || num === 0) return "--";
 
+  const isCryptoQuote = currency === "BTC" || currency === "ETH";
   let prefix = "";
   if (!isVolume) {
     if (currency === "CNY") prefix = "¥";
     else if (currency === "HKD") prefix = "HK$";
-    else prefix = "$";
+    else if (!isCryptoQuote) prefix = "$";
   }
+  const suffix = !isVolume && isCryptoQuote ? ` ${currency}` : "";
   const unit = isVolume ? (currency === "CNY" || currency === "HKD" ? "股" : "") : "";
 
   if (currency === "CNY" || currency === "HKD") {
@@ -67,18 +72,18 @@ function formatLargeNumber(num: number | undefined, isVolume: boolean, currency:
     return `${prefix}${num.toLocaleString()}${unit}`.trim();
   } else {
     if (num >= 1e12) {
-      return `${prefix}${(num / 1e12).toFixed(2)}T ${unit}`.trim();
+      return `${prefix}${(num / 1e12).toFixed(2)}T${suffix} ${unit}`.trim();
     }
     if (num >= 1e9) {
-      return `${prefix}${(num / 1e9).toFixed(2)}B ${unit}`.trim();
+      return `${prefix}${(num / 1e9).toFixed(2)}B${suffix} ${unit}`.trim();
     }
     if (num >= 1e6) {
-      return `${prefix}${(num / 1e6).toFixed(2)}M ${unit}`.trim();
+      return `${prefix}${(num / 1e6).toFixed(2)}M${suffix} ${unit}`.trim();
     }
     if (num >= 1e3) {
-      return `${prefix}${(num / 1e3).toFixed(2)}K ${unit}`.trim();
+      return `${prefix}${(num / 1e3).toFixed(2)}K${suffix} ${unit}`.trim();
     }
-    return `${prefix}${num.toFixed(2)} ${unit}`.trim();
+    return `${prefix}${num.toFixed(2)}${suffix} ${unit}`.trim();
   }
 }
 
@@ -291,11 +296,13 @@ export class StockItem extends vscode.TreeItem {
       currentAlert.enabled !== false &&
       ((currentAlert.above !== undefined && Number.isFinite(currentAlert.above)) ||
        (currentAlert.below !== undefined && Number.isFinite(currentAlert.below)) ||
-       (currentAlert.changePercent !== undefined && Number.isFinite(currentAlert.changePercent)))
+       (currentAlert.changePercent !== undefined && Number.isFinite(currentAlert.changePercent)) ||
+       (currentAlert.rapidMove !== undefined && Number.isFinite(currentAlert.rapidMove)))
     );
 
     const currency = resolveQuoteCurrency(item);
-    const currSym = currency === "CNY" ? "¥" : (currency === "HKD" ? "HK$" : "$");
+    const currSym = currencyPrefix(currency);
+    const currSuf = currencySuffix(currency);
 
     const hasQuote = item.price !== undefined && item.price > 0;
     const priceStr = maskMode ? "****" : formatPrice(item.price, currency);
@@ -327,7 +334,7 @@ export class StockItem extends vscode.TreeItem {
           absProfit >= 1e4
             ? `${(absProfit / 1e4).toFixed(2)}万`
             : absProfit.toFixed(item.price < 1 ? 4 : 2);
-        holdingBadge = ` [${pSign}${currSym}${profitFormatted} (${pSign}${absRate.toFixed(1)}%)]`;
+        holdingBadge = ` [${pSign}${currSym}${profitFormatted}${currSuf} (${pSign}${absRate.toFixed(1)}%)]`;
       }
     }
 
@@ -348,7 +355,8 @@ export class StockItem extends vscode.TreeItem {
       if (isAlpha) {
         // 链上 Alpha 专属卡片（计价口径与 resolveQuoteCurrency 同源，加密标的为 U 本位）
         const alphaCur = resolveQuoteCurrency(item);
-        const alphaSym = alphaCur === "CNY" ? "¥" : alphaCur === "HKD" ? "HK$" : "$";
+        const alphaSym = currencyPrefix(alphaCur);
+        const alphaSuf = currencySuffix(alphaCur);
         const chainBadge = item.chain ? toMarkdownCodeSpan(item.chain) : "`DEX`";
         const dexBadge = item.dex ? toMarkdownCodeSpan(item.dex) : "`DEX`";
         const liqStr = formatLargeNumber(item.liquidity, false, alphaCur);
@@ -359,7 +367,7 @@ export class StockItem extends vscode.TreeItem {
         if (item.price && item.changePercent !== undefined) {
           const approxChange = item.price * (item.changePercent / 100);
           const cSign = approxChange >= 0 ? "+" : "";
-          changeAmtStr = `${cSign}${alphaSym}${Math.abs(approxChange).toFixed(item.price < 1 ? 6 : 2)}`;
+          changeAmtStr = `${cSign}${alphaSym}${Math.abs(approxChange).toFixed(item.price < 1 ? 6 : 2)}${alphaSuf}`;
         }
 
         const copyTokenUri = `command:marketlens.copyCode?${encodeURIComponent(JSON.stringify(item.symbol))}`;
@@ -378,7 +386,7 @@ export class StockItem extends vscode.TreeItem {
           multiChangeRow = `| **多周期涨跌** | 5m: **${m5}** &nbsp; 1h: **${h1}** &nbsp; 6h: **${h6}** |\n`;
         }
 
-        const holdingSection = this._buildHoldingTooltipSection(item, alphaCur, alphaSym);
+        const holdingSection = this._buildHoldingTooltipSection(item, alphaCur, alphaSym, alphaSuf);
 
         mdText =
           `### ${escapeMarkdownInline(item.name)} (${toMarkdownCodeSpan(item.symbol)}) [📋 复制](${copyTokenUri})\n` +
@@ -405,16 +413,20 @@ export class StockItem extends vscode.TreeItem {
         let changeAmtStr = "--";
         if (item.change !== undefined) {
           const cSign = item.change >= 0 ? "+" : "";
-          changeAmtStr = `${cSign}${currSym}${Math.abs(item.change).toFixed(item.price > 0 && item.price < 1 ? 4 : 2)}`;
+          changeAmtStr = `${cSign}${currSym}${Math.abs(item.change).toFixed(item.price > 0 && item.price < 1 ? 4 : 2)}${currSuf}`;
         } else if (item.price > 0 && item.changePercent !== undefined) {
           const approxChange = item.price * (item.changePercent / 100);
           const cSign = approxChange >= 0 ? "+" : "";
-          changeAmtStr = `${cSign}${currSym}${Math.abs(approxChange).toFixed(item.price < 1 ? 4 : 2)}`;
+          changeAmtStr = `${cSign}${currSym}${Math.abs(approxChange).toFixed(item.price < 1 ? 4 : 2)}${currSuf}`;
         }
 
         const volStr = formatLargeNumber(item.volume, true, currency);
         const turnoverStr = formatLargeNumber(item.turnover, false, currency);
-        const currencyLabel = currency === "CNY" ? "人民币 (¥ CNY)" : (currency === "HKD" ? "港币 (HK$ HKD)" : "美元 ($ USD)");
+        const currencyLabel =
+          currency === "CNY" ? "人民币 (¥ CNY)" :
+          currency === "HKD" ? "港币 (HK$ HKD)" :
+          currency === "BTC" ? "BTC 本位 (BTC)" :
+          currency === "ETH" ? "ETH 本位 (ETH)" : "美元 ($ USD)";
 
         const tableRows: string[] = [
           `| **最新价格** | ${colorHint} **${priceStr}** |`,
@@ -461,7 +473,7 @@ export class StockItem extends vscode.TreeItem {
         }
 
         const copyCmdUri = `command:marketlens.copyCode?${encodeURIComponent(JSON.stringify(item.symbol))}`;
-        const holdingSection = this._buildHoldingTooltipSection(item, currency, currSym);
+        const holdingSection = this._buildHoldingTooltipSection(item, currency, currSym, currSuf);
 
         mdText =
           `### ${escapeMarkdownInline(item.name)} (${toMarkdownCodeSpan(item.symbol)}) [📋 复制](${copyCmdUri})\n` +
@@ -487,13 +499,16 @@ export class StockItem extends vscode.TreeItem {
       if (hasAlert && currentAlert) {
         const parts: string[] = [];
         if (currentAlert.above !== undefined && Number.isFinite(currentAlert.above)) {
-          parts.push(`突破上限 ≥ ${currentAlert.above} ${currSym}`);
+          parts.push(`突破上限 ≥ ${currentAlert.above} ${currSym || currency}`);
         }
         if (currentAlert.below !== undefined && Number.isFinite(currentAlert.below)) {
-          parts.push(`跌破下限 ≤ ${currentAlert.below} ${currSym}`);
+          parts.push(`跌破下限 ≤ ${currentAlert.below} ${currSym || currency}`);
         }
         if (currentAlert.changePercent !== undefined && Number.isFinite(currentAlert.changePercent)) {
           parts.push(`单日剧烈波动 ≥ ±${currentAlert.changePercent}%`);
+        }
+        if (currentAlert.rapidMove !== undefined && Number.isFinite(currentAlert.rapidMove)) {
+          parts.push(`短时急拉/跳水 ≥ ±${currentAlert.rapidMove}%`);
         }
         mdText += `\n\n---\n🔔 **到价与波动预警（已生效）**\n• ${parts.join("\n• ")}`;
       }
@@ -502,11 +517,24 @@ export class StockItem extends vscode.TreeItem {
         mdText += `\n\n> 📌 *状态栏轮播展示：已停用（仅在自选树常驻）*`;
       }
 
+      const sourceStr =
+        item.dataSource ||
+        (item.symbol.toLowerCase().startsWith("safetrade:")
+          ? "SafeTrade"
+          : item.type === "CRYPTO"
+            ? "Binance"
+            : item.type === "ALPHA_TOKEN"
+              ? item.dex ? `${item.dex} (DEX)` : "DexScreener"
+              : "腾讯财经");
+
+      const safeSourceStr = escapeMarkdownInline(sourceStr);
       if (item.updateTime) {
         const timeStr = new Date(item.updateTime).toLocaleTimeString("zh-CN", { hour12: false });
         const diffSec = Math.max(0, Math.floor((Date.now() - item.updateTime) / 1000));
         const agoStr = diffSec < 60 ? `${diffSec}秒前` : `${Math.floor(diffSec / 60)}分钟前`;
-        mdText += `\n\n---\n*🕒 行情更新: ${timeStr} (${agoStr})*`;
+        mdText += `\n\n---\n*📡 数据来源: ${safeSourceStr} | 🕒 行情更新: ${timeStr} (${agoStr})*`;
+      } else {
+        mdText += `\n\n---\n*📡 数据来源: ${safeSourceStr}*`;
       }
 
       const md = new vscode.MarkdownString(mdText);
@@ -538,8 +566,9 @@ export class StockItem extends vscode.TreeItem {
    */
   private _buildHoldingTooltipSection(
     item: MarketItem,
-    currency: "CNY" | "USD" | "HKD" | "USDT",
-    currSym: string
+    currency: NonNullable<MarketItem["currency"]>,
+    currSym: string,
+    currSuf: string
   ): string {
     if (
       this.cost === undefined ||
@@ -572,7 +601,7 @@ export class StockItem extends vscode.TreeItem {
       absToday >= 1e4 && (currency === "CNY" || currency === "HKD")
         ? `${(absToday / 1e4).toFixed(2)}万`
         : absToday.toFixed(item.price < 1 ? 4 : 2);
-    const todayAmtStr = `${todaySign}${currSym}${todayFormatted}`;
+    const todayAmtStr = `${todaySign}${currSym}${todayFormatted}${currSuf}`;
     const todayRateStr = `${todaySign}${Math.abs(todayRate).toFixed(2)}%`;
     const isClosed = isItemMarketClosed(item, this.groupName);
     const todayStatusTag = isClosed ? "收盘结算" : "盘中日内";
@@ -589,7 +618,7 @@ export class StockItem extends vscode.TreeItem {
       absTotal >= 1e4 && (currency === "CNY" || currency === "HKD")
         ? `${(absTotal / 1e4).toFixed(2)}万`
         : absTotal.toFixed(item.price < 1 ? 4 : 2);
-    const totalAmtStr = `${totalSign}${currSym}${totalFormatted}`;
+    const totalAmtStr = `${totalSign}${currSym}${totalFormatted}${currSuf}`;
     const totalRateStr = `${totalSign}${absTotalRate.toFixed(2)}%`;
     const totalColor = resolveTrendColors(totalRate, this.colorNeutral, this.colorScheme).colorHint;
 
@@ -698,9 +727,10 @@ export class PortfolioSummaryItem extends vscode.TreeItem {
     if (curEntries.length > 1) {
       md.appendMarkdown(`\n**原生币种对账**：\n\n`);
       for (const [cur, d] of curEntries) {
-        const s = cur === "CNY" ? "¥" : cur === "HKD" ? "HK$" : "$";
+        const s = currencyPrefix(cur);
+        const suf = currencySuffix(cur);
         const fSign = d.totalProfit >= 0 ? "+" : "-";
-        md.appendMarkdown(`- ${escapeMarkdownInline(cur)}: 市值 ${s}${formatPortfolioAmount(d.marketVal)} · 浮盈 ${fSign}${s}${formatPortfolioAmount(d.totalProfit)}\n`);
+        md.appendMarkdown(`- ${escapeMarkdownInline(cur)}: 市值 ${s}${formatPortfolioAmount(d.marketVal)}${suf} · 浮盈 ${fSign}${s}${formatPortfolioAmount(d.totalProfit)}${suf}\n`);
       }
     }
     md.appendMarkdown(`\n> 汇率：${formatFxSourceNote(summary.fx)}（${formatFxDetailNote(summary.fx)}）。`);
@@ -1043,7 +1073,7 @@ export class WatchlistProvider
       }
     }
 
-    if (!rawList || rawList.length === 0) {
+    if (!Array.isArray(rawList) || rawList.length === 0) {
       return;
     }
 

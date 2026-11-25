@@ -60,6 +60,13 @@ export interface ValidationSummary {
   alertCount: number;
 }
 
+// 备份导入规模上限：正常备份远小于这些量级，超限视为异常/恶意文件，
+// 避免超大 JSON 解析与消毒阻塞扩展宿主，或把海量标的写进配置拖垮轮询
+export const MAX_BACKUP_FILE_BYTES = 5 * 1024 * 1024;
+export const MAX_BACKUP_GROUPS = 200;
+export const MAX_BACKUP_SYMBOLS = 5000;
+export const MAX_BACKUP_ALERTS = 5000;
+
 export interface ValidationResult {
   valid: boolean;
   error?: string;
@@ -93,20 +100,78 @@ export function generateBackupData(
       proxyPort: config.proxyPort,
       proxyUrl: config.proxyUrl,
 
-      fund: config.fund ? { ...config.fund } : undefined,
-      aShare: config.aShare ? { ...config.aShare } : undefined,
-      hkStock: config.hkStock ? { ...config.hkStock } : undefined,
-      usStock: config.usStock ? { ...config.usStock } : undefined,
-      binance: config.binance ? { ...config.binance } : undefined,
-      alpha: config.alpha ? { ...config.alpha } : undefined,
+      fund: config.fund
+        ? {
+            enabled: config.fund.enabled,
+            statusBar: config.fund.statusBar,
+            networkMode: config.fund.networkMode,
+            proxyUrl: config.fund.proxyUrl,
+            stopOnMarketClosed: config.fund.stopOnMarketClosed,
+          }
+        : undefined,
+      aShare: config.aShare
+        ? {
+            enabled: config.aShare.enabled,
+            statusBar: config.aShare.statusBar,
+            networkMode: config.aShare.networkMode,
+            proxyUrl: config.aShare.proxyUrl,
+            stopOnMarketClosed: config.aShare.stopOnMarketClosed,
+          }
+        : undefined,
+      hkStock: config.hkStock
+        ? {
+            enabled: config.hkStock.enabled,
+            statusBar: config.hkStock.statusBar,
+            networkMode: config.hkStock.networkMode,
+            proxyUrl: config.hkStock.proxyUrl,
+            stopOnMarketClosed: config.hkStock.stopOnMarketClosed,
+          }
+        : undefined,
+      usStock: config.usStock
+        ? {
+            enabled: config.usStock.enabled,
+            statusBar: config.usStock.statusBar,
+            networkMode: config.usStock.networkMode,
+            proxyUrl: config.usStock.proxyUrl,
+            stopOnMarketClosed: config.usStock.stopOnMarketClosed,
+          }
+        : undefined,
+      binance: config.binance
+        ? {
+            enabled: config.binance.enabled,
+            statusBar: config.binance.statusBar,
+            networkMode: config.binance.networkMode,
+            proxyUrl: config.binance.proxyUrl,
+          }
+        : undefined,
+      alpha: config.alpha
+        ? {
+            enabled: config.alpha.enabled,
+            statusBar: config.alpha.statusBar,
+            networkMode: config.alpha.networkMode,
+            proxyUrl: config.alpha.proxyUrl,
+          }
+        : undefined,
 
-      portfolio: config.portfolio ? { ...config.portfolio } : undefined,
+      portfolio: config.portfolio
+        ? {
+            baseCurrency: config.portfolio.baseCurrency,
+            sidebarSummaryEnabled: config.portfolio.sidebarSummaryEnabled,
+          }
+        : undefined,
 
       watchlist: config.watchlist ? JSON.parse(JSON.stringify(config.watchlist)) : {},
       alerts: config.alerts ? JSON.parse(JSON.stringify(config.alerts)) : {},
       alertNotificationMode: config.alertNotificationMode,
       alertCooldownMinutes: config.alertCooldownMinutes,
-      ipoReminder: config.ipoReminder ? { ...config.ipoReminder } : undefined,
+      ipoReminder: config.ipoReminder
+        ? {
+            enabled: config.ipoReminder.enabled,
+            includeAShare: config.ipoReminder.includeAShare,
+            includeConvertibleBond: config.ipoReminder.includeConvertibleBond,
+            includeHkShare: config.ipoReminder.includeHkShare,
+          }
+        : undefined,
     },
     groupSortModes: groupSortModes ? { ...groupSortModes } : {},
   };
@@ -154,9 +219,15 @@ export function validateBackupData(raw: unknown): ValidationResult {
       }
       groupCount += 1;
     }
+    if (groupCount > MAX_BACKUP_GROUPS) {
+      return { valid: false, error: `分组数量超出上限（${groupCount} > ${MAX_BACKUP_GROUPS}），疑似异常备份文件` };
+    }
     normalizedWatchlist = sanitizeWatchlist(settingsCandidate.watchlist);
     for (const items of Object.values(normalizedWatchlist)) {
       totalSymbols += items.length;
+    }
+    if (totalSymbols > MAX_BACKUP_SYMBOLS) {
+      return { valid: false, error: `自选标的数量超出上限（${totalSymbols} > ${MAX_BACKUP_SYMBOLS}），疑似异常备份文件` };
     }
   }
 
@@ -180,6 +251,9 @@ export function validateBackupData(raw: unknown): ValidationResult {
     const sanitized = sanitizeAlerts(settingsCandidate.alerts);
     normalizedAlerts = Object.fromEntries(Object.entries(sanitized)) as Record<string, PriceAlertItem>;
     alertCount = Object.keys(normalizedAlerts).length;
+    if (alertCount > MAX_BACKUP_ALERTS) {
+      return { valid: false, error: `预警规则数量超出上限（${alertCount} > ${MAX_BACKUP_ALERTS}），疑似异常备份文件` };
+    }
   }
 
   // 校验 groupSortModes 结构
@@ -200,7 +274,10 @@ export function validateBackupData(raw: unknown): ValidationResult {
     schemaVersion: 1,
     settings: {
       autoRefresh: typeof settingsCandidate.autoRefresh === "boolean" ? settingsCandidate.autoRefresh : undefined,
-      refreshInterval: typeof settingsCandidate.refreshInterval === "number" ? settingsCandidate.refreshInterval : undefined,
+      refreshInterval:
+        typeof settingsCandidate.refreshInterval === "number" && Number.isFinite(settingsCandidate.refreshInterval)
+          ? Math.min(300000, Math.max(1000, Math.round(settingsCandidate.refreshInterval)))
+          : undefined,
       maskMode: typeof settingsCandidate.maskMode === "boolean" ? settingsCandidate.maskMode : undefined,
       colorNeutral: typeof settingsCandidate.colorNeutral === "boolean" ? settingsCandidate.colorNeutral : undefined,
       colorScheme: settingsCandidate.colorScheme === "redUpGreenDown" ? "redUpGreenDown" : settingsCandidate.colorScheme === "greenUpRedDown" ? "greenUpRedDown" : undefined,
@@ -213,7 +290,10 @@ export function validateBackupData(raw: unknown): ValidationResult {
           ? Math.min(60, Math.max(1, Math.round(settingsCandidate.statusBarHoldingInterval)))
           : undefined,
       autoCollapseClosedGroups: typeof settingsCandidate.autoCollapseClosedGroups === "boolean" ? settingsCandidate.autoCollapseClosedGroups : undefined,
-      proxyPort: typeof settingsCandidate.proxyPort === "number" ? settingsCandidate.proxyPort : undefined,
+      proxyPort:
+        typeof settingsCandidate.proxyPort === "number" && Number.isFinite(settingsCandidate.proxyPort)
+          ? Math.min(65535, Math.max(1, Math.round(settingsCandidate.proxyPort)))
+          : undefined,
       // 备份里的代理地址与设置面板、请求侧共用同一规范化出口：
       // socks5://、纯端口、https:// 等异形输入不能原样写回公开契约键。
       proxyUrl:
@@ -236,8 +316,8 @@ export function validateBackupData(raw: unknown): ValidationResult {
           ? (settingsCandidate.alertNotificationMode as "notification" | "statusBarOnly" | "both")
           : undefined,
       alertCooldownMinutes:
-        typeof settingsCandidate.alertCooldownMinutes === "number"
-          ? settingsCandidate.alertCooldownMinutes
+        typeof settingsCandidate.alertCooldownMinutes === "number" && Number.isFinite(settingsCandidate.alertCooldownMinutes)
+          ? Math.min(1440, Math.max(1, Math.round(settingsCandidate.alertCooldownMinutes)))
           : undefined,
       ipoReminder:
         settingsCandidate.ipoReminder && typeof settingsCandidate.ipoReminder === "object"
@@ -372,6 +452,12 @@ export async function importSettingsFromFile(options: {
     let rawText = "";
     try {
       const fileBytes = await vscode.workspace.fs.readFile(uri);
+      if (fileBytes.byteLength > MAX_BACKUP_FILE_BYTES) {
+        vscode.window.showErrorMessage(
+          `导入失败：备份文件过大（${(fileBytes.byteLength / 1024 / 1024).toFixed(1)} MB，上限 ${MAX_BACKUP_FILE_BYTES / 1024 / 1024} MB），请确认选择的是 MarketLens 导出的 JSON 备份。`
+        );
+        return false;
+      }
       rawText = Buffer.from(fileBytes).toString("utf-8");
     } catch (readErr: unknown) {
       vscode.window.showErrorMessage(`读取备份文件失败: ${(readErr as Error)?.message || String(readErr)}`);

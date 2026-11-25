@@ -5,9 +5,30 @@ All notable changes to the "MarketLens" extension will be documented in this fil
 
 ## [Unreleased]
 
+## [1.4.1] - 2026-11-25
+
+<details>
+<summary><b>🚀 矿币扩展、数据溯源与稳定性强化 (SafeTrade Integration & Stability Hardening)</b></summary>
+
+- **加密货币与矿币支持**
+  - **SafeTrade 矿币接入**：支持 `safetrade:prlusdt` 格式或交易对网址，免 API Key 并与币安并发拉取，具备失效临时抑制保护。
+  - **默认分组规范化**：默认分组更名为「加密货币」，老用户启动时自动平滑迁移且保留原有标的与排序。
+
+- **数据溯源与时效**
+  - **渠道徽标与更新时间**：标的悬停卡片底部展示数据来源（`SafeTrade` / `Binance` / `DexScreener` / `腾讯财经`）与最新更新时效。
+
+- **预警、打新与日历校准**
+  - **预警可靠性**：A 股封板状态跨日自动重置，修复次日误报炸板；完善短时急拉/跳水阈值与时钟回拨保护。
+  - **打新与休市**：局部网络波动不再锁定当日打新缓存，北交所新股自动补齐市场标识；完成 2027 沪深/港/美官方休市日历（含港股半日市）终版核准。
+
+- **刷新调度与验证**
+  - **性能与稳定性**：全景中心多路并发提速且后台自动停轮询；修复并发刷新调度中断与代理探活竞态，强化弱网容错；全量 220/220 门禁测试通过。
+
+</details>
+
 ## [1.4.0] - 2026-11-23
 
-<details open>
+<details>
 <summary><b>⚡ 市场全景行情中心与主动异动预警 (Market Panorama Center & Smart Alerting)</b></summary>
 
 - **市场全景行情中心 (Market Panorama Center - 全市场 6 Tab 完整落地)**

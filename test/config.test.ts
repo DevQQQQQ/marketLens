@@ -1,4 +1,4 @@
-﻿// test/config.test.ts
+// test/config.test.ts
 import assert from "node:assert";
 import test from "node:test";
 import {

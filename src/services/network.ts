@@ -114,6 +114,8 @@ export const GATEWAY_PROBE_URL = "https://cp.cloudflare.com/generate_204";
 let lastGatewayProbeTime = 0;
 let lastGatewayProbeResult = false;
 let isGatewayProxyActive = false;
+/** 进行中的网关探活 Promise：并发请求共享同一次探测，避免冷 miss 时 N 路并发同时外网探活 */
+let gatewayProbeInFlight: Promise<boolean> | undefined = undefined;
 
 /** 获取当前已探测并生效的本地代理端口 */
 export function getCachedWorkingPort(): number | undefined {
@@ -132,6 +134,7 @@ export function resetProxyCache(): void {
   lastGatewayProbeTime = 0;
   lastGatewayProbeResult = false;
   isGatewayProxyActive = false;
+  gatewayProbeInFlight = undefined;
 }
 
 /** 获取当前代理连接健康度与熔断状态 */
@@ -410,8 +413,9 @@ function decompressBufferIfNeeded(buffer: Buffer, contentEncoding?: string): Buf
     if (encoding === "br") {
       return zlib.brotliDecompressSync(buffer);
     }
-  } catch {
-    // 若特定解压格式异常，优雅降级为原始 Buffer
+  } catch (err) {
+    // 若特定解压格式异常，优雅降级为原始 Buffer；留痕便于诊断乱码报文（不记录报文内容本身）
+    logger.warn(`[network] Content-Encoding=${encoding} 解压失败，降级使用原始报文`, err);
   }
   return buffer;
 }
@@ -493,7 +497,7 @@ async function executeNativeGet<T>(
   }
 
   return new Promise((resolve, reject) => {
-    const client = (isHttps && !proxy) || (isHttps && proxy) ? https : http;
+    const client = isHttps ? https : http;
     const req = client.request(reqOptions, (res) => {
       const chunks: Buffer[] = [];
       res.on("data", (chunk: Buffer) => chunks.push(chunk));
@@ -601,22 +605,36 @@ export async function testGatewayTransparentProxy(
   if (!forceBypassCache && lastGatewayProbeTime > 0 && now - lastGatewayProbeTime < GATEWAY_PROBE_CACHE_TTL_MS) {
     return lastGatewayProbeResult;
   }
+  // 并发合并：已有探活在途时直接共享其结果，不再重复发起外网探测
+  if (!forceBypassCache && gatewayProbeInFlight) {
+    return gatewayProbeInFlight;
+  }
+  const probe = (async (): Promise<boolean> => {
+    try {
+      const res = await performRequest<{ status?: string } | string>(
+        GATEWAY_PROBE_URL,
+        { timeout: timeoutMs, proxy: false },
+        true,
+        undefined
+      );
+      // 204 No Content 或 200 OK 均视为透明代理连通有效
+      const isSuccess = res.status === 204 || res.status === 200;
+      lastGatewayProbeTime = now;
+      lastGatewayProbeResult = isSuccess;
+      return isSuccess;
+    } catch {
+      lastGatewayProbeTime = now;
+      lastGatewayProbeResult = false;
+      return false;
+    }
+  })();
+  gatewayProbeInFlight = probe;
   try {
-    const res = await performRequest<{ status?: string } | string>(
-      GATEWAY_PROBE_URL,
-      { timeout: timeoutMs, proxy: false },
-      true,
-      undefined
-    );
-    // 204 No Content 或 200 OK 均视为透明代理连通有效
-    const isSuccess = res.status === 204 || res.status === 200;
-    lastGatewayProbeTime = now;
-    lastGatewayProbeResult = isSuccess;
-    return isSuccess;
-  } catch {
-    lastGatewayProbeTime = now;
-    lastGatewayProbeResult = false;
-    return false;
+    return await probe;
+  } finally {
+    if (gatewayProbeInFlight === probe) {
+      gatewayProbeInFlight = undefined;
+    }
   }
 }
 
@@ -676,7 +694,10 @@ export async function smartNetworkGet<T = unknown>(
   // 第一优先级：尝试目标代理端口
   try {
     const res = await performRequest<T>(url, { ...mergedConfig, proxy: targetProxy }, false, targetProxy);
-    cachedWorkingPort = targetProxy.port;
+    // 仅本地代理成功才缓存端口：远程代理端口写入会污染空地址回填（127.0.0.1:<远程端口>）与本地探活
+    if (isLocalTarget) {
+      cachedWorkingPort = targetProxy.port;
+    }
     isGatewayProxyActive = false;
     return res;
   } catch (err: unknown) {

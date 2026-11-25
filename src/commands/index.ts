@@ -154,12 +154,13 @@ export function registerCommands(
     vscode.commands.registerCommand(
       "marketlens.sortGroup",
       async (group?: GroupItem) => {
+        // 守卫必须覆盖带节点入口：右键/inline 触发时同样不得在老板键激活期弹出含真实分组名的 QuickPick
+        if (shouldBlockNodeCommand(statusBar.isBossKeyActive(), readConfig().maskMode, Boolean(group))) {
+          logger.info("专注/简洁展示模式激活期间拒绝设置分组排序（老板键/打码守卫已生效）");
+          return;
+        }
         let targetGroup = group?.groupName;
         if (!targetGroup) {
-          if (shouldBlockNodeCommand(statusBar.isBossKeyActive(), readConfig().maskMode, Boolean(group))) {
-            logger.info("专注/简洁展示模式激活期间拒绝设置分组排序（老板键/打码守卫已生效）");
-            return;
-          }
           const groups = treeProvider.getGroups();
           if (groups.length === 0) {
             vscode.window.showInformationMessage("当前没有可排序的自选分组");
@@ -284,9 +285,14 @@ export function registerCommands(
       const exitedBossKey = plan.exitBossKey && exitBossKey("专注模式激活期间切换简洁展示模式");
 
       if (plan.requiresConfigWrite) {
-        await vscode.workspace
-          .getConfiguration("marketlens")
-          .update("maskMode", plan.nextMaskMode, vscode.ConfigurationTarget.Global);
+        try {
+          await vscode.workspace
+            .getConfiguration("marketlens")
+            .update("maskMode", plan.nextMaskMode, vscode.ConfigurationTarget.Global);
+        } catch (err) {
+          // 落盘失败不阻断内存侧脱敏同步：隐私防线内存先行，磁盘下一轮变更再追平
+          logger.warn("[toggleMask] maskMode 落盘失败，内存侧仍按决议同步", err);
+        }
       }
 
       // P2-2：配置变更事件走 50ms 防抖，落盘后立即把决议结果同步到内存单一写入口，
@@ -309,9 +315,14 @@ export function registerCommands(
     vscode.commands.registerCommand("marketlens.toggleColorNeutral", async () => {
       const config = readConfig();
       const next = !config.colorNeutral;
-      await vscode.workspace
-        .getConfiguration("marketlens")
-        .update("colorNeutral", next, vscode.ConfigurationTarget.Global);
+      try {
+        await vscode.workspace
+          .getConfiguration("marketlens")
+          .update("colorNeutral", next, vscode.ConfigurationTarget.Global);
+      } catch (err: unknown) {
+        vscode.window.showErrorMessage(`切换颜色脱敏失败: ${(err as Error)?.message || String(err)}`);
+        return;
+      }
       emitStatusMessage(
         next ? "$(paintcan) MarketLens: 颜色脱敏已开启 (无红绿视觉刺激)" : "$(paintcan) MarketLens: 颜色脱敏已关闭 (恢复红绿涨跌)",
         2500
@@ -472,6 +483,11 @@ export function registerCommands(
     vscode.commands.registerCommand(
       "marketlens.copyCode",
       async (target?: string | StockItem) => {
+        // 剪贴板写入本身就是真实数据出口：老板键激活期一律静默拒绝，与其他节点命令同一守卫口径
+        if (shouldBlockNodeCommand(statusBar.isBossKeyActive(), readConfig().maskMode, Boolean(target && typeof target === "object"))) {
+          logger.info("脱敏模式激活期间拒绝复制标的代码（老板键/打码守卫已生效）");
+          return;
+        }
         let textToCopy = "";
         let label = "标的代码";
 

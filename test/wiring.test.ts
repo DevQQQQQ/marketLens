@@ -17,7 +17,8 @@ import { importSettingsFromFile, exportSettingsToFile } from "../src/utils/backu
 import { WatchlistProvider, GroupItem, StockItem } from "../src/ui/watchlistProvider.ts";
 import { WatchlistOps } from "../src/watchlistOps.ts";
 import { setMaskSnapshotSource, getMaskSnapshot } from "../src/utils/feedback.ts";
-import { setCachedIpoForTesting } from "../src/services/ipoService.ts";
+import { setCachedIpoForTesting, resetIpoCache } from "../src/services/ipoService.ts";
+import { setFxRateFetcherForTesting } from "../src/services/fxRateService.ts";
 import { MASKED_TOOLTIP_TEXT } from "../src/utils/maskState.ts";
 import { isPortfolioHudVisible, closePortfolioHud } from "../src/ui/portfolioHud.ts";
 import { applyAlertRuleDelta, sanitizeAlerts } from "../src/utils/symbolHelper.ts";
@@ -438,7 +439,9 @@ void test("extension 与 commands - 扩展完整生命周期与命令分发集�
     },
   };
 
-  // 1. 测试扩展激活
+  // 1. 测试扩展激活（预置打新与汇率空钩子，隔离集成测试真实外网请求）
+  setCachedIpoForTesting([]);
+  setFxRateFetcherForTesting(async () => undefined);
   await activate(mockContext);
   assert.ok(subscriptions.length > 0, "扩展激活必须注册命令与事件侦听器");
 
@@ -555,6 +558,8 @@ void test("extension 与 commands - 扩展完整生命周期与命令分发集�
   assert.ok(SettingsWebviewPanel.globalState, "激活期间必须注入 globalState 句柄");
 
   deactivate();
+  resetIpoCache();
+  setFxRateFetcherForTesting(undefined);
 
   assert.strictEqual(SettingsWebviewPanel.onDidUpdateSetting, undefined, "deactivate 必须复位配置回调注入");
   assert.strictEqual(SettingsWebviewPanel.getQuoteCache, undefined, "deactivate 必须复位行情缓存注入");
@@ -895,6 +900,8 @@ void test("P2-8 回归 - 设置面板消息分发全量分支：alerts 只接受
     for (const listener of listeners) {
       await listener(msg);
     }
+    // guardMessageHandler 返回 void；alerts 增量现经串行写入链异步落盘，断言前先冲刷任务队列
+    await new Promise((resolve) => setImmediate(resolve));
   };
 
   try {

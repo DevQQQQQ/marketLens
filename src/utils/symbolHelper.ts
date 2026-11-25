@@ -134,6 +134,11 @@ export function isSameSymbol(a?: string, b?: string): boolean {
     return true;
   }
 
+  // SafeTrade 标的按标准化键比对
+  if (/^safetrade:/i.test(orig1) || /^safetrade:/i.test(orig2)) {
+    return normalizeSymbolKey(orig1) === normalizeSymbolKey(orig2);
+  }
+
   const clean1 = s1.replace(/[\._\-\/]/g, "");
   const clean2 = s2.replace(/[\._\-\/]/g, "");
   if (clean1 === clean2) {
@@ -196,6 +201,12 @@ export function isSameSymbol(a?: string, b?: string): boolean {
 export function normalizeSymbolKey(sym?: string): string {
   if (!sym) return "";
   const s = sym.trim();
+
+  // SafeTrade 矿币/代币：与 SafeTradeService.normalizeSymbol 同口径，去除空白与非字母数字分隔符
+  if (/^safetrade:/i.test(s)) {
+    return "safetrade:" + s.slice(10).toLowerCase().replace(/[^a-z0-9]/g, "");
+  }
+
   const clean = s.toLowerCase().replace(/[\._\-\/]/g, "");
 
   // 1. 如果是港股：去除 hk 前缀及前导 0，如 hk00700 -> hk700, 00700 -> hk700
@@ -239,6 +250,7 @@ export const NORMALIZE_SYMBOL_KEY_CLIENT_SCRIPT = `
 function getSymbolKey(sym) {
   if (!sym) return '';
   var s = sym.trim();
+  if (/^safetrade:/i.test(s)) return 'safetrade:' + s.slice(10).toLowerCase().replace(/[^a-z0-9]/g, '');
   var clean = s.toLowerCase().replace(/[\\._\\-\\/]/g, '');
   if (/^hk\\d+$/.test(clean)) return 'hk' + clean.slice(2).replace(/^0+/, '');
   if (/^\\d{5}$/.test(clean)) return 'hk' + clean.replace(/^0+/, '');
@@ -367,6 +379,11 @@ export function resolveItemAssetType(
 
   // ── Level 2: 代码绝对强特征（物理属性强确定，完全免疫组名） ──
   if (sym) {
+    // 2.0 SafeTrade 矿币/代币
+    if (/^safetrade:/i.test(sym)) {
+      return "CRYPTO";
+    }
+
     // 2.1 链上 DEX / Alpha 合约地址
     if (isContractAddress(sym)) {
       return "ALPHA_TOKEN";
@@ -482,6 +499,10 @@ export function sanitizeWatchlist(raw: unknown): Record<string, WatchConfigItem[
   const result: Record<string, WatchConfigItem[]> = {};
 
   for (const [group, items] of Object.entries(raw as Record<string, unknown>)) {
+    // 与 sanitizeAlerts 同口径：原型污染键一律丢弃，防止备份导入触发 __proto__ setter
+    if (isDangerousKey(group)) {
+      continue;
+    }
     if (!Array.isArray(items)) {
       result[group] = [];
       continue;
@@ -998,7 +1019,9 @@ export function extractStatusBarQuotes<
       if ((item as any).showInStatusBar === false) {
         continue;
       }
-      const symKey = item.symbol.toLowerCase().trim();
+      // 去重按标准化标的身份（与 extractHoldingQuotes 同口径）：
+      // lowercase 原始码会把 hk00700 / 00700 当成两只标的重复轮播
+      const symKey = normalizeSymbolKey(item.symbol);
       if (seenSymbols.has(symKey)) continue;
 
       const assetType = resolveItemAssetType(item, groupName);
@@ -1021,11 +1044,14 @@ export function extractStatusBarQuotes<
 
       const normKey = normalizeSymbolKey(item.symbol);
       const rawTicker = stripMarketPrefix(item.symbol);
+      // 裸 6 位代码兜底：抓取端按带交易所前缀键写缓存（sh600519），导入的裸代码（600519）需补前缀回查
+      const aShareFallbackKey = /^\d{6}$/.test(item.symbol.trim()) ? normalizeAShareCode(item.symbol) : "";
       const cached =
         quoteCache.get(normKey) ||
         quoteCache.get(item.symbol) ||
         quoteCache.get(item.symbol.toLowerCase()) ||
-        quoteCache.get(rawTicker);
+        quoteCache.get(rawTicker) ||
+        (aShareFallbackKey ? quoteCache.get(aShareFallbackKey) : undefined);
 
       const alias = (item as any).alias;
       const displayName = resolveItemDisplayName(item.name, item.symbol, cached, alias);
@@ -1426,7 +1452,7 @@ export function toMarkdownCodeSpan(str: unknown): string {
 export function resolveQuoteCurrency(item: {
   currency?: MarketItem["currency"];
   type?: MarketItem["type"];
-}): "CNY" | "USD" | "HKD" | "USDT" {
+}): NonNullable<MarketItem["currency"]> {
   if (item.currency) return item.currency;
   switch (item.type) {
     case "A_SHARE":
@@ -1442,11 +1468,27 @@ export function resolveQuoteCurrency(item: {
   }
 }
 
+/**
+ * 计价货币展示符号的单一出口（§5.5）：法币/U 本位用前缀符号，
+ * BTC/ETH 计价资产无前缀、改用后缀（如 `0.05 BTC`），禁止把 BTC 计价伪装成美元。
+ * 入参兼容原生币种桶的 string 键；未知币种沿用美元前缀口径。
+ */
+export function currencyPrefix(cur: string): string {
+  if (cur === "CNY") return "¥";
+  if (cur === "HKD") return "HK$";
+  if (cur === "BTC" || cur === "ETH") return "";
+  return "$";
+}
+
+export function currencySuffix(cur: string): string {
+  return cur === "BTC" || cur === "ETH" ? ` ${cur}` : "";
+}
+
 /** 状态栏持仓盈亏条目数据模型 */
 export interface HoldingItemQuote {
   name: string;
   symbol: string;
-  currency: "CNY" | "USD" | "HKD" | "USDT";
+  currency: NonNullable<MarketItem["currency"]>;
   cost: number;
   shares: number;
   price: number;
@@ -1524,7 +1566,7 @@ export function extractHoldingQuotes(
       if (
         conf.cost === undefined ||
         !Number.isFinite(conf.cost) ||
-        conf.cost <= 0 ||
+        conf.cost < 0 ||
         conf.shares === undefined ||
         !Number.isFinite(conf.shares) ||
         conf.shares <= 0
@@ -1557,7 +1599,12 @@ export function extractHoldingQuotes(
       const normKey = normalizeSymbolKey(conf.symbol);
       if (seenSymbols.has(normKey)) continue;
 
-      const q = quoteCache.get(normKey) || quoteCache.get(conf.symbol);
+      // 裸 6 位代码兜底：与 extractStatusBarQuotes 同口径，补交易所前缀回查缓存
+      const aShareFallbackKey = /^\d{6}$/.test(conf.symbol.trim()) ? normalizeAShareCode(conf.symbol) : "";
+      const q =
+        quoteCache.get(normKey) ||
+        quoteCache.get(conf.symbol) ||
+        (aShareFallbackKey ? quoteCache.get(aShareFallbackKey) : undefined);
       // 行情报价来自外部报文解析：NaN / Infinity 既不满足 `<= 0`，又会顺着
       // `price * shares` 污染原生币种桶，而折算进 total 时被 toBaseCurrency 静默归零，
       // 造成「明细市值 Infinity、总账少算、两者对不上」。必须和 cost/shares 同口径消毒。

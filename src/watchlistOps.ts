@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import { StockItem, WatchlistProvider } from "./ui/watchlistProvider.ts";
 import type { MarketItem, PriceAlertItem, WatchlistConfig, WatchConfigItem, AssetType } from "./types/index.ts";
-import { isSameSymbol, normalizeSymbolKey, resolveItemDisplayName, batchReorderWatchlist, type ReorderItemDescriptor } from "./utils/symbolHelper.ts";
+import { isSameSymbol, normalizeSymbolKey, resolveItemDisplayName, batchReorderWatchlist, applyAlertRuleDelta, type ReorderItemDescriptor } from "./utils/symbolHelper.ts";
 import { validateAndParseInput, type ParsedItemInput } from "./utils/inputValidator.ts";
 import { searchSymbols } from "./services/symbolSearchService.ts";
 import { readConfig } from "./utils/config.ts";
@@ -706,7 +706,11 @@ export class WatchlistOps {
 
     const cfg = readConfig();
     const existingAlerts = { ...(cfg.alerts || {}) };
-    const existing = existingAlerts[normKey] || { symbol: targetSymbol, name: targetName, enabled: true };
+    // 既有规则可能存于历史别名键：按标的身份回退查找，避免默认值丢失与同标的多键并存
+    const existing =
+      existingAlerts[normKey] ||
+      Object.entries(existingAlerts).find(([k]) => isSameSymbol(k, normKey))?.[1] ||
+      { symbol: targetSymbol, name: targetName, enabled: true };
 
     // 出口 A：向导文案保留标的名以便确认目标，但现价与既有阈值属敏感数值，脱敏态一律打码
     const priceHint = currentPrice ? maskNumbers(`当前现价: ${currentPrice}`) : "暂无现价";
@@ -745,13 +749,21 @@ export class WatchlistOps {
     if (!pickedCond) return;
 
     if (pickedCond.action === "clear") {
-      delete existingAlerts[normKey];
-      await vscode.workspace
-        .getConfiguration("marketlens")
-        .update("alerts", existingAlerts, vscode.ConfigurationTarget.Global);
-      this.rebuildTree();
-      SettingsWebviewPanel.syncSettings();
-      emitStatusMessage(maskNumbers(`$(bell-slash) 已清除【${targetName || targetSymbol}】的所有预警`), 3000);
+      // 走增量契约出口：以磁盘为基合并并清理同标的全部别名键，禁止整份镜像回写
+      const merged = applyAlertRuleDelta(readConfig().alerts || {}, normKey, null);
+      if (!merged) {
+        return;
+      }
+      try {
+        await vscode.workspace
+          .getConfiguration("marketlens")
+          .update("alerts", merged, vscode.ConfigurationTarget.Global);
+        this.rebuildTree();
+        SettingsWebviewPanel.syncSettings();
+        emitStatusMessage(maskNumbers(`$(bell-slash) 已清除【${targetName || targetSymbol}】的所有预警`), 3000);
+      } catch (err: unknown) {
+        vscode.window.showErrorMessage(`清除预警失败: ${(err as Error)?.message || String(err)}`);
+      }
       return;
     }
 
@@ -799,12 +811,16 @@ export class WatchlistOps {
       updatedItem.changePercent = numVal;
     }
 
-    existingAlerts[normKey] = updatedItem;
+    // 走增量契约出口：以磁盘为基合并、归一化并收敛别名键，禁止整份镜像回写
+    const merged = applyAlertRuleDelta(readConfig().alerts || {}, normKey, updatedItem);
+    if (!merged) {
+      return;
+    }
 
     try {
       await vscode.workspace
         .getConfiguration("marketlens")
-        .update("alerts", existingAlerts, vscode.ConfigurationTarget.Global);
+        .update("alerts", merged, vscode.ConfigurationTarget.Global);
       this.rebuildTree();
       SettingsWebviewPanel.syncSettings();
       emitStatusMessage(
@@ -1111,12 +1127,16 @@ export class WatchlistOps {
     };
     updated[targetGroup] = list;
 
-    await vscode.workspace.getConfiguration("marketlens").update("watchlist", updated, vscode.ConfigurationTarget.Global);
-    this.rebuildTree(updated);
-    SettingsWebviewPanel.syncSettings();
+    try {
+      await vscode.workspace.getConfiguration("marketlens").update("watchlist", updated, vscode.ConfigurationTarget.Global);
+      this.rebuildTree(updated);
+      SettingsWebviewPanel.syncSettings();
 
-    const statusTip = nextShow ? "已开启状态栏轮播展示" : "已关闭状态栏轮播（仅在自选树常驻）";
-    emitStatusMessage(`$(check) ${targetName} ${statusTip}`, 3000);
+      const statusTip = nextShow ? "已开启状态栏轮播展示" : "已关闭状态栏轮播（仅在自选树常驻）";
+      emitStatusMessage(maskNumbers(`$(check) ${targetName} ${statusTip}`), 3000);
+    } catch (err: unknown) {
+      vscode.window.showErrorMessage(`切换状态栏轮播失败: ${(err as Error)?.message || String(err)}`);
+    }
   }
 
   /**
@@ -1194,11 +1214,15 @@ export class WatchlistOps {
     }
     updated[targetGroup] = list;
 
-    await vscode.workspace.getConfiguration("marketlens").update("watchlist", updated, vscode.ConfigurationTarget.Global);
-    this.rebuildTree(updated);
-    SettingsWebviewPanel.syncSettings();
+    try {
+      await vscode.workspace.getConfiguration("marketlens").update("watchlist", updated, vscode.ConfigurationTarget.Global);
+      this.rebuildTree(updated);
+      SettingsWebviewPanel.syncSettings();
 
-    const tip = trimmed ? `已设置别名为 “${trimmed}”` : "已清空别名并恢复默认";
-    emitStatusMessage(`$(check) ${targetSymbol} ${tip}`, 3000);
+      const tip = trimmed ? `已设置别名为 “${trimmed}”` : "已清空别名并恢复默认";
+      emitStatusMessage(maskNumbers(`$(check) ${targetSymbol} ${tip}`), 3000);
+    } catch (err: unknown) {
+      vscode.window.showErrorMessage(`设置别名失败: ${(err as Error)?.message || String(err)}`);
+    }
   }
 }

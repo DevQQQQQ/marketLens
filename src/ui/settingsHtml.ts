@@ -142,7 +142,7 @@ export function getSettingsWebviewHtml(
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${cspSource} https: data: blob:; style-src ${cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}' ${cspSource};">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}'; img-src ${cspSource} data:; font-src ${cspSource};">
   <title>MarketLens 设置</title>
   <style>
     :root {
@@ -496,7 +496,7 @@ export function getSettingsWebviewHtml(
     <label class="nav-item" for="tab-r-ashare"><span class="icon">🇨🇳</span><span>A股板块</span></label>
     <label class="nav-item" for="tab-r-hkstock"><span class="icon">🇭🇰</span><span>港股板块</span></label>
     <label class="nav-item" for="tab-r-usstock"><span class="icon">🇺🇸</span><span>美股板块</span></label>
-    <label class="nav-item" for="tab-r-binance"><span class="icon">🟡</span><span>Binance板块</span></label>
+    <label class="nav-item" for="tab-r-binance"><span class="icon">🪙</span><span>加密货币板块</span></label>
     <label class="nav-item" for="tab-r-alpha"><span class="icon">🦄</span><span>Alpha板块</span></label>
     <label class="nav-item" for="tab-r-about"><span class="icon">ℹ️</span><span>关于与帮助</span></label>
   </div>
@@ -522,7 +522,7 @@ export function getSettingsWebviewHtml(
         <div class="card">
           <div class="card-info">
             <div class="card-title">恢复出厂默认设置</div>
-            <div class="card-desc">将所有自选标的列表（基金、A股、港股、美股、Binance、Alpha）恢复为首次安装时的初始预设，清空所有到价预警规则，并还原所有配置项。</div>
+            <div class="card-desc">将所有自选标的列表（基金、A股、港股、美股、加密货币、Alpha）恢复为首次安装时的初始预设，清空所有到价预警规则，并还原所有配置项。</div>
           </div>
           <button class="btn-restore" id="btnRestoreDefaults">🔄 恢复默认设置</button>
         </div>
@@ -530,7 +530,7 @@ export function getSettingsWebviewHtml(
         <div class="card">
           <div class="card-info">
             <div class="card-title">一键清空自选标的</div>
-            <div class="card-desc">一键清空当前所有板块（基金、A股、港股、美股、Binance、Alpha）的自选标的，保留板块分类，方便您从零开始自定义添加喜欢的资产。</div>
+            <div class="card-desc">一键清空当前所有板块（基金、A股、港股、美股、加密货币、Alpha）的自选标的，保留板块分类，方便您从零开始自定义添加喜欢的资产。</div>
           </div>
           <button class="btn-clear" id="btnClearWatchlist">🗑️ 一键清空标的</button>
         </div>
@@ -956,22 +956,22 @@ export function getSettingsWebviewHtml(
     <!-- 3. Binance 板块 -->
     <div id="tab-binance" class="tab-pane">
       <div class="section-header">
-        <h1>Binance 加密货币设置</h1>
-        <p>配置币安主流代币的抓取与网络安全代理</p>
+        <h1>加密货币设置 (Binance & SafeTrade)</h1>
+        <p>配置主流代币与 SafeTrade 矿币的行情抓取与网络安全代理</p>
       </div>
       <div class="card-list">
         <div class="card">
           <div class="card-info">
-            <div class="card-title">启用 Binance 分组</div>
-            <div class="card-desc">是否在侧边栏显示主流加密货币行情（BTC、ETH 等）。</div>
+            <div class="card-title">启用 加密货币 分组</div>
+            <div class="card-desc">是否在侧边栏显示主流加密货币与矿币行情（BTC、ETH、PRL 等）。</div>
           </div>
           <label class="switch"><input type="checkbox" id="binanceEnabled" ${d.binanceEnabled ? 'checked' : ''}><span class="slider"></span></label>
         </div>
 
         <div class="card">
           <div class="card-info">
-            <div class="card-title">Binance标的参与底部轮播</div>
-            <div class="card-desc">控制 Binance 主流代币是否在 VS Code 底部状态栏循环轮播展示。</div>
+            <div class="card-title">加密货币标的参与底部轮播</div>
+            <div class="card-desc">控制主流代币与矿币是否在 VS Code 底部状态栏循环轮播展示。</div>
           </div>
           <label class="switch"><input type="checkbox" id="binanceStatusBar" ${d.binanceStatusBar ? 'checked' : ''}><span class="slider"></span></label>
         </div>
@@ -1259,12 +1259,12 @@ export function getSettingsWebviewHtml(
                 + '<div style="font-weight: 500; font-size: 13px;">' + displayName + '</div>'
                 + '<div style="font-size: 11px; color: var(--desc-fg); font-family: monospace;">' + displaySym + '</div>'
                 + '</td>'
-                + '<td><input type="number" step="any" min="0" class="alert-input alert-cost" placeholder="成本" value="' + (isMasked && costVal !== '' ? '***' : escapeHtml(costVal)) + '" ' + (isMasked ? 'disabled' : '') + '></td>'
-                + '<td><input type="number" step="any" min="0" class="alert-input alert-shares" placeholder="数量" value="' + (isMasked && sharesVal !== '' ? '***' : escapeHtml(sharesVal)) + '" ' + (isMasked ? 'disabled' : '') + '></td>'
-                + '<td><input type="number" step="any" class="alert-input alert-above" placeholder="未设置" value="' + (isMasked && aboveVal !== '' ? '***' : escapeHtml(aboveVal)) + '" ' + (isMasked ? 'disabled' : '') + '></td>'
-                + '<td><input type="number" step="any" class="alert-input alert-below" placeholder="未设置" value="' + (isMasked && belowVal !== '' ? '***' : escapeHtml(belowVal)) + '" ' + (isMasked ? 'disabled' : '') + '></td>'
-                + '<td><input type="number" step="any" class="alert-input alert-pct" placeholder="未设置" value="' + (isMasked && pctVal !== '' ? '***' : escapeHtml(pctVal)) + '" ' + (isMasked ? 'disabled' : '') + '></td>'
-                + '<td><input type="number" step="any" min="0" class="alert-input alert-rapid" placeholder="默认3.0%" value="' + (isMasked && rapidVal !== '' ? '***' : escapeHtml(rapidVal)) + '" ' + (isMasked ? 'disabled' : '') + '></td>'
+                + '<td><input type="' + (isMasked ? 'text' : 'number') + '" step="any" min="0" class="alert-input alert-cost" placeholder="成本" value="' + (isMasked && costVal !== '' ? '***' : escapeHtml(costVal)) + '" ' + (isMasked ? 'disabled' : '') + '></td>'
+                + '<td><input type="' + (isMasked ? 'text' : 'number') + '" step="any" min="0" class="alert-input alert-shares" placeholder="数量" value="' + (isMasked && sharesVal !== '' ? '***' : escapeHtml(sharesVal)) + '" ' + (isMasked ? 'disabled' : '') + '></td>'
+                + '<td><input type="' + (isMasked ? 'text' : 'number') + '" step="any" class="alert-input alert-above" placeholder="未设置" value="' + (isMasked && aboveVal !== '' ? '***' : escapeHtml(aboveVal)) + '" ' + (isMasked ? 'disabled' : '') + '></td>'
+                + '<td><input type="' + (isMasked ? 'text' : 'number') + '" step="any" class="alert-input alert-below" placeholder="未设置" value="' + (isMasked && belowVal !== '' ? '***' : escapeHtml(belowVal)) + '" ' + (isMasked ? 'disabled' : '') + '></td>'
+                + '<td><input type="' + (isMasked ? 'text' : 'number') + '" step="any" class="alert-input alert-pct" placeholder="未设置" value="' + (isMasked && pctVal !== '' ? '***' : escapeHtml(pctVal)) + '" ' + (isMasked ? 'disabled' : '') + '></td>'
+                + '<td><input type="' + (isMasked ? 'text' : 'number') + '" step="any" min="0" class="alert-input alert-rapid" placeholder="默认3.0%" value="' + (isMasked && rapidVal !== '' ? '***' : escapeHtml(rapidVal)) + '" ' + (isMasked ? 'disabled' : '') + '></td>'
                 + '<td style="text-align: center;"><label class="switch"><input type="checkbox" class="alert-enabled" ' + (isEnabled ? 'checked' : '') + '><span class="slider"></span></label></td>'
                 + '</tr>';
               totalCount++;
@@ -1345,7 +1345,9 @@ export function getSettingsWebviewHtml(
         // 脱敏态下阈值输入框被遮值并 disabled，DOM 里的 '***' 不是「用户清空」而是「看不见」。
         // 若照常 parseFloat→NaN→undefined，切换启用开关就会把整条规则判成空并删除（真实数据丢失）。
         // 因此禁用态必须回读后端镜像里的现值，只有可编辑输入框才允许改写阈值。
-        var mirrored = currentAlerts[key] || {};
+        // 镜像回读必须与渲染侧同一别名回退链：规则存于历史别名键时只查规范键会误判为空。
+        var mirrorRawTicker = sym ? sym.toLowerCase().replace(/^(us|hk|sh|sz|bj)[\\._\\-\\/]?/i, '') : '';
+        var mirrored = currentAlerts[key] || currentAlerts[sym] || (sym ? currentAlerts[sym.toLowerCase()] : undefined) || (mirrorRawTicker ? currentAlerts[mirrorRawTicker] : undefined) || {};
         var above = readThresholdCell(aboveInput, mirrored.above);
         var below = readThresholdCell(belowInput, mirrored.below);
         var pct = readThresholdCell(pctInput, mirrored.changePercent);
@@ -1722,12 +1724,12 @@ export function getSettingsWebviewHtml(
       // 6. Binance 板块事件
       on('binanceEnabled', 'change', function() {
         sendUpdate('binance.enabled', this.checked);
-        showToast(this.checked ? '✅ Binance分组已启用' : '⚪ Binance分组已禁用');
+        showToast(this.checked ? '✅ 加密货币分组已启用' : '⚪ 加密货币分组已禁用');
       });
       on('binanceStatusBar', 'change', function() {
         syncMasterSwitch();
         sendUpdate('binance.statusBar', this.checked);
-        showToast(this.checked ? '✅ Binance标的参与底部轮播' : '⚪ Binance标的退出底部轮播');
+        showToast(this.checked ? '✅ 加密货币标的参与底部轮播' : '⚪ 加密货币标的退出底部轮播');
       });
       on('binanceNetDirect', 'change', function() { handleNetChange('binance', 'direct'); });
       on('binanceNetProxy', 'change', function() { handleNetChange('binance', 'proxy'); });

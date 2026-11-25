@@ -17,6 +17,9 @@ export interface BinanceTicker24hr {
   quoteVolume: string;
 }
 
+/** 币安现货常见计价资产后缀（显示名拆分与计价币种识别共用同一列表） */
+const QUOTE_ASSETS = ["USDT", "USDC", "FDUSD", "BUSD", "BTC", "ETH"] as const;
+
 export class BinanceService {
   // 记录已被确认失效（返回 400 或下架）的 symbol，避免每轮轮询都导致批量接口 400 并引发降级风暴
   private invalidSymbols = new Map<string, number>();
@@ -30,6 +33,17 @@ export class BinanceService {
   public clearInvalidCache(): void {
     this.invalidSymbols.clear();
     this.symbolFailureCounts.clear();
+  }
+
+  /** 修剪已不在当前自选中的标的的抑制与失败计数，防止 Map 随历史标的无界增长 */
+  public pruneInactiveSymbols(activeSymbols: readonly string[]): void {
+    const active = new Set(activeSymbols.map((s) => this.normalizeSymbol(s)));
+    for (const key of this.invalidSymbols.keys()) {
+      if (!active.has(key)) this.invalidSymbols.delete(key);
+    }
+    for (const key of this.symbolFailureCounts.keys()) {
+      if (!active.has(key)) this.symbolFailureCounts.delete(key);
+    }
   }
 
   public isSymbolSuppressed(s: string): boolean {
@@ -60,8 +74,7 @@ export class BinanceService {
   }
 
   public formatDisplayName(symbol: string): string {
-    const quotes = ["USDT", "USDC", "FDUSD", "BUSD", "BTC", "ETH"];
-    for (const q of quotes) {
+    for (const q of QUOTE_ASSETS) {
       if (symbol.endsWith(q) && symbol.length > q.length) {
         return `${symbol.slice(0, -q.length)}/${q}`;
       }
@@ -71,6 +84,11 @@ export class BinanceService {
 
   public parseTickerItem(item: BinanceTicker24hr): MarketItem {
     const sym = item.symbol;
+    // 按币对后缀识别计价资产：BTC/ETH 计价对（如 ETHBTC）如实标注计价资产，
+    // 总账不做无汇率依据的强行折算（§5.5）；稳定币计价按 U 本位，未识别后缀沿用 U 本位口径。
+    const quote = QUOTE_ASSETS.find((q) => sym.endsWith(q) && sym.length > q.length);
+    const currency: NonNullable<MarketItem["currency"]> =
+      quote === "BTC" || quote === "ETH" ? quote : "USDT";
     // 币安 24hr ticker 接口中以下字段为协议规范强制返回项（非可选指标），
     // 使用 parseFloat(...) || 0 仅作为数据非法/缺失时的保底数值兜底（与腾讯报文可选字段区分）。
     return {
@@ -87,8 +105,9 @@ export class BinanceService {
       change:       parseFloat(item.priceChange)       || 0,
       volume:       parseFloat(item.volume)            || 0,
       turnover:     parseFloat(item.quoteVolume)       || 0,
-      // 加密标的按 U 本位计价：币安 ticker 的 lastPrice / quoteVolume 都以交易对报价币种（稳定币）表达
-      currency:     "USDT",
+      // 加密标的按计价资产口径：稳定币计价对以交易对报价币种（U 本位）表达，BTC/ETH 计价对如实标注
+      currency,
+      dataSource:   "Binance",
     };
   }
 
@@ -138,12 +157,16 @@ export class BinanceService {
         );
 
         const rawList = Array.isArray(response.data) ? response.data : [response.data];
-        this.symbolFailureCounts.clear();
+        // 只清零本批次标的的失败计数：多批次并发时不得互相重置其他批次的坏币累计
+        for (const s of activeSymbols) {
+          this.symbolFailureCounts.delete(s);
+        }
 
         return rawList.map((item) => this.parseTickerItem(item));
       } catch (err: unknown) {
-        const httpErr = err as { response?: { status?: number }; status?: number; message?: string } | null | undefined;
-        if (httpErr?.response?.status === 400 || httpErr?.status === 400 || String(httpErr?.message || "").includes("400")) {
+        const httpErr = err as { response?: { status?: number }; status?: number } | null | undefined;
+        // 只认结构化 HTTP 400：错误消息含 URL/端口/超时数字，字符串匹配 "400" 会把网络故障误判为退市
+        if (httpErr?.response?.status === 400 || httpErr?.status === 400) {
           is400Error = true;
         }
       }
@@ -169,8 +192,8 @@ export class BinanceService {
           this.symbolFailureCounts.delete(s);
           successfulItems.push(this.parseTickerItem(item));
         } catch (err: unknown) {
-          const httpErr = err as { response?: { status?: number }; status?: number; message?: string } | null | undefined;
-          const is400 = httpErr?.response?.status === 400 || httpErr?.status === 400 || String(httpErr?.message || "").includes("400");
+          const httpErr = err as { response?: { status?: number }; status?: number } | null | undefined;
+          const is400 = httpErr?.response?.status === 400 || httpErr?.status === 400;
           const failCount = (this.symbolFailureCounts.get(s) || 0) + 1;
           this.symbolFailureCounts.set(s, failCount);
 

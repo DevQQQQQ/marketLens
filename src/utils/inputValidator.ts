@@ -60,6 +60,34 @@ export function validateAndParseInput(input: string): { error?: string; parsed?:
     return { error: "检测到输入为链上交易详情 (Tx Hash)，请粘贴代币合约地址 (Token Contract) 或代币详情页链接" };
   }
 
+  // SafeTrade 网页 URL（如 https://safetrade.com/exchange/PRL-USDT 或 /trade/prlusdt）
+  const safeTradeUrlMatch = trimmed.match(/safetrade\.com\/(?:exchange|trade)\/([a-zA-Z0-9_\-]+)/i);
+  if (safeTradeUrlMatch && safeTradeUrlMatch[1]) {
+    const market = safeTradeUrlMatch[1].toLowerCase().replace(/[\-_]/g, "");
+    return {
+      parsed: {
+        symbol: `safetrade:${market}`,
+        type: "CRYPTO",
+        defaultGroup: "加密货币",
+        hint: `SafeTrade 矿币/代币 (${market.toUpperCase()})`,
+      },
+    };
+  }
+
+  // SafeTrade 显式前缀（如 safetrade:prlusdt 或 safetrade:pearl-usdt）
+  const safeTradeMatch = trimmed.match(/^safetrade:([a-zA-Z0-9_\-]+)$/i);
+  if (safeTradeMatch && safeTradeMatch[1]) {
+    const market = safeTradeMatch[1].toLowerCase().replace(/[\-_]/g, "");
+    return {
+      parsed: {
+        symbol: `safetrade:${market}`,
+        type: "CRYPTO",
+        defaultGroup: "加密货币",
+        hint: `SafeTrade 矿币/代币 (${market.toUpperCase()})`,
+      },
+    };
+  }
+
   // 0. 若用户粘贴的是网页完整 URL，自动提取内部的代币合约地址
   const extractedFromUrl = extractContractAddressFromUrl(trimmed);
   if (extractedFromUrl) {
@@ -208,7 +236,7 @@ export function validateAndParseInput(input: string): { error?: string; parsed?:
         parsed: {
           symbol: cleanUpper,
           type: "CRYPTO",
-          defaultGroup: "Binance",
+          defaultGroup: "加密货币",
           hint: `加密货币币对 (${cleanUpper})`,
         },
       };
@@ -227,7 +255,7 @@ export function validateAndParseInput(input: string): { error?: string; parsed?:
         parsed: {
           symbol: `${cleanUpper}USDT`,
           type: "CRYPTO",
-          defaultGroup: "Binance",
+          defaultGroup: "加密货币",
           hint: `主流加密货币 (${cleanUpper})，已自动适配为 ${cleanUpper}USDT；亦可作为美股`,
           alternativeGroup: "美股",
           alternativeType: "US_STOCK",
@@ -240,8 +268,8 @@ export function validateAndParseInput(input: string): { error?: string; parsed?:
         symbol: cleanUpper,
         type: "US_STOCK",
         defaultGroup: "美股",
-        hint: `美股代码 (${cleanUpper})，亦可作为加密币加入 Binance`,
-        alternativeGroup: "Binance",
+        hint: `美股代码 (${cleanUpper})，亦可作为加密币加入加密货币`,
+        alternativeGroup: "加密货币",
         alternativeType: "CRYPTO",
       },
     };

@@ -17,6 +17,7 @@ import {
   affectsNetworkConfig,
   isMarketSection,
   sanitizeAlerts,
+  migrateLegacyBinanceGroup,
 } from "./utils/config.ts";
 import { RefreshScheduler } from "./scheduler.ts";
 import { fetchLiveFxRates } from "./services/fxRateService.ts";
@@ -45,6 +46,9 @@ function fireAndForgetPersist(label: string, task: PromiseLike<unknown>): void {
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   logger.init(context);
   logger.info("MarketLens 正在激活...");
+
+  // 老用户分组名称平滑迁移（Binance -> 加密货币，一生仅执行一次，未来保留自由改名权）
+  await migrateLegacyBinanceGroup(context);
 
   let config = readConfig();
 
@@ -238,9 +242,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       config.autoRefresh = !!value;
       if (!config.autoRefresh) {
         scheduler.stop();
-      } else {
-        scheduler.start();
       }
+      // 启用时不在此处 start()：Webview 随后必然落盘 autoRefresh，
+      // flushConfigChange 会统一 start()；两处都 start 会连发两次全量强制刷新。
     } else if (key === "refreshInterval") {
       config.refreshInterval = Number(value) || 5000;
     } else if (key === "proxyPort") {

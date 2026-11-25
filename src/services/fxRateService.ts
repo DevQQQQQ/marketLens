@@ -13,7 +13,7 @@ import type { LiveFxRates } from "../utils/portfolio.ts";
  */
 export const SINA_FX_URL = "https://hq.sinajs.cn/list=fx_susdcny,fx_shkdcny,fx_susdhkd";
 
-/** 新浪外汇报文「最新价」字段下标；不可用时回退 [1]（开盘价字段） */
+/** 新浪外汇报文「最新价」字段下标；不可用时回退 [1]（买价报价字段，实测与 [8] 同值；开盘价在 [5]） */
 const FX_PRICE_FIELD_INDEX = 8;
 const FX_FALLBACK_FIELD_INDEX = 1;
 
@@ -22,7 +22,7 @@ const FX_FALLBACK_FIELD_INDEX = 1;
  * 报文形如 `hq_str_fx_susdcny="03:00:00,6.6700,...,6.6745,...,在岸人民币,..."`（GBK）。
  * 字段缺失/占位（空串、"-"、"-1"）与非法数值一律返回 undefined，禁止 `|| 0` 伪装成真实零值。
  */
-function extractFxPrice(text: string, code: string): number | undefined {
+export function extractFxPrice(text: string, code: string): number | undefined {
   const match = text.match(new RegExp(`hq_str_${code}="([^"]*)"`));
   if (!match) return undefined;
   const fields = match[1].split(",");
@@ -101,6 +101,15 @@ export function resolveFxNetworkOptions(): FxNetworkOptions {
   }
 }
 
+let _testFxFetcher: (() => Promise<LiveFxRates | undefined>) | undefined;
+
+/** 测试辅助注入汇率拉取器（供集成测试隔离外网请求） */
+export function setFxRateFetcherForTesting(
+  fetcher?: () => Promise<LiveFxRates | undefined>
+): void {
+  _testFxFetcher = fetcher;
+}
+
 /**
  * 拉取在线实时汇率（经统一网络出口，支持代理/直连）。
  * 不传 options 时自动遵从用户网络配置；显式传入用于测试或特殊出口覆盖。
@@ -109,6 +118,9 @@ export function resolveFxNetworkOptions(): FxNetworkOptions {
 export async function fetchLiveFxRates(
   options?: FxNetworkOptions
 ): Promise<LiveFxRates | undefined> {
+  if (_testFxFetcher && !options) {
+    return _testFxFetcher();
+  }
   try {
     const networkOptions = options ?? resolveFxNetworkOptions();
     const response = await smartNetworkGet<ArrayBuffer>(SINA_FX_URL, networkOptions, {

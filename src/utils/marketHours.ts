@@ -32,7 +32,18 @@ const WEEKDAY_MAP: Record<string, number> = {
   Sat: 6,
 };
 
+// 热路径缓存：休市判定每标的每 tick 调用 2~3 次 Intl.formatToParts，开销显著。
+// 同一格式化器在同一 UTC 分钟内结果恒定（时区偏移不会在分钟中途变化），
+// 按格式化器只保留最近一个分钟桶的结果：命中率高且天然有界，无内存增长。
+const zonedTimePartsCache = new WeakMap<Intl.DateTimeFormat, { minuteKey: number; value: { day: number; totalMinutes: number } }>();
+const zonedDateStringCache = new WeakMap<Intl.DateTimeFormat, { minuteKey: number; value: string }>();
+
 export function getZonedTimeParts(formatter: Intl.DateTimeFormat, date: Date = new Date()): { day: number; totalMinutes: number } {
+  const minuteKey = Math.floor(date.getTime() / 60000);
+  const cached = zonedTimePartsCache.get(formatter);
+  if (cached && cached.minuteKey === minuteKey) {
+    return cached.value;
+  }
   const parts = formatter.formatToParts(date);
   let weekdayStr = "";
   let hour = 0;
@@ -48,7 +59,9 @@ export function getZonedTimeParts(formatter: Intl.DateTimeFormat, date: Date = n
   if (hour === 24) { hour = 0; }
 
   const day = WEEKDAY_MAP[weekdayStr] ?? 0;
-  return { day, totalMinutes: hour * 60 + minute };
+  const value = { day, totalMinutes: hour * 60 + minute };
+  zonedTimePartsCache.set(formatter, { minuteKey, value });
+  return value;
 }
 
 export const beijingDateFormatter = new Intl.DateTimeFormat("en-US", {
@@ -66,6 +79,11 @@ export const newYorkDateFormatter = new Intl.DateTimeFormat("en-US", {
 });
 
 export function getZonedDateString(formatter: Intl.DateTimeFormat, date: Date = new Date()): string {
+  const minuteKey = Math.floor(date.getTime() / 60000);
+  const cached = zonedDateStringCache.get(formatter);
+  if (cached && cached.minuteKey === minuteKey) {
+    return cached.value;
+  }
   const parts = formatter.formatToParts(date);
   let year = "";
   let month = "";
@@ -75,7 +93,9 @@ export function getZonedDateString(formatter: Intl.DateTimeFormat, date: Date = 
     else if (p.type === "month") month = p.value.padStart(2, "0");
     else if (p.type === "day") day = p.value.padStart(2, "0");
   }
-  return `${year}-${month}-${day}`;
+  const value = `${year}-${month}-${day}`;
+  zonedDateStringCache.set(formatter, { minuteKey, value });
+  return value;
 }
 
 /** A股历年休市日历（元旦、春节、清明、劳动节、端午、中秋、国庆及调休股市休市日） */
@@ -106,7 +126,7 @@ export const A_SHARE_HOLIDAYS = new Set<string>([
   "2026-09-25",
   "2026-10-01", "2026-10-02", "2026-10-05", "2026-10-06", "2026-10-07",
 
-  // 2027 (⚠️ 暂为提前占位预测数据；官方终版通常于 2026 年 12 月发布，届时须对照上交所/深交所终版公告复核校准)
+  // 2027 (已对照国务院办公厅 2026-11-05 发布的《关于2027年部分节假日安排的通知》核准，共 17 个工作日休市)
   "2027-01-01",
   "2027-02-05", "2027-02-08", "2027-02-09", "2027-02-10", "2027-02-11", "2027-02-12",
   "2027-04-05",
@@ -132,10 +152,22 @@ export const HK_HOLIDAYS = new Set<string>([
   "2026-01-01", "2026-02-17", "2026-02-18", "2026-02-19", "2026-04-03", "2026-04-06", "2026-04-07",
   "2026-05-01", "2026-05-25", "2026-06-19", "2026-07-01", "2026-10-01", "2026-10-19", "2026-12-25",
 
-  // 2027 (⚠️ 暂为提前占位预测数据；官方终版通常于 2026 年 12 月发布，届时须对照 HKEX 终版公告复核校准)
-  "2027-01-01", "2027-02-05", "2027-02-08", "2027-02-09", "2027-03-26", "2027-03-29",
+  // 2027 (已对照 HKEX 官方 2027 休市通告核准，共 13 个平日休市日；02-05 为农历除夕半日市，12-28 正常开市)
+  "2027-01-01", "2027-02-08", "2027-02-09", "2027-03-26", "2027-03-29",
   "2027-04-05", "2027-05-13", "2027-06-09", "2027-07-01", "2027-09-16", "2027-10-01",
-  "2027-10-08", "2027-12-27", "2027-12-28",
+  "2027-10-08", "2027-12-27",
+]);
+
+/**
+ * 港股半日市日历（HKEX Half-Day Trading）：仅上午 9:30~12:00 交易，无午市。
+ * 固定为平安夜（12-24）与除夕（12-31）；农历除夕取春节假期首日的前一个工作日
+ * （落在周末时天然被周末判定排除，无需列入）。
+ */
+export const HK_HALF_DAYS = new Set<string>([
+  "2024-12-24", "2024-12-31",
+  "2025-01-28", "2025-12-24", "2025-12-31",
+  "2026-02-16", "2026-12-24", "2026-12-31",
+  "2027-02-05", "2027-12-24", "2027-12-31",
 ]);
 
 /** 美股历年休市日历（NYSE / NASDAQ Holidays） */
@@ -152,7 +184,7 @@ export const US_HOLIDAYS = new Set<string>([
   "2026-01-01", "2026-01-19", "2026-02-16", "2026-04-03", "2026-05-25", "2026-06-19",
   "2026-07-03", "2026-09-07", "2026-11-26", "2026-12-25",
 
-  // 2027 (⚠️ 暂为提前占位预测数据；官方终版通常于 2026 年 12 月发布，届时须对照 NYSE/NASDAQ 终版公告复核校准)
+  // 2027 (已对照 NYSE / NASDAQ 官方 2027 假日日历核准，共 10 个全天休市日；11-26 提前收盘不列入)
   "2027-01-01", "2027-01-18", "2027-02-15", "2027-03-26", "2027-05-31", "2027-06-18",
   "2027-07-05", "2027-09-06", "2027-11-25", "2027-12-24",
 ]);
@@ -161,9 +193,9 @@ export const MAX_COVERED_HOLIDAY_YEAR = 2027;
 
 /**
  * 仍为「提前占位预测数据」的年份：日历条目已写入，但尚未对照交易所官方终版公告复核。
- * 官方终版通常在 2026 年 11 月下旬 ~ 12 月中旬发布，复核校准后必须把该年份从本集合移除（AGENTS.md §5.5）。
+ * 官方终版通常在 11 月下旬 ~ 12 月中旬发布，复核校准后必须把该年份从本集合移除（AGENTS.md §5.5）。
  */
-export const FORECAST_HOLIDAY_YEARS: ReadonlySet<number> = new Set([2027]);
+export const FORECAST_HOLIDAY_YEARS: ReadonlySet<number> = new Set<number>();
 
 const warnedHolidayYears = new Set<number>();
 const warnedForecastYears = new Set<number>();
@@ -254,6 +286,7 @@ export function isAShareMarketOpen(date?: Date): boolean {
  * 校验当前是否处于港股交易时段（严格按北京/香港时间 Asia/Shanghai 判定）：
  * - 排除周末与法定休市日
  * - 周一至周五 9:30 ~ 12:00, 13:00 ~ 16:10
+ * - 半日市（平安夜/除夕/农历除夕）仅 9:30 ~ 12:00，无午市
  */
 export function isHKMarketOpen(date?: Date): boolean {
   const targetDate = date || new Date();
@@ -263,6 +296,9 @@ export function isHKMarketOpen(date?: Date): boolean {
   const { day, totalMinutes } = getZonedTimeParts(beijingFormatter, targetDate);
   if (day === 0 || day === 6) { return false; }
   const isMorning   = totalMinutes >= 9 * 60 + 30 && totalMinutes <= 12 * 60;
+  if (HK_HALF_DAYS.has(getZonedDateString(beijingDateFormatter, targetDate))) {
+    return isMorning;
+  }
   const isAfternoon = totalMinutes >= 13 * 60 && totalMinutes <= 16 * 60 + 10;
   return isMorning || isAfternoon;
 }

@@ -173,9 +173,51 @@ export const SECTION_DEFAULT_GROUP_NAMES: Record<MarketSection, string> = {
   aShare: "A股",
   hkStock: "港股",
   usStock: "美股",
-  binance: "Binance",
+  binance: "加密货币",
   alpha: "Alpha",
 };
+
+export const MIGRATION_BINANCE_GROUP_KEY = "migrated_binance_to_crypto_group_v1";
+
+/**
+ * 老用户 "Binance" 默认分组平滑迁移为 "加密货币"（一次性幂等执行）
+ * 仅在存在 "Binance" 且不存在 "加密货币" 时执行更名，保留内部所有币种与排序；
+ * 尊重用户已有自定义名称，不覆盖任何其他分组；且终生只执行一次，未来用户可自由再次自定义。
+ */
+export async function migrateLegacyBinanceGroup(context: vscode.ExtensionContext): Promise<boolean> {
+  if (context.globalState.get<boolean>(MIGRATION_BINANCE_GROUP_KEY)) {
+    return false;
+  }
+
+  let migrated = false;
+  try {
+    const cfg = getConfiguration("marketlens");
+    const rawWatchlist = cfg.get<Record<string, unknown>>("watchlist");
+
+    if (rawWatchlist && typeof rawWatchlist === "object" && !Array.isArray(rawWatchlist)) {
+      const keys = Object.keys(rawWatchlist);
+      if (keys.includes("Binance") && !keys.includes("加密货币")) {
+        const newWatchlist: Record<string, unknown> = {};
+        for (const k of keys) {
+          if (k === "Binance") {
+            newWatchlist["加密货币"] = rawWatchlist[k];
+          } else {
+            newWatchlist[k] = rawWatchlist[k];
+          }
+        }
+        await cfg.update("watchlist", newWatchlist, getGlobalTarget());
+        migrated = true;
+        logger.info('[Migration] 已将旧版 "Binance" 自选分组平滑迁移为 "加密货币"');
+      }
+    }
+  } catch (err) {
+    logger.error("[Migration] 迁移 Binance 分组失败:", err);
+  } finally {
+    // 锁定迁移标记，保障用户未来自定义改名的自由，绝不再重复干预
+    await context.globalState.update(MIGRATION_BINANCE_GROUP_KEY, true);
+  }
+  return migrated;
+}
 
 /** 由 MARKET_SECTIONS 派生的全量默认分组名，禁止手写平行列表 */
 export const DEFAULT_GROUP_NAMES: readonly string[] = MARKET_SECTIONS.map((sec) => SECTION_DEFAULT_GROUP_NAMES[sec]);
