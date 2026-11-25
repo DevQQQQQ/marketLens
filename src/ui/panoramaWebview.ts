@@ -28,6 +28,7 @@ export class MarketPanoramaWebviewPanel {
   private _pollTimer: NodeJS.Timeout | undefined;
   private _isDisposed: boolean = false;
   private _containerWidth: number = 600;
+  private _fullWidth: number = 1000;
   private _containerHeight: number = 420;
   private readonly _tabRefreshSeq = new Map<string, number>();
 
@@ -91,6 +92,7 @@ export class MarketPanoramaWebviewPanel {
           case "resize":
             if (typeof message.width === "number" && Number.isFinite(message.width) && message.width > 200) {
               this._containerWidth = Math.max(300, message.width * 0.5);
+              this._fullWidth = Math.max(400, message.width - 80);
             }
             void this.refreshCurrentTab();
             break;
@@ -191,7 +193,7 @@ export class MarketPanoramaWebviewPanel {
         const raw = await fetchHkPanorama();
         if (isStale()) return;
 
-        const leaderRects = computeSquarifiedTreemap(raw.leaders, this._containerWidth, this._containerHeight);
+        const leaderRects = computeSquarifiedTreemap(raw.leaders, this._fullWidth, this._containerHeight);
         this._panel.webview.postMessage({
           type: "hk",
           data: {
@@ -203,7 +205,7 @@ export class MarketPanoramaWebviewPanel {
         const raw = await fetchUsPanorama();
         if (isStale()) return;
 
-        const mag7Rects = computeSquarifiedTreemap(raw.mag7, this._containerWidth, this._containerHeight);
+        const mag7Rects = computeSquarifiedTreemap(raw.mag7, this._fullWidth, this._containerHeight);
         this._panel.webview.postMessage({
           type: "us",
           data: {
@@ -215,7 +217,7 @@ export class MarketPanoramaWebviewPanel {
         const raw = await fetchFundPanorama();
         if (isStale()) return;
 
-        const etfRects = computeSquarifiedTreemap(raw.popularEtfs, this._containerWidth, this._containerHeight);
+        const etfRects = computeSquarifiedTreemap(raw.popularEtfs, this._fullWidth, this._containerHeight);
         this._panel.webview.postMessage({
           type: "fund",
           data: {

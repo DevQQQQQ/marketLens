@@ -3967,7 +3967,7 @@ void test("F1 & F2: 持仓成本浮动盈亏计算、脱敏遮罩与大盘指数
   assert.ok(savedWatchlist["A股"].some((it: WatchConfigItem) => it.symbol === "sh000001"), "应导入上证指数");
   assert.ok(savedWatchlist["港股"].some((it: WatchConfigItem) => it.symbol === "hkHSI"), "应导入恒生指数");
   assert.ok(savedWatchlist["美股"].some((it: WatchConfigItem) => it.symbol === "us.IXIC"), "应导入纳斯达克");
-  assert.ok(savedWatchlist["Binance"].some((it: WatchConfigItem) => it.symbol === "BTCUSDT"), "应导入比特币");
+  assert.ok(savedWatchlist[SECTION_DEFAULT_GROUP_NAMES.binance].some((it: WatchConfigItem) => it.symbol === "BTCUSDT"), "应导入比特币");
 
   // 再次执行应幂等防重
   const originalCount = savedWatchlist["A股"].length;
@@ -5972,6 +5972,11 @@ void test("行情中心纯原生 SVG 渲染器 - 直方图与恐慌贪婪仪表�
   assert.ok(distSvg.includes("3335"), "必须正确渲染峰值区间数值");
   assert.ok(distSvg.includes("涨停"), "必须包含涨停梯队标签");
   assert.ok(distSvg.includes("跌停"), "必须包含跌停梯队标签");
+
+  // 4. 全景面板 HTML 渲染器使用相对百分比铺满容器，避免全宽卡片右侧留白
+  const { getPanoramaHtml } = await import("../src/ui/panoramaHtml.ts");
+  const panoramaHtml = getPanoramaHtml({ nonce: "n1", cspSource: "vscode-resource:" });
+  assert.ok(panoramaHtml.includes("left:${leftPct}%; top:${topPct}%; width:${wPct}%; height:${hPct}%;"), "renderTreemap 必须使用百分比坐标铺满容器");
 });
 
 void test("行情中心 Phase 2 - 全球/港股/美股/ETF 数据聚合与契约保护", async () => {
@@ -6271,6 +6276,35 @@ void test("migrateLegacyBinanceGroup - 老用户 Binance 分组平滑迁移至�
     assert.strictEqual(thirdRun, false);
     const thirdCheck = cfg.get("watchlist") as any;
     assert.ok(thirdCheck["Binance"], "未来用户自主改回 Binance 绝不受干预");
+
+    // 4. 回归测试：即使 VS Code cfg.get("watchlist") 深度合并了 package.json 默认的 "加密货币"，
+    //    只要 inspect().globalValue 中只有 "Binance"，仍必须执行迁移（v2 key）
+    const origGetConfig = vscode.workspace.getConfiguration;
+    const fakeGlobal: Record<string, any> = {
+      "Binance": [{ symbol: "BTCUSDT", name: "BTC" }],
+      "美股": [{ symbol: "usAAPL", name: "苹果" }],
+    };
+    let updatedPayload: Record<string, any> | undefined;
+    (vscode.workspace as any).getConfiguration = () => ({
+      get: (k: string) => (k === "watchlist" ? { ...fakeGlobal, "加密货币": [{ symbol: "ETHUSDT" }] } : undefined),
+      inspect: (k: string) => (k === "watchlist" ? { key: "marketlens.watchlist", globalValue: fakeGlobal } : undefined),
+      update: async (_k: string, val: any) => { updatedPayload = val; },
+    });
+    try {
+      const freshStorage = new Map<string, any>();
+      const freshContext: any = {
+        globalState: {
+          get: (k: string) => freshStorage.get(k),
+          update: async (k: string, v: any) => { freshStorage.set(k, v); },
+        },
+      };
+      const mergedMigrated = await migrateLegacyBinanceGroup(freshContext);
+      assert.strictEqual(mergedMigrated, true, "cfg.get 合并默认值时仍必须以 inspect().globalValue 为准完成迁移");
+      assert.ok(updatedPayload && updatedPayload["加密货币"], "迁移写入必须包含 加密货币");
+      assert.strictEqual(updatedPayload?.["Binance"], undefined, "迁移写入必须移除旧 Binance 键");
+    } finally {
+      (vscode.workspace as any).getConfiguration = origGetConfig;
+    }
   } finally {
     await cfg.update("watchlist", origWatchlist, vscode.ConfigurationTarget.Global);
   }

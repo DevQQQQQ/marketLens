@@ -5,6 +5,23 @@ All notable changes to the "MarketLens" extension will be documented in this fil
 
 ## [Unreleased]
 
+## [1.4.2] - 2026-11-26
+
+<details>
+<summary><b>🛠️ 分组迁移修复与全景热力图自适应铺满 (Migration & Panorama Layout Fix)</b></summary>
+
+- **加密货币分组迁移与自选导入**
+  - **修复升级后双分组并存**：`migrateLegacyBinanceGroup` 改用 `inspect("watchlist")?.globalValue` 读取用户真实持久化配置，避免被 `package.json` 默认值合并干扰导致跳过迁移，并升级迁移标记为 `v2`，解决老用户升级后同时出现 `Binance` 与 `加密货币` 两个分组的问题。
+  - **常用指数导入分组对齐**：修正「一键导入常用大盘指数」中比特币的默认目标分组，统一使用 `SECTION_DEFAULT_GROUP_NAMES.binance`（「加密货币」），避免重复创建旧版 `Binance` 分组。
+
+- **行情中心热力图**
+  - **全宽卡片自适应铺满**：为港股、美股与基金页签提供全宽布局基准，并将前端 Treemap 渲染改为相对容器百分比坐标，修复港股核心龙头等全宽热力图卡片右侧大面积留白的问题。
+
+- **测试验证**
+  - 补充回归测试并通过 `npm run lint`、`npm run typecheck`、`npm test`（220/220）与生产构建。
+
+</details>
+
 ## [1.4.1] - 2026-11-25
 
 <details>

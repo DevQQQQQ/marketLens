@@ -177,11 +177,13 @@ export const SECTION_DEFAULT_GROUP_NAMES: Record<MarketSection, string> = {
   alpha: "Alpha",
 };
 
-export const MIGRATION_BINANCE_GROUP_KEY = "migrated_binance_to_crypto_group_v1";
+export const MIGRATION_BINANCE_GROUP_KEY = "migrated_binance_to_crypto_group_v2";
 
 /**
  * 老用户 "Binance" 默认分组平滑迁移为 "加密货币"（一次性幂等执行）
- * 仅在存在 "Binance" 且不存在 "加密货币" 时执行更名，保留内部所有币种与排序；
+ * 必须通过 `inspect("watchlist")?.globalValue` 读取用户真实持久化配置，
+ * 避免 `cfg.get("watchlist")` 将 `package.json` 默认值中的 "加密货币" 深度合并进来导致误判跳过。
+ * 仅在用户持久化配置中存在 "Binance" 且不存在 "加密货币" 时执行更名，保留内部所有币种与排序；
  * 尊重用户已有自定义名称，不覆盖任何其他分组；且终生只执行一次，未来用户可自由再次自定义。
  */
 export async function migrateLegacyBinanceGroup(context: vscode.ExtensionContext): Promise<boolean> {
@@ -192,7 +194,7 @@ export async function migrateLegacyBinanceGroup(context: vscode.ExtensionContext
   let migrated = false;
   try {
     const cfg = getConfiguration("marketlens");
-    const rawWatchlist = cfg.get<Record<string, unknown>>("watchlist");
+    const rawWatchlist = cfg.inspect<Record<string, unknown>>("watchlist")?.globalValue;
 
     if (rawWatchlist && typeof rawWatchlist === "object" && !Array.isArray(rawWatchlist)) {
       const keys = Object.keys(rawWatchlist);

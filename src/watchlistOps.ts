@@ -4,7 +4,7 @@ import type { MarketItem, PriceAlertItem, WatchlistConfig, WatchConfigItem, Asse
 import { isSameSymbol, normalizeSymbolKey, resolveItemDisplayName, batchReorderWatchlist, applyAlertRuleDelta, type ReorderItemDescriptor } from "./utils/symbolHelper.ts";
 import { validateAndParseInput, type ParsedItemInput } from "./utils/inputValidator.ts";
 import { searchSymbols } from "./services/symbolSearchService.ts";
-import { readConfig } from "./utils/config.ts";
+import { readConfig, SECTION_DEFAULT_GROUP_NAMES } from "./utils/config.ts";
 import { SettingsWebviewPanel } from "./ui/settingsWebview.ts";
 import { logger } from "./utils/logger.ts";
 import { canOpenPrompt, emitStatusMessage, isBossKeyActive, maskNumbers, showInfoMessage } from "./utils/feedback.ts";
@@ -1005,15 +1005,15 @@ export class WatchlistOps {
       name: string;
       type: AssetType;
     }> = [
-      { group: "A股", symbol: "sh000001", name: "上证指数", type: "A_SHARE" },
-      { group: "A股", symbol: "sz399001", name: "深证成指", type: "A_SHARE" },
-      { group: "A股", symbol: "sz399006", name: "创业板指", type: "A_SHARE" },
-      { group: "港股", symbol: "hkHSI", name: "恒生指数", type: "HK_STOCK" },
-      { group: "港股", symbol: "hkHSTECH", name: "恒生科技", type: "HK_STOCK" },
-      { group: "美股", symbol: "us.IXIC", name: "纳斯达克", type: "US_STOCK" },
-      { group: "美股", symbol: "us.INX", name: "标普500", type: "US_STOCK" },
-      { group: "美股", symbol: "us.DJI", name: "道琼斯", type: "US_STOCK" },
-      { group: "Binance", symbol: "BTCUSDT", name: "比特币", type: "CRYPTO" },
+      { group: SECTION_DEFAULT_GROUP_NAMES.aShare, symbol: "sh000001", name: "上证指数", type: "A_SHARE" },
+      { group: SECTION_DEFAULT_GROUP_NAMES.aShare, symbol: "sz399001", name: "深证成指", type: "A_SHARE" },
+      { group: SECTION_DEFAULT_GROUP_NAMES.aShare, symbol: "sz399006", name: "创业板指", type: "A_SHARE" },
+      { group: SECTION_DEFAULT_GROUP_NAMES.hkStock, symbol: "hkHSI", name: "恒生指数", type: "HK_STOCK" },
+      { group: SECTION_DEFAULT_GROUP_NAMES.hkStock, symbol: "hkHSTECH", name: "恒生科技", type: "HK_STOCK" },
+      { group: SECTION_DEFAULT_GROUP_NAMES.usStock, symbol: "us.IXIC", name: "纳斯达克", type: "US_STOCK" },
+      { group: SECTION_DEFAULT_GROUP_NAMES.usStock, symbol: "us.INX", name: "标普500", type: "US_STOCK" },
+      { group: SECTION_DEFAULT_GROUP_NAMES.usStock, symbol: "us.DJI", name: "道琼斯", type: "US_STOCK" },
+      { group: SECTION_DEFAULT_GROUP_NAMES.binance, symbol: "BTCUSDT", name: "比特币", type: "CRYPTO" },
     ];
 
     const cfg = readConfig();

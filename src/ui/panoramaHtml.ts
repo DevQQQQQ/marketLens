@@ -605,17 +605,29 @@ export function getPanoramaHtml(options: PanoramaHtmlOptions): string {
       renderTreemap('cryptoTreemapBox', heatmap);
     }
 
-    // 原生 Treemap 渲染
+    // 原生 Treemap 渲染（使用相对百分比铺满容器，兼容半宽多列与全宽单列卡片）
     function renderTreemap(containerId, items) {
       const container = document.getElementById(containerId);
       if (!container || !items || items.length === 0) return;
+
+      let totalW = 0;
+      let totalH = 0;
+      for (const node of items) {
+        if (node.x + node.w > totalW) totalW = node.x + node.w;
+        if (node.y + node.h > totalH) totalH = node.y + node.h;
+      }
+      if (totalW <= 0 || totalH <= 0) return;
 
       container.innerHTML = items.map(node => {
         const bg = getChangeColor(node.change);
         const changeSign = node.change >= 0 ? '+' : '';
         const titleText = escapeHtml((node.name || '') + ' (' + changeSign + node.change.toFixed(2) + '%)' + (node.extra ? ' ' + node.extra : ''));
+        const leftPct = (node.x / totalW * 100).toFixed(4);
+        const topPct = (node.y / totalH * 100).toFixed(4);
+        const wPct = (node.w / totalW * 100).toFixed(4);
+        const hPct = (node.h / totalH * 100).toFixed(4);
         return \`
-          <div class="treemap-node" title="\${titleText}" style="left:\${node.x}px; top:\${node.y}px; width:\${node.w}px; height:\${node.h}px; background:\${bg};">
+          <div class="treemap-node" title="\${titleText}" style="left:\${leftPct}%; top:\${topPct}%; width:\${wPct}%; height:\${hPct}%; background:\${bg};">
             <span class="node-name">\${escapeHtml(node.name)}</span>
             <span class="node-change">\${changeSign}\${node.change.toFixed(2)}%</span>
           </div>
